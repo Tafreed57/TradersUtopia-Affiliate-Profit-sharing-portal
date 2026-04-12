@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "rewardful": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "mcp/rewardful-server.mjs"
+      ],
+      "env": {
+        "REWARDFUL_API_KEY": "${REWARDFUL_API_KEY}"
+      }
+    }
+  }
+}

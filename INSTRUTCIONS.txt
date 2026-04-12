@@ -1,0 +1,182 @@
+## STRICT UI RULE — NON-NEGOTIABLE
+The name "Rewardful" must NEVER appear anywhere in the frontend or user-facing 
+UI under any circumstances. This includes but is not limited to: labels, 
+tooltips, error messages, loading states, notification text, dashboard copy, 
+success messages, emails, or any text a user of the PWA can see or read.
+
+ALSO SET UP A REWARDFUL PROJECT MCP YOU CAN COPY THE ONE IN THIS PROJECT PATH C:\Users\Tafre\Downloads\tradersutopia portal ONLY COPY THE REWARDFUL MCP NOTHING ELSE
+USE THIS TO LOOK UP DOCUMENTATION AND ALSO WITHIN THE PROJECT MAKE SURE TO REMEBER THE FINDINGS WRITE THEM DOWN IN A .MD FILE IN THE OBSIDIAN VAULT AND ALWAYS REFER TO THEM IF NEED BE, FOR THE PROJECT SO THERES NO DISCREPENCY IN THE REWARDFUL DOCUMENTATION WHEN YOURE WRITING THE CODE!!!
+
+Rewardful is a backend/internal integration only. To the user, it does not 
+exist. All data sourced from Rewardful must be presented as if it comes from 
+our own system with no reference to any third party.
+
+This rule is absolute and applies to every single user-facing string in 
+the entire application.
+
+# TradersUtopia Affiliate Commission Portal — Architecture Notes
+
+## What We're Building
+A standalone web app (PWA) for TradersUtopia's affiliate marketers to track 
+their commissions, sign-ups, and attendance. It integrates with an existing 
+Rewardful account (already configured with campaigns and commissions) and 
+applies our own profit-sharing logic on top of it. Rewardful handles money 
+movement. Our app handles calculation, display, and data management.
+
+Environment variables for Rewardful are already present in the project folder.
+
+Expected scale: 50-100 active affiliates now, up to a few hundred long-term.
+
+---
+
+## Tech Stack
+- Frontend/Backend: Next.js (React) — single codebase, API routes included
+- Database: PostgreSQL
+- Auth: NextAuth.js — Google OAuth + email/password
+- Push Notifications: Firebase Cloud Messaging (FCM)
+- Currency Conversion: Live exchange rate API, displayed to 2 decimal places
+- Deployment: Vercel (app) + Railway or Supabase (database)
+- Rewardful: Webhook listener for incoming conversions + API calls for 
+  promo code creation
+
+---
+
+## User Roles
+
+### Regular Affiliate (Marketer)
+- Signs up via Google OAuth or email/password
+- Can be a student, a teacher, or both simultaneously
+- Sees only their own data
+
+### Admin
+- One hardcoded admin email in the system
+- Logs in the same way as regular users (Google or email/password)
+- Their admin status is invisible to regular users
+- Has all the same views as regular users PLUS admin-only controls
+- Admin existence and capabilities are not disclosed in the UI
+THE ADMIN UTILITIES LET THE ADMIN HAVE FULL CONTROLL OVER THE VALUES THAT TAHT AFFILIATE SEES ON THE PORTAL
+AND THERE SHOULD BE OPTIONS TO CHANGE THE ITERATIVE PERCENTAGE, WHAT THEYRE SEEING ETC.
+---
+
+## Authentication
+- Google OAuth or email/password (user's choice)
+- Admin is identified by a hardcoded email — no special login flow
+- No public registration for admin; it is set at the environment/config level
+
+---
+
+## Teacher / Student Tree Structure
+- Max depth: 2 levels (Teacher → Student → Student's Student)
+- A person can be both a student under someone AND a teacher with 
+  their own students
+- Each student can have MORE THAN ONE teacher BUT IF THERES AN INEQUALITY IN THE PERCENTAGES LIKE IF THEY WONT "FIT" THEN PROMPT THE USER WITH A TOO MANY TECHERS HAVE THIS STUDENT UNDER THIS TEACHER. OR IF THE ADMIN NEEDS OT DO IT OR NOT
+- A teacher earns commission cuts from their direct students AND 
+  their students' students (2 levels deep)
+- Example: Alex teaches Jim, Jim teaches Bob.
+  Alex earns off Jim and Bob. Jim earns off Bob. Bob earns off no one below.
+  No earnings beyond 2 levels.
+
+---
+
+## Promo Code Request Flow
+1. An affiliate requests a promo code inside the app
+2. They submit a proposed code (4-6 letters only)
+3. The teacher receives a persistent push notification
+4. Teacher approves or rejects inside the app
+5. On approval, the app automatically sends the promo code to Rewardful 
+   via API — no manual step required
+
+---
+
+## Commission / Profit Sharing Logic
+- When Rewardful detects a conversion (via webhook), our app receives the 
+  full conversion amount
+- The full amount is NEVER shown to affiliates — they only see their 
+  designated percentage cut
+- Split example: Affiliate gets 40%, their teacher gets 10%, 
+  teacher's teacher gets 10%, CEO gets the remainder (40%)
+- CEO always receives whatever percentage is left after all affiliate cuts
+- Teachers always receive their cut regardless of whether the student 
+  submitted attendance or not
+- If a student did NOT submit attendance and a conversion comes in:
+  - The student's cut is forfeited (does NOT go to the student)
+  - The student's forfeited cut goes to the CEO
+  - Teachers above still receive their normal cuts
+  - The commission is shown to the student in their history, clearly 
+    marked as forfeited/missed due to no attendance
+
+---
+
+## Admin Commission Controls
+- Admin can adjust any affiliate's commission percentage at any time
+- Changes take effect on the NEXT incoming conversion (not retroactive)
+- Admin UI shows: previous percentage, current percentage, what is 
+  actively applied
+- Admin UI shows only ONE step back in history (previous vs current)
+- A full audit log of all percentage changes exists in the backend 
+  database for record-keeping, accessible if needed
+
+---
+
+## Attendance System
+- Affiliates submit attendance to indicate they did marketing that day
+- Multiple submissions per day are allowed
+- Attendance is REQUIRED to receive a commission payout
+- If no attendance is submitted for the day a conversion occurs, 
+  the affiliate's cut is forfeited (see commission logic above)
+- Admin can view all affiliates who missed attendance but had a 
+  conversion come in
+
+---
+
+## Payout History Display (Per Affiliate)
+- Shows each commission entry individually
+- Each entry displays: their cut amount only (never full conversion amount)
+- Date format: Day name, Month name, Time in AM/PM
+- Timezone is auto-detected from the user's browser/location
+- Forfeited commissions appear in history clearly labeled as missed/forfeited
+- CAD/USD toggle — user can switch between currencies
+- Live exchange rate pulled dynamically, displayed to 2 decimal places
+
+---
+
+## Teacher Dashboard (Additional Capabilities)
+- Teachers can view all of their students AND their students' students
+- Teachers see the same data their students see (commissions, signups, 
+  attendance) for any affiliate linked beneath them
+- This is presented in a clean, simple interface
+
+---
+
+## Affiliate Deactivation / Removal
+- Admin can deactivate or remove any affiliate
+- Before removal, admin is shown the full subtree beneath that affiliate
+- Admin can reassign each person in the subtree to a different affiliate 
+  or leave them unassigned
+- Deactivation is deliberate and manual — no automatic reassignment
+
+---
+
+## Notifications (Firebase Cloud Messaging)
+- App is a PWA installable on iOS and Android home screens
+- Push notifications via FCM — no native app store required
+- iOS 16.4+ web push is supported
+- Notifications are persistent and smart — sent for:
+  - New conversion received
+  - Attendance not submitted when a conversion came in (forfeiture alert)
+  - Promo code request received (teacher)
+  - Promo code approved or rejected (student)
+  - Commission percentage changed (affiliate)
+  - New student linked under a teacher
+  - Affiliate deactivated (if applicable)
+- Notifications should be descriptive and actionable, not generic
+
+---
+
+## Rewardful Integration
+- Existing Rewardful account with campaigns and commissions already configured
+- Environment variables already present in the project
+- Webhook listener: receives conversion events from Rewardful in real-time
+- API calls: automatically create and register approved promo codes 
+  in Rewardful on teacher approval
+- Our app reads Rewardful data and applies our own split logic on top
