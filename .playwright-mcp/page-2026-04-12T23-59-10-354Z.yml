@@ -1,0 +1,27 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]: Welcome Back
+      - generic [ref=e7]: Sign in to your affiliate portal
+    - generic [ref=e8]:
+      - button "Continue with Google" [ref=e9]:
+        - img
+        - text: Continue with Google
+      - generic [ref=e10]:
+        - separator [ref=e11]
+        - generic [ref=e12]: or
+      - generic [ref=e13]:
+        - generic [ref=e14]:
+          - generic [ref=e15]: Email
+          - textbox "Email" [ref=e16]:
+            - /placeholder: you@example.com
+        - generic [ref=e17]:
+          - generic [ref=e18]: Password
+          - textbox "Password" [ref=e19]
+        - button "Sign In" [ref=e20]
+    - paragraph [ref=e22]:
+      - text: Don't have an account?
+      - link "Sign up" [ref=e23] [cursor=pointer]:
+        - /url: /register
+  - region "Notifications alt+T"
+  - alert [ref=e24]

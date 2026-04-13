@@ -1,0 +1,276 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_DATABASE_URL")
+}
+
+model Account {
+  id                String  @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model User {
+  id                   String                @id @default(dbgenerated("(gen_random_uuid())::text"))
+  email                String                @unique
+  name                 String?
+  passwordHash         String?
+  image                String?
+  emailVerified        DateTime?
+  status               UserStatus            @default(ACTIVE)
+  commissionPercent    Decimal               @default(0) @db.Decimal(5, 2)
+  canProposeRates      Boolean               @default(true)
+  rewardfulAffiliateId String?               @unique
+  preferredCurrency    String                @default("CAD")
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @default(now()) @updatedAt
+  accounts             Account[]
+  attendanceRecords    Attendance[]
+  commissions          Commission[]          @relation("AffiliateCommissions")
+  teacherCommissions   Commission[]          @relation("TeacherCommissions")
+  rateChanges          CommissionRateAudit[] @relation("AffiliateRateChanges")
+  rateChangesBy        CommissionRateAudit[] @relation("ChangedByUser")
+  deviceTokens         DeviceToken[]
+  notifications        Notification[]
+  promoCodeRequests    PromoCodeRequest[]    @relation("RequesterRelation")
+  promoCodeReviews     PromoCodeRequest[]    @relation("ReviewerRelation")
+  proposalsMade        RateProposal[]        @relation("ProposerRelation")
+  proposalsReviewed    RateProposal[]        @relation("ProposalReviewerRelation")
+  proposalsFor         RateProposal[]        @relation("ProposalStudentRelation")
+  sessions             Session[]
+  teacherRelations     TeacherStudent[]      @relation("StudentRelation")
+  studentRelations     TeacherStudent[]      @relation("TeacherRelation")
+
+  @@index([email])
+  @@index([rewardfulAffiliateId])
+  @@index([status])
+}
+
+model TeacherStudent {
+  id         String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  teacherId  String
+  studentId  String
+  depth      Int      @default(1)
+  teacherCut Decimal  @default(0) @db.Decimal(5, 2)
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @default(now()) @updatedAt
+  student    User     @relation("StudentRelation", fields: [studentId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  teacher    User     @relation("TeacherRelation", fields: [teacherId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([teacherId, studentId])
+  @@index([teacherId])
+  @@index([studentId])
+  @@index([teacherId, isActive])
+}
+
+model Commission {
+  id                    String           @id @default(dbgenerated("(gen_random_uuid())::text"))
+  affiliateId           String
+  teacherId             String?
+  rewardfulCommissionId String?
+  rewardfulReferralId   String?
+  fullAmountCad         Decimal          @db.Decimal(10, 2)
+  affiliateCutPercent   Decimal          @db.Decimal(5, 2)
+  affiliateCutCad       Decimal          @db.Decimal(10, 2)
+  teacherCutPercent     Decimal?         @db.Decimal(5, 2)
+  teacherCutCad         Decimal?         @db.Decimal(10, 2)
+  ceoCutCad             Decimal          @db.Decimal(10, 2)
+  status                CommissionStatus @default(PENDING)
+  forfeitedToCeo        Boolean          @default(false)
+  forfeitureReason      String?
+  conversionDate        DateTime
+  processedAt           DateTime         @default(now())
+  rewardfulData         Json?
+  affiliate             User             @relation("AffiliateCommissions", fields: [affiliateId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  teacher               User?            @relation("TeacherCommissions", fields: [teacherId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([affiliateId])
+  @@index([teacherId])
+  @@index([conversionDate])
+  @@index([status])
+  @@index([rewardfulCommissionId])
+}
+
+model CommissionRateAudit {
+  id              String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  affiliateId     String
+  changedById     String
+  previousPercent Decimal  @db.Decimal(5, 2)
+  newPercent      Decimal  @db.Decimal(5, 2)
+  reason          String?
+  createdAt       DateTime @default(now())
+  affiliate       User     @relation("AffiliateRateChanges", fields: [affiliateId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  changedBy       User     @relation("ChangedByUser", fields: [changedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([affiliateId])
+  @@index([createdAt])
+}
+
+model RateProposal {
+  id              String         @id @default(dbgenerated("(gen_random_uuid())::text"))
+  proposerId      String
+  studentId       String
+  proposedPercent Decimal        @db.Decimal(5, 2)
+  currentPercent  Decimal        @db.Decimal(5, 2)
+  status          ProposalStatus @default(PENDING)
+  reviewedById    String?
+  reviewNote      String?
+  createdAt       DateTime       @default(now())
+  reviewedAt      DateTime?
+  proposer        User           @relation("ProposerRelation", fields: [proposerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  reviewedBy      User?          @relation("ProposalReviewerRelation", fields: [reviewedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  student         User           @relation("ProposalStudentRelation", fields: [studentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([status])
+  @@index([proposerId])
+  @@index([studentId])
+}
+
+model Attendance {
+  id          String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId      String
+  date        String
+  timezone    String
+  note        String?
+  submittedAt DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([userId, date])
+  @@index([userId])
+  @@index([date])
+}
+
+model PromoCodeRequest {
+  id                String                 @id @default(dbgenerated("(gen_random_uuid())::text"))
+  requesterId       String
+  reviewerId        String?
+  proposedCode      String
+  status            PromoCodeRequestStatus @default(PENDING_TEACHER)
+  rewardfulCouponId String?
+  rejectionReason   String?
+  errorMessage      String?
+  createdAt         DateTime               @default(now())
+  reviewedAt        DateTime?
+  requester         User                   @relation("RequesterRelation", fields: [requesterId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  reviewer          User?                  @relation("ReviewerRelation", fields: [reviewerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([requesterId])
+  @@index([reviewerId])
+  @@index([status])
+  @@index([proposedCode])
+}
+
+model Notification {
+  id        String           @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId    String
+  type      NotificationType
+  title     String
+  body      String
+  data      Json?
+  read      Boolean          @default(false)
+  sentPush  Boolean          @default(false)
+  createdAt DateTime         @default(now())
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([userId, read])
+  @@index([userId, createdAt])
+  @@index([type])
+}
+
+model DeviceToken {
+  id        String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId    String
+  token     String   @unique
+  platform  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([userId])
+}
+
+model ExchangeRateCache {
+  id           String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  fromCurrency String
+  toCurrency   String
+  rate         Decimal  @db.Decimal(10, 6)
+  fetchedAt    DateTime @default(now())
+
+  @@unique([fromCurrency, toCurrency])
+  @@index([fetchedAt])
+}
+
+enum UserStatus {
+  ACTIVE
+  DEACTIVATED
+}
+
+enum PromoCodeRequestStatus {
+  PENDING_TEACHER
+  APPROVED_TEACHER
+  REJECTED_TEACHER
+  CREATED
+  FAILED
+}
+
+enum ProposalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum CommissionStatus {
+  EARNED
+  FORFEITED
+  PENDING
+}
+
+enum NotificationType {
+  CONVERSION_RECEIVED
+  ATTENDANCE_FORFEITURE_ALERT
+  PROMO_CODE_REQUEST_RECEIVED
+  PROMO_CODE_APPROVED
+  PROMO_CODE_REJECTED
+  COMMISSION_RATE_CHANGED
+  NEW_STUDENT_LINKED
+  AFFILIATE_DEACTIVATED
+  RATE_PROPOSAL_SUBMITTED
+  RATE_PROPOSAL_APPROVED
+  RATE_PROPOSAL_REJECTED
+}
