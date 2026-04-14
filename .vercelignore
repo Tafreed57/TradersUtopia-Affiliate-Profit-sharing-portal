@@ -1,0 +1,16 @@
+# Prevent local env files from overriding Vercel env vars
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Dev/test artifacts
+e2e/
+.playwright-mcp/
+coverage/
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db

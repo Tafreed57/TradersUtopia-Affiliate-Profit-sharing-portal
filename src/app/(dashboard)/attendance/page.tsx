@@ -1,7 +1,7 @@
 "use client";
 
 import { CalendarCheck, Clock, Plus } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
@@ -131,9 +131,16 @@ export default function AttendancePage() {
     });
   }, [note, submitMutation]);
 
+  // Defer client-only values to avoid SSR hydration mismatch
+  const [today, setToday] = useState("");
+  const [timezone, setTimezone] = useState("");
+  useEffect(() => {
+    setToday(getLocalDate());
+    setTimezone(getTimezone());
+  }, []);
+
   // Build calendar data
   const attendanceDates = new Set(data?.data.map((r) => r.date) ?? []);
-  const today = getLocalDate();
 
   // Generate calendar grid for the month
   const [calYear, calMonth] = selectedMonth.split("-").map(Number);
@@ -164,10 +171,10 @@ export default function AttendancePage() {
         <CardContent className="space-y-4">
           <div className="flex items-center gap-3 text-sm text-muted-foreground">
             <CalendarCheck className="h-4 w-4" />
-            <span>{formatDate(today)}</span>
+            <span>{today ? formatDate(today) : "\u00A0"}</span>
             <span className="text-border">|</span>
             <Clock className="h-4 w-4" />
-            <span>{getTimezone()}</span>
+            <span>{timezone || "\u00A0"}</span>
           </div>
 
           <div className="space-y-2">
