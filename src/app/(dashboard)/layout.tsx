@@ -1,5 +1,7 @@
 import { Sidebar } from "@/components/layout/sidebar";
 import { Topbar } from "@/components/layout/topbar";
+import { FcmProvider } from "@/components/notifications/fcm-provider";
+import { InstallPrompt } from "@/components/pwa/install-prompt";
 
 export default function DashboardLayout({
   children,
@@ -8,6 +10,8 @@ export default function DashboardLayout({
 }) {
   return (
     <div className="flex h-screen overflow-hidden">
+      <FcmProvider />
+      <InstallPrompt />
       <Sidebar />
       <div className="flex flex-1 flex-col overflow-hidden">
         <Topbar />

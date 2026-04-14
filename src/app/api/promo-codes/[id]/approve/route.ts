@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { z } from "zod";
 
 import { authOptions } from "@/lib/auth-options";
+import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
 import { createCoupon, listCampaigns } from "@/lib/rewardful";
 
@@ -89,6 +90,15 @@ export async function POST(
           reviewedAt: new Date(),
         },
       });
+
+      await createNotification({
+        userId: request.requesterId,
+        type: "PROMO_CODE_REJECTED",
+        title: "Promo Code Rejected",
+        body: `Your promo code request "${request.proposedCode}" was rejected.${reason ? ` Reason: ${reason}` : ""}`,
+        data: { promoCodeRequestId: id },
+      });
+
       return NextResponse.json(updated);
     }
 
@@ -127,6 +137,14 @@ export async function POST(
           reviewedAt: new Date(),
           rewardfulCouponId: coupon.id,
         },
+      });
+
+      await createNotification({
+        userId: request.requesterId,
+        type: "PROMO_CODE_APPROVED",
+        title: "Promo Code Approved!",
+        body: `Your promo code "${request.proposedCode}" has been approved and is now active.`,
+        data: { promoCodeRequestId: id },
       });
 
       return NextResponse.json(updated);

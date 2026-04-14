@@ -1,10 +1,11 @@
 "use client";
 
-import { Bell, LogOut, Menu } from "lucide-react";
+import { LogOut, Menu } from "lucide-react";
 import { signOut, useSession } from "next-auth/react";
 import Link from "next/link";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { NotificationBell } from "@/components/notifications/notification-bell";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -50,12 +51,7 @@ export function Topbar() {
 
       <div className="flex items-center gap-3">
         {/* Notification bell */}
-        <Link
-          href="/notifications"
-          className="inline-flex items-center justify-center rounded-md p-2 text-foreground hover:bg-muted"
-        >
-          <Bell className="h-5 w-5" />
-        </Link>
+        <NotificationBell />
 
         {/* User menu */}
         <DropdownMenu>

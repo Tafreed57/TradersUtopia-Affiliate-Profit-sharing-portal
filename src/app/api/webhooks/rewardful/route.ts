@@ -6,6 +6,7 @@ import {
   processConversion,
   type WebhookConversion,
 } from "@/lib/commission-engine";
+import { createNotifications } from "@/lib/notifications";
 
 /**
  * POST /api/webhooks/rewardful
@@ -56,6 +57,11 @@ export async function POST(req: NextRequest) {
 
     if (result.warnings?.length) {
       console.warn("Commission warnings:", result.warnings);
+    }
+
+    // Send notifications for the conversion
+    if (result.success && !result.skipped && result.notifications) {
+      await createNotifications(result.notifications);
     }
 
     return NextResponse.json(result);

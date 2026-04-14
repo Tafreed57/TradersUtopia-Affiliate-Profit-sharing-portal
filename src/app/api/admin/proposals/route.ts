@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { z } from "zod";
 
 import { authOptions } from "@/lib/auth-options";
+import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -85,6 +86,15 @@ export async function POST(req: NextRequest) {
           reviewedAt: new Date(),
         },
       });
+
+      await createNotification({
+        userId: proposal.proposerId,
+        type: "RATE_PROPOSAL_REJECTED",
+        title: "Rate Proposal Rejected",
+        body: `Your rate proposal was rejected.${reviewNote ? ` Note: ${reviewNote}` : ""}`,
+        data: { proposalId },
+      });
+
       return NextResponse.json(updated);
     }
 
@@ -122,6 +132,14 @@ export async function POST(req: NextRequest) {
           reason: `Rate proposal approved (proposed by teacher)${reviewNote ? `: ${reviewNote}` : ""}`,
         },
       });
+    });
+
+    await createNotification({
+      userId: proposal.proposerId,
+      type: "RATE_PROPOSAL_APPROVED",
+      title: "Rate Proposal Approved!",
+      body: `Your rate proposal has been approved and is now active.${reviewNote ? ` Note: ${reviewNote}` : ""}`,
+      data: { proposalId },
     });
 
     return NextResponse.json({ success: true });

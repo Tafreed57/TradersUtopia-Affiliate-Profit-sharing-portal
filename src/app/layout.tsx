@@ -23,6 +23,11 @@ export const metadata: Metadata = {
   title: "TradersUtopia Affiliate Portal",
   description: "Track your affiliate commissions and marketing activity",
   manifest: "/manifest.json",
+  icons: [
+    { url: "/icons/icon-192x192.png", sizes: "192x192", type: "image/png" },
+    { url: "/icons/icon-512x512.png", sizes: "512x512", type: "image/png" },
+    { rel: "apple-touch-icon", url: "/icons/apple-touch-icon.png" },
+  ],
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",

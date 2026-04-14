@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { authOptions } from "@/lib/auth-options";
 import { PROMO_CODE_MAX_LENGTH, PROMO_CODE_MIN_LENGTH } from "@/lib/constants";
+import { createNotifications } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
 
 const requestSchema = z.object({
@@ -52,6 +53,26 @@ export async function POST(req: NextRequest) {
         status: "PENDING_TEACHER",
       },
     });
+
+    // Notify all teachers about the promo code request
+    const teachers = await prisma.teacherStudent.findMany({
+      where: { studentId: session.user.id, isActive: true, depth: 1 },
+      select: { teacherId: true },
+    });
+
+    const requesterName = session.user.name || session.user.email || "A student";
+
+    if (teachers.length > 0) {
+      await createNotifications(
+        teachers.map((t) => ({
+          userId: t.teacherId,
+          type: "PROMO_CODE_REQUEST_RECEIVED" as const,
+          title: "Promo Code Request",
+          body: `${requesterName} requested promo code "${normalizedCode}". Review it now.`,
+          data: { promoCodeRequestId: request.id },
+        }))
+      );
+    }
 
     return NextResponse.json(request, { status: 201 });
   } catch (error) {

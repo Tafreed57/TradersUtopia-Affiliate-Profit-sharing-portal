@@ -6,7 +6,7 @@
  * multi-teacher allocation, and CEO remainder calculation.
  */
 
-import { CommissionStatus, Prisma } from "@prisma/client";
+import { CommissionStatus, NotificationType, Prisma } from "@prisma/client";
 import Decimal from "decimal.js";
 
 import { TEACHER_CUT_WARN_THRESHOLD } from "@/lib/constants";
@@ -45,12 +45,21 @@ interface CommissionSplit {
   forfeitureReason: string | null;
 }
 
+interface NotificationItem {
+  userId: string;
+  type: NotificationType;
+  title: string;
+  body: string;
+  data?: Record<string, unknown>;
+}
+
 export interface ProcessingResult {
   success: boolean;
   skipped?: boolean;
   reason?: string;
   commissionsCreated?: number;
   warnings?: string[];
+  notifications?: NotificationItem[];
 }
 
 // ---------------------------------------------------------------------------
@@ -191,10 +200,45 @@ export async function processConversion(
 
   await prisma.commission.createMany({ data: commissionRecords });
 
+  // Build notifications
+  const notifications: NotificationItem[] = [];
+
+  if (forfeitedToCeo) {
+    // Affiliate missed attendance — forfeiture alert
+    notifications.push({
+      userId: affiliate.id,
+      type: "ATTENDANCE_FORFEITURE_ALERT",
+      title: "Commission Forfeited",
+      body: `You missed attendance on ${conversionDate.toLocaleDateString()} and your commission of $${affiliateCut.toFixed(2)} CAD was forfeited. Submit attendance to recover it.`,
+      data: { rewardfulCommissionId: conversion.rewardfulCommissionId },
+    });
+  } else {
+    // Affiliate earned a commission
+    notifications.push({
+      userId: affiliate.id,
+      type: "CONVERSION_RECEIVED",
+      title: "New Commission Earned!",
+      body: `You earned $${finalAffiliateCut.toFixed(2)} CAD from a new conversion.`,
+      data: { rewardfulCommissionId: conversion.rewardfulCommissionId },
+    });
+  }
+
+  // Notify teachers about the conversion
+  for (const tc of teacherCuts) {
+    notifications.push({
+      userId: tc.teacherId,
+      type: "CONVERSION_RECEIVED",
+      title: "Student Conversion",
+      body: `Your student earned a conversion. Your cut: $${tc.amount.toFixed(2)} CAD.`,
+      data: { rewardfulCommissionId: conversion.rewardfulCommissionId },
+    });
+  }
+
   return {
     success: true,
     commissionsCreated: commissionRecords.length,
     warnings: warnings.length > 0 ? warnings : undefined,
+    notifications,
   };
 }
 

@@ -44,11 +44,12 @@ export async function getCadToUsdRate(): Promise<ExchangeRateResult | null> {
 
   // Cache expired or missing — fetch fresh rate
   if (!EXCHANGE_RATE_API_KEY) {
-    // No API key configured — return stale cache if available
+    // No API key configured — return stale cache or hardcoded fallback
     if (cached) {
       return { rate: new Decimal(cached.rate.toString()), stale: true };
     }
-    return null;
+    // Fallback rate (~0.74 CAD→USD) when no API key and no cache
+    return { rate: new Decimal("0.74"), stale: true };
   }
 
   try {

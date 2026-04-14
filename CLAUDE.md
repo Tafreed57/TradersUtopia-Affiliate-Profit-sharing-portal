@@ -112,6 +112,13 @@ Notifications must be descriptive and actionable, not generic.
 - Has all regular views PLUS admin-only controls
 - Admin existence not disclosed in UI
 
+## Phase Plan
+
+Master phase plan (all phases, status, blockers) is in the Obsidian vault:
+`C:/Users/Tafre/Documents/Obsidian/Claude-Memory/projects/tradersutopia-affilate-portal/plans/phase-plan.md`
+
+Read it before starting new feature work to check current phase and blockers.
+
 ## References
 - Rewardful API docs: via `/rewardful` MCP server
 - Project instructions: `INSTRUTCIONS.txt`

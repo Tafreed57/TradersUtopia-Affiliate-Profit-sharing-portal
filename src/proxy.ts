@@ -7,7 +7,7 @@ function isPublic(pathname: string) {
   return publicPaths.some((p) => pathname.startsWith(p));
 }
 
-export async function middleware(req: NextRequest) {
+export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   if (isPublic(pathname)) return NextResponse.next();

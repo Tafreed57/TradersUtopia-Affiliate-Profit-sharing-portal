@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { authOptions } from "@/lib/auth-options";
 import { TEACHER_CUT_WARN_THRESHOLD } from "@/lib/constants";
+import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -201,6 +202,18 @@ export async function PATCH(
           reason: reason ?? null,
         },
       });
+
+      // Notify affiliate
+      await createNotification({
+        userId: id,
+        type: "COMMISSION_RATE_CHANGED",
+        title: "Commission Rate Updated",
+        body: `Your commission rate has been changed from ${currentUser.commissionPercent.toNumber()}% to ${commissionPercent}%.`,
+        data: {
+          previousPercent: currentUser.commissionPercent.toNumber(),
+          newPercent: commissionPercent,
+        },
+      });
     }
 
     if (canProposeRates !== undefined) {
@@ -218,6 +231,14 @@ export async function PATCH(
             isActive: true,
           },
           data: { isActive: false },
+        });
+
+        // Notify affiliate about deactivation
+        await createNotification({
+          userId: id,
+          type: "AFFILIATE_DEACTIVATED",
+          title: "Account Deactivated",
+          body: "Your affiliate account has been deactivated. Contact support for more information.",
         });
       }
     }

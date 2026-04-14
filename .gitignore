@@ -16,7 +16,11 @@ dist/
 .DS_Store
 *.pem
 .env
+*-firebase-adminsdk-*.json
+client_secret_*.json
 .mcp.json
+.playwright-mcp/
+tsconfig.tsbuildinfo
 .env.local
 .env.development.local
 .env.test.local
@@ -34,5 +38,10 @@ yarn-error.log*
 *.swo
 *~
 
+# Graphify
+graphify-out/
+
 # OS
 Thumbs.db
+
+.vercel
