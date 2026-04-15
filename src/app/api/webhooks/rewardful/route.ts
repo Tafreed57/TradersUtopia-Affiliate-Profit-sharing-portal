@@ -66,11 +66,14 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(result);
   } catch (error) {
-    const detail =
-      error instanceof Error
-        ? `${error.name}: ${error.message}\n${error.stack ?? ""}`
-        : JSON.stringify(error);
-    console.error(`Webhook processing error | ${detail}`);
+    if (error instanceof Error) {
+      console.error(`WHK_ERR_NAME | ${error.name}`);
+      console.error(`WHK_ERR_MSG | ${error.message}`);
+      const frames = (error.stack ?? "").split("\n").slice(1, 6);
+      frames.forEach((f, i) => console.error(`WHK_ERR_F${i} | ${f.trim()}`));
+    } else {
+      console.error(`WHK_ERR_RAW | ${JSON.stringify(error)}`);
+    }
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 }
