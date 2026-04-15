@@ -89,8 +89,8 @@ export async function POST(req: NextRequest) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function isConversionEvent(event: string | undefined): boolean {
-  if (!event) return false;
+function isConversionEvent(event: unknown): boolean {
+  if (typeof event !== "string" || event.length === 0) return false;
   const conversionEvents = [
     "conversion.created",
     "commission.created",

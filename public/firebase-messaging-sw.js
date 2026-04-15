@@ -2,7 +2,7 @@
 // Firebase Cloud Messaging Service Worker
 // Handles background push notifications and offline fallback.
 
-const CACHE_NAME = "tu-offline-v1";
+const CACHE_NAME = "tu-offline-v2";
 const OFFLINE_URL = "/offline.html";
 
 // Pre-cache the offline page on install
@@ -23,13 +23,21 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
-// Serve offline page when navigation fails
+// Serve offline page ONLY when the browser is actually offline.
+// Previously any transient fetch rejection (CDN blip, opaque redirect,
+// deployment cutover) served the cached offline page and users got stuck
+// seeing "internet offline" even with working connectivity.
 self.addEventListener("fetch", (event) => {
   if (event.request.mode !== "navigate") return;
   event.respondWith(
-    fetch(event.request).catch(() =>
-      caches.match(OFFLINE_URL).then((cached) => cached || new Response("Offline", { status: 503 }))
-    )
+    fetch(event.request).catch(() => {
+      if (self.navigator && self.navigator.onLine === false) {
+        return caches.match(OFFLINE_URL).then(
+          (cached) => cached || new Response("Offline", { status: 503 })
+        );
+      }
+      return new Response("Service unavailable", { status: 503 });
+    })
   );
 });
 
