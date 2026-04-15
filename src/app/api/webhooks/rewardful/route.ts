@@ -66,7 +66,11 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(result);
   } catch (error) {
-    console.error("Webhook processing error:", error);
+    const detail =
+      error instanceof Error
+        ? `${error.name}: ${error.message}\n${error.stack ?? ""}`
+        : JSON.stringify(error);
+    console.error(`Webhook processing error | ${detail}`);
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 }
