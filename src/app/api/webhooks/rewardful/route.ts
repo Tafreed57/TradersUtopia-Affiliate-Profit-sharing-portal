@@ -67,12 +67,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(result);
   } catch (error) {
     if (error instanceof Error) {
-      console.error(`WHK_ERR_NAME | ${error.name}`);
-      console.error(`WHK_ERR_MSG | ${error.message}`);
-      const frames = (error.stack ?? "").split("\n").slice(1, 6);
-      frames.forEach((f, i) => console.error(`WHK_ERR_F${i} | ${f.trim()}`));
+      const frames = (error.stack ?? "")
+        .split("\n")
+        .slice(1, 5)
+        .map((f) => f.trim().replace(/^at\s+/, ""))
+        .join(" << ");
+      console.error(
+        `WHK_ERR ${error.name}: ${error.message} @ ${frames}`
+      );
     } else {
-      console.error(`WHK_ERR_RAW | ${JSON.stringify(error)}`);
+      console.error(`WHK_ERR RAW ${JSON.stringify(error)}`);
     }
     return NextResponse.json(
       { error: "Internal server error" },
