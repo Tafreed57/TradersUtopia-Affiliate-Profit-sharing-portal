@@ -35,6 +35,9 @@ export async function linkRewardfulAffiliate(args: {
           backfillStatus: "NOT_STARTED",
         },
       });
+      console.log(
+        `[linkRewardfulAffiliate] linked existing ${normalizedEmail} -> ${existing.id}`
+      );
       return;
     }
 
@@ -60,6 +63,9 @@ export async function linkRewardfulAffiliate(args: {
       },
     });
 
+    console.log(
+      `[linkRewardfulAffiliate] auto-created ${normalizedEmail} -> ${created.id}`
+    );
     await notifyAdminOfAutoCreate({ newUserId: userId, email: normalizedEmail });
   } catch (err) {
     console.error(

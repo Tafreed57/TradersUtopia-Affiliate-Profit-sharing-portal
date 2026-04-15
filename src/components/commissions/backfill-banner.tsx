@@ -21,9 +21,14 @@ export function BackfillBanner() {
       if (!res.ok) throw new Error("failed");
       return res.json();
     },
-    refetchInterval: (q) =>
-      q.state.data?.status === "IN_PROGRESS" ? 15_000 : false,
-    refetchOnWindowFocus: false,
+    refetchInterval: (q) => {
+      const d = q.state.data;
+      if (!d) return false;
+      if (!d.linked) return 15_000;
+      if (d.status === "IN_PROGRESS") return 15_000;
+      return false;
+    },
+    refetchOnWindowFocus: true,
   });
 
   const kickoff = useMutation({
