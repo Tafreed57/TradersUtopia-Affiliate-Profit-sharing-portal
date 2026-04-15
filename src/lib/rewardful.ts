@@ -50,8 +50,15 @@ export interface RewardfulAffiliate {
   leads: number;
   conversions: number;
   campaign?: { id: string; name: string };
+  campaign_id?: string;
   links: { url: string; visitors: number }[];
   coupons: { id: string; code: string }[];
+  commission_stats?: {
+    total_commissions?: number;
+    paid_commissions?: number;
+    due_commissions?: number;
+    unpaid_commissions?: number;
+  };
   created_at: string;
   updated_at: string;
 }
@@ -149,10 +156,28 @@ export async function getAffiliate(id: string) {
 }
 
 export async function getAffiliateByEmail(email: string) {
-  const res = await listAffiliates({ limit: 100 });
-  return res.data.find(
-    (a) => a.email.toLowerCase() === email.toLowerCase()
-  ) ?? null;
+  const qs = new URLSearchParams({
+    email,
+    limit: "5",
+  });
+  qs.append("expand[]", "commission_stats");
+  const raw = await request<unknown>(`/affiliates?${qs}`);
+  const rows = extractPagedRows<RewardfulAffiliate>(raw, ["affiliates"]);
+  return (
+    rows.find((a) => a.email.toLowerCase() === email.toLowerCase()) ?? null
+  );
+}
+
+export async function createAffiliate(data: {
+  email: string;
+  first_name: string;
+  last_name: string;
+  campaign_id?: string;
+}) {
+  return request<RewardfulAffiliate>("/affiliates", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
 }
 
 export async function listCommissions(params?: {
@@ -214,4 +239,122 @@ export async function listCampaigns(params?: {
   return request<PaginatedResponse<RewardfulCampaign>>(
     `/campaigns${query}`
   );
+}
+
+// ---------------------------------------------------------------------------
+// Aggregate / paginated helpers
+// ---------------------------------------------------------------------------
+
+const PAGE_DELAY_MS = 250;
+const MAX_PAGES = 500;
+
+async function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function extractPagedRows<T>(raw: unknown, fallbackKeys: string[]): T[] {
+  const obj = raw as Record<string, unknown> | null;
+  if (!obj) return [];
+  if (Array.isArray(obj.data)) return obj.data as T[];
+  for (const key of fallbackKeys) {
+    if (Array.isArray(obj[key])) return obj[key] as T[];
+  }
+  return [];
+}
+
+function extractNextPage(raw: unknown, currentPage: number): number | null {
+  const pagination = (raw as { pagination?: Record<string, unknown> })
+    ?.pagination;
+  if (!pagination) return null;
+  const next = pagination.next_page;
+  if (typeof next !== "number") return null;
+  if (next <= currentPage) return null;
+  return next;
+}
+
+export async function listAllCommissionsForAffiliate(
+  affiliateId: string
+): Promise<RewardfulCommission[]> {
+  const all: RewardfulCommission[] = [];
+  let page = 1;
+  const limit = 100;
+  for (let i = 0; i < MAX_PAGES; i++) {
+    const qs = new URLSearchParams({
+      page: String(page),
+      limit: String(limit),
+      affiliate_id: affiliateId,
+    });
+    qs.append("expand[]", "sale");
+    qs.append("expand[]", "referral");
+    const raw = await request<unknown>(`/commissions?${qs}`);
+    all.push(...extractPagedRows<RewardfulCommission>(raw, ["commissions"]));
+    const next = extractNextPage(raw, page);
+    if (next === null) break;
+    page = next;
+    await sleep(PAGE_DELAY_MS);
+  }
+  return all;
+}
+
+export async function listAllReferralsForAffiliate(
+  affiliateId: string
+): Promise<RewardfulReferral[]> {
+  const all: RewardfulReferral[] = [];
+  let page = 1;
+  const limit = 100;
+  for (let i = 0; i < MAX_PAGES; i++) {
+    const qs = new URLSearchParams({
+      page: String(page),
+      limit: String(limit),
+    });
+    const raw = await request<unknown>(
+      `/affiliates/${affiliateId}/referrals?${qs}`
+    );
+    all.push(...extractPagedRows<RewardfulReferral>(raw, ["referrals"]));
+    const next = extractNextPage(raw, page);
+    if (next === null) break;
+    page = next;
+    await sleep(PAGE_DELAY_MS);
+  }
+  return all;
+}
+
+export interface AffiliateLifetimeStats {
+  visitors: number;
+  leads: number;
+  conversions: number;
+  conversionRate: number;
+  totalCommissionCents: number;
+  coupons: { id: string; code: string }[];
+  campaignId?: string;
+  fetchedAt: string;
+}
+
+export async function getAffiliateLifetimeStats(
+  affiliateId: string
+): Promise<AffiliateLifetimeStats> {
+  const qs = new URLSearchParams();
+  qs.append("expand[]", "commission_stats");
+  qs.append("expand[]", "coupons");
+  const affiliate = await request<RewardfulAffiliate>(
+    `/affiliates/${affiliateId}?${qs}`
+  );
+  const visitors = affiliate.visitors ?? 0;
+  const leads = affiliate.leads ?? 0;
+  const conversions = affiliate.conversions ?? 0;
+  const conversionRate = leads > 0 ? (conversions / leads) * 100 : 0;
+  return {
+    visitors,
+    leads,
+    conversions,
+    conversionRate,
+    totalCommissionCents:
+      affiliate.commission_stats?.total_commissions ?? 0,
+    coupons: (affiliate.coupons ?? []).map((c) => ({
+      id: c.id,
+      code: c.code,
+    })),
+    campaignId: affiliate.campaign?.id ?? affiliate.campaign_id,
+    fetchedAt: new Date().toISOString(),
+  };
 }

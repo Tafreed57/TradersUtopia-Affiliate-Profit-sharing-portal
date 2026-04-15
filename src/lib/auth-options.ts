@@ -4,6 +4,7 @@ import type { AuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import GoogleProvider from "next-auth/providers/google";
 
+import { linkRewardfulAffiliate } from "@/lib/auth-rewardful-link";
 import { ADMIN_EMAIL } from "@/lib/constants";
 import { prisma } from "@/lib/prisma";
 
@@ -52,6 +53,16 @@ export const authOptions: AuthOptions = {
     signIn: "/login",
     newUser: "/register",
   },
+  events: {
+    async createUser({ user }) {
+      if (!user.email || !user.id) return;
+      await linkRewardfulAffiliate({
+        userId: user.id,
+        email: user.email,
+        name: user.name,
+      });
+    },
+  },
   callbacks: {
     async signIn({ user }) {
       if (!user.email) return false;
@@ -59,6 +70,13 @@ export const authOptions: AuthOptions = {
         where: { email: user.email.toLowerCase() },
       });
       if (dbUser?.status === "DEACTIVATED") return false;
+      if (dbUser && !dbUser.rewardfulAffiliateId) {
+        await linkRewardfulAffiliate({
+          userId: dbUser.id,
+          email: dbUser.email,
+          name: dbUser.name,
+        });
+      }
       return true;
     },
     async jwt({ token, user }) {

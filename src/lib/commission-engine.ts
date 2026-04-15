@@ -69,8 +69,18 @@ export interface ProcessingResult {
 /**
  * Process a single conversion from a Rewardful webhook.
  */
+export interface ProcessConversionOptions {
+  /**
+   * When true, skip the attendance check and treat the conversion as if
+   * attendance was recorded. Used by the historical backfill job where
+   * attendance records don't exist for pre-portal dates.
+   */
+  skipAttendanceCheck?: boolean;
+}
+
 export async function processConversion(
-  conversion: WebhookConversion
+  conversion: WebhookConversion,
+  opts: ProcessConversionOptions = {}
 ): Promise<ProcessingResult> {
   const warnings: string[] = [];
 
@@ -133,8 +143,10 @@ export async function processConversion(
   // CEO gets the remainder (can be negative — signals admin needs to fix)
   const ceoCut = fullAmount.sub(affiliateCut).sub(totalTeacherCuts);
 
-  // 5. Check attendance for forfeiture
-  const hasAttendance = await checkAttendance(affiliate.id, conversionDate);
+  // 5. Check attendance for forfeiture (skipped during historical backfill)
+  const hasAttendance = opts.skipAttendanceCheck
+    ? true
+    : await checkAttendance(affiliate.id, conversionDate);
 
   let finalStatus: CommissionStatus;
   let forfeitedToCeo = false;

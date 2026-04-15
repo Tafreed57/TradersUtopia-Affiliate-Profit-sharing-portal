@@ -56,6 +56,13 @@ model User {
   commissionPercent    Decimal               @default(0) @db.Decimal(5, 2)
   canProposeRates      Boolean               @default(true)
   rewardfulAffiliateId String?               @unique
+  rewardfulEmail       String?
+  backfillStatus       RewardfulBackfillStatus @default(NOT_STARTED)
+  backfillStartedAt    DateTime?
+  backfillCompletedAt  DateTime?
+  backfillError        String?
+  lifetimeStatsCachedAt DateTime?
+  lifetimeStatsJson    Json?
   preferredCurrency    String                @default("CAD")
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @default(now()) @updatedAt
@@ -270,7 +277,15 @@ enum NotificationType {
   COMMISSION_RATE_CHANGED
   NEW_STUDENT_LINKED
   AFFILIATE_DEACTIVATED
+  AFFILIATE_AUTO_CREATED
   RATE_PROPOSAL_SUBMITTED
   RATE_PROPOSAL_APPROVED
   RATE_PROPOSAL_REJECTED
+}
+
+enum RewardfulBackfillStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETED
+  FAILED
 }

@@ -4,6 +4,8 @@ import { ArrowDownUp, DollarSign, Filter } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
+import { BackfillBanner } from "@/components/commissions/backfill-banner";
+import { LifetimeHeader } from "@/components/commissions/lifetime-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -130,6 +132,9 @@ export default function CommissionsPage() {
           )}
         </Button>
       </div>
+
+      <BackfillBanner />
+      <LifetimeHeader />
 
       {/* Filters */}
       <Card>
