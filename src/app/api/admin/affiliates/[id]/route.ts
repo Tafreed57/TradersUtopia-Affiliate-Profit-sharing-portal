@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { z } from "zod";
@@ -209,6 +210,9 @@ export async function PATCH(
       commissionPercent !== currentUser.commissionPercent.toNumber()
     ) {
       updateData.commissionPercent = commissionPercent;
+      // Bust cached lifetime-stats — amounts are rate-scaled, stale on rate change.
+      updateData.lifetimeStatsCachedAt = null;
+      updateData.lifetimeStatsJson = Prisma.JsonNull;
 
       // Create audit log
       await prisma.commissionRateAudit.create({
