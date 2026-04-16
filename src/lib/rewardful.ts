@@ -296,7 +296,7 @@ export async function listAllCommissionsForAffiliate(
       affiliate_id: affiliateId,
     });
     qs.append("expand[]", "sale");
-    qs.append("expand[]", "referral");
+    qs.append("expand[]", "campaign");
     const raw = await request<unknown>(`/commissions?${qs}`);
     all.push(...extractPagedRows<RewardfulCommission>(raw, ["commissions"]));
     const next = extractNextPage(raw, page);
