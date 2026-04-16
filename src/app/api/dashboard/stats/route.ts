@@ -25,20 +25,16 @@ export async function GET() {
   const monthEndStr = monthEnd.toISOString().slice(0, 10);
 
   const [
-    totalEarned,
+    lifetimeStatsUser,
     thisMonthEarned,
     commissionCount,
     attendanceThisMonth,
     recentCommissions,
   ] = await Promise.all([
-    // Total earned (all time, only EARNED status, affiliate's own records)
-    prisma.commission.aggregate({
-      where: {
-        affiliateId: userId,
-        teacherId: null,
-        status: "EARNED",
-      },
-      _sum: { affiliateCutCad: true },
+    // Total earned — use Rewardful-based lifetimeStatsJson (same source as /commissions page)
+    prisma.user.findUnique({
+      where: { id: userId },
+      select: { lifetimeStatsJson: true },
     }),
 
     // This month earned
@@ -69,13 +65,14 @@ export async function GET() {
       },
     }),
 
-    // 5 most recent commissions
+    // 5 most recent commissions — secondary sort by createdAt desc for deterministic ordering
+    // when duplicate rows share the same conversionDate
     prisma.commission.findMany({
       where: {
         affiliateId: userId,
         teacherId: null,
       },
-      orderBy: { conversionDate: "desc" },
+      orderBy: [{ conversionDate: "desc" }, { createdAt: "desc" }],
       take: 5,
       select: {
         id: true,
@@ -87,8 +84,13 @@ export async function GET() {
     }),
   ]);
 
+  const lifetimeStats = lifetimeStatsUser?.lifetimeStatsJson as
+    | { grossEarnedCad?: number }
+    | null
+    | undefined;
+
   return NextResponse.json({
-    totalEarnedCad: totalEarned._sum.affiliateCutCad?.toNumber() ?? 0,
+    totalEarnedCad: lifetimeStats?.grossEarnedCad ?? 0,
     thisMonthEarnedCad:
       thisMonthEarned._sum.affiliateCutCad?.toNumber() ?? 0,
     commissionCount,
