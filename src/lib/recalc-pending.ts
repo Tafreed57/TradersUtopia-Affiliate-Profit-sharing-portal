@@ -50,6 +50,7 @@ export async function runRecalcPending(
       forfeitureReason: "rate_not_set",
     },
     select: {
+      id: true,
       rewardfulCommissionId: true,
       fullAmountCad: true,
       conversionDate: true,
@@ -125,6 +126,7 @@ export async function runRecalcPending(
 
   // Track processed rows so we can compensate if rate drifts mid-recalc.
   const processed: Array<{
+    id: string;
     rewardfulCommissionId: string;
     fullAmountCad: string;
     conversionDate: Date;
@@ -162,11 +164,14 @@ export async function runRecalcPending(
     }
 
     // 5a. Update the affiliate row.
+    // Scope by `id` so siblings sharing rewardfulCommissionId (duplicate rows
+    // from the @@index idempotency gap) are not silently committed here and
+    // left unrecorded in `processed`. status+forfeitureReason guards remain
+    // so a concurrent recalc that already processed this row returns count=0
+    // and the loop skips it.
     const affiliateRes = await prisma.commission.updateMany({
       where: {
-        affiliateId,
-        rewardfulCommissionId: row.rewardfulCommissionId,
-        teacherId: null,
+        id: row.id,
         status: "PENDING",
         forfeitureReason: "rate_not_set",
       },
@@ -183,6 +188,7 @@ export async function runRecalcPending(
     if (affiliateRes.count === 0) continue; // already processed by a concurrent recalc
     affiliateRowsUpdated += 1;
     processed.push({
+      id: row.id,
       rewardfulCommissionId: row.rewardfulCommissionId,
       fullAmountCad: row.fullAmountCad.toString(),
       conversionDate: row.conversionDate,
@@ -316,24 +322,23 @@ export async function runRecalcPending(
         ceoCutCad: correctedCeoCut.toDecimalPlaces(2).toNumber(),
       };
 
-      // Re-price affiliate row.
-      await prisma.commission.updateMany({
-        where: {
-          affiliateId,
-          rewardfulCommissionId: p.rewardfulCommissionId,
-          teacherId: null,
-          status: p.hadAttendance ? "EARNED" : "FORFEITED",
-        },
+      // Re-price affiliate row by its exact ID — collision-safe regardless of
+      // rate, status, or any other row sharing the same rewardfulCommissionId.
+      await prisma.commission.update({
+        where: { id: p.id },
         data: correctedAffiliateData,
       });
 
-      // Re-price teacher rows — they carry the same denormalized
-      // affiliateCutPercent / affiliateCutCad / ceoCutCad fields.
+      // Re-price teacher rows.
+      // affiliateCutPercent: currentRate scopes to only rows this recalc
+      // touched (step 5b wrote currentRate to every teacher row it synced),
+      // preventing re-pricing of rows from other code paths.
       await prisma.commission.updateMany({
         where: {
           affiliateId,
           rewardfulCommissionId: p.rewardfulCommissionId,
           teacherId: { not: null },
+          affiliateCutPercent: currentRate.toDecimalPlaces(2).toNumber(),
         },
         data: correctedAffiliateData,
       });
