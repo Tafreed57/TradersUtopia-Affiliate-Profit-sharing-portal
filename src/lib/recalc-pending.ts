@@ -272,6 +272,6 @@ export async function runRecalcPending(
         newRate: currentRate.toDecimalPlaces(2).toNumber(),
       };
     },
-    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+    { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
   );
 }
