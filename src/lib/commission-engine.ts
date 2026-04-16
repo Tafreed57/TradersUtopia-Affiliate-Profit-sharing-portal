@@ -144,10 +144,10 @@ export async function processConversion(
   const ceoCut = fullAmount.sub(affiliateCut).sub(totalTeacherCuts);
 
   // 5. Rate-gate: if admin hasn't set the affiliate's commission rate,
-  // park the AFFILIATE row as PENDING. Teacher rows stay EARNED — teachers
-  // already have their cut configured and don't depend on the student's
-  // rate. CEO holds the affiliate's share until admin runs "Recalculate at
-  // current rate".
+  // park the AFFILIATE row as PENDING. Teacher rows don't wait on the
+  // rate-gate (teachers have their own cuts), but they still follow the
+  // same attendance-forfeiture rule as the normal path. CEO holds the
+  // affiliate's share until admin runs "Recalculate at current rate".
   const isRateNotSet = affiliatePercent.eq(0);
 
   // Per-row outcome: the conversion event has one status for the affiliate
@@ -161,32 +161,41 @@ export async function processConversion(
   let finalAffiliateCut: Decimal;
   let finalCeoCut: Decimal;
 
+  // 6. Attendance is evaluated up-front so teacher-row status is consistent
+  // across the rate-gate and non-rate-gate branches. A no-attendance
+  // conversion forfeits teacher rows regardless of whether the affiliate's
+  // rate is set — otherwise a rate-gated-then-recalc path would silently
+  // flip teachers from PENDING→EARNED without revisiting attendance.
+  const hasAttendance = opts.skipAttendanceCheck
+    ? true
+    : await checkAttendance(affiliate.id, conversionDate);
+
   if (isRateNotSet) {
     affiliateStatus = "PENDING";
     affiliateReason = "rate_not_set";
-    teacherStatus = "EARNED";
+    // Teacher rows don't wait for the rate-gate (teachers have their own
+    // cuts configured), but they still respect attendance forfeiture.
+    teacherStatus = hasAttendance ? "EARNED" : "FORFEITED";
+    teacherReason = hasAttendance
+      ? null
+      : "No attendance submitted for conversion date";
     finalAffiliateCut = new Decimal(0);
     finalCeoCut = ceoCut;
+  } else if (!hasAttendance) {
+    // Forfeit affiliate cut → goes to CEO. Teacher rows also FORFEITED
+    // as a label; teacherCutCad still credits their amount per product rule.
+    affiliateStatus = "FORFEITED";
+    affiliateForfeitedToCeo = true;
+    affiliateReason = "No attendance submitted for conversion date";
+    teacherStatus = "FORFEITED";
+    teacherReason = "No attendance submitted for conversion date";
+    finalAffiliateCut = new Decimal(0);
+    finalCeoCut = ceoCut.add(affiliateCut);
   } else {
-    // 6. Attendance-based forfeiture (skipped during historical backfill).
-    const hasAttendance = opts.skipAttendanceCheck
-      ? true
-      : await checkAttendance(affiliate.id, conversionDate);
-    if (!hasAttendance) {
-      // Forfeit affiliate cut → goes to CEO. Teachers still get theirs.
-      affiliateStatus = "FORFEITED";
-      affiliateForfeitedToCeo = true;
-      affiliateReason = "No attendance submitted for conversion date";
-      teacherStatus = "FORFEITED";
-      teacherReason = "No attendance submitted for conversion date";
-      finalAffiliateCut = new Decimal(0);
-      finalCeoCut = ceoCut.add(affiliateCut);
-    } else {
-      affiliateStatus = "EARNED";
-      teacherStatus = "EARNED";
-      finalAffiliateCut = affiliateCut;
-      finalCeoCut = ceoCut;
-    }
+    affiliateStatus = "EARNED";
+    teacherStatus = "EARNED";
+    finalAffiliateCut = affiliateCut;
+    finalCeoCut = ceoCut;
   }
 
   // 7. Persist commission rows (one per recipient: affiliate + each teacher)
