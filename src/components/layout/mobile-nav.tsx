@@ -15,6 +15,7 @@ import { usePathname } from "next/navigation";
 
 import { cn } from "@/lib/utils";
 import { useAdmin } from "@/hooks/use-admin";
+import { useIsTeacher } from "@/hooks/use-teacher";
 
 const navItems = [
   { href: "/", label: "Dashboard", icon: Home },
@@ -29,6 +30,7 @@ const navItems = [
 export function MobileNav() {
   const pathname = usePathname();
   const isAdmin = useAdmin();
+  const isTeacher = useIsTeacher();
 
   return (
     <div className="flex h-full flex-col bg-sidebar">
@@ -43,7 +45,7 @@ export function MobileNav() {
 
       <nav className="flex-1 space-y-1 p-4">
         {navItems.map((item) => {
-          if (item.teacherOnly) return null;
+          if (item.teacherOnly && !isTeacher && !isAdmin) return null;
           const active =
             pathname === item.href ||
             (item.href !== "/" && pathname.startsWith(item.href));

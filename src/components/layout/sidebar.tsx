@@ -15,6 +15,7 @@ import { usePathname } from "next/navigation";
 
 import { cn } from "@/lib/utils";
 import { useAdmin } from "@/hooks/use-admin";
+import { useIsTeacher } from "@/hooks/use-teacher";
 
 const navItems = [
   { href: "/", label: "Dashboard", icon: Home },
@@ -33,6 +34,7 @@ const adminItems = [
 export function Sidebar() {
   const pathname = usePathname();
   const isAdmin = useAdmin();
+  const isTeacher = useIsTeacher();
 
   return (
     <aside className="hidden lg:flex lg:w-64 lg:flex-col lg:border-r lg:border-border/50 bg-sidebar">
@@ -47,7 +49,7 @@ export function Sidebar() {
 
       <nav className="flex-1 space-y-1 p-4">
         {navItems.map((item) => {
-          if (item.teacherOnly) return null; // TODO: show only for teachers
+          if (item.teacherOnly && !isTeacher && !isAdmin) return null;
           const active =
             pathname === item.href ||
             (item.href !== "/" && pathname.startsWith(item.href));
