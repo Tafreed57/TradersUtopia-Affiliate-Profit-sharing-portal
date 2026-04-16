@@ -79,9 +79,10 @@ export async function runBackfill(userId: string): Promise<{
         else if (result.success) imported++;
         else failed++;
       } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const stack = err instanceof Error ? err.stack?.replace(/\n/g, " | ") : "";
         console.error(
-          `[backfill] commission ${commission.id} failed:`,
-          err
+          `[backfill] commission ${commission.id} failed: ${msg} | stack: ${stack}`
         );
         failed++;
       }
@@ -109,12 +110,17 @@ export async function runBackfill(userId: string): Promise<{
     });
     return { imported, skipped, failed, status: "COMPLETED" };
   } catch (err) {
-    console.error(`[backfill] runBackfill failed for ${userId}:`, err);
+    const msg = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack?.replace(/\n/g, " | ") : "";
+    const name = err instanceof Error ? err.name : "UnknownError";
+    console.error(
+      `[backfill] runBackfill failed for ${userId}: ${name}: ${msg} | stack: ${stack}`
+    );
     await prisma.user.update({
       where: { id: userId },
       data: {
         backfillStatus: "FAILED",
-        backfillError: "Import failed — please retry later",
+        backfillError: `Import failed (${name}): ${msg}`.slice(0, 500),
       },
     });
     return { imported, skipped, failed, status: "FAILED" };
