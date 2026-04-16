@@ -15,9 +15,11 @@ interface LifetimeStatsPayload {
   leads: number;
   conversions: number;
   conversionRate: number;
-  paidRatio: number;
-  unpaidRatio: number;
-  dueRatio: number;
+  /** Rewardful total commission × affiliateRate% (CAD) */
+  grossEarnedCad: number;
+  paidCad: number;
+  unpaidCad: number;
+  dueCad: number;
   coupons: Array<{ id: string; code: string }>;
   fetchedAt: string;
 }
@@ -42,6 +44,7 @@ export async function GET() {
       rewardfulAffiliateId: true,
       lifetimeStatsJson: true,
       lifetimeStatsCachedAt: true,
+      commissionPercent: true,
     },
   });
   if (!user?.rewardfulAffiliateId) {
@@ -51,40 +54,43 @@ export async function GET() {
     );
   }
 
-  const grossEarnedAgg = await prisma.commission.aggregate({
-    where: { affiliateId: userId, teacherId: null, status: "EARNED" },
-    _sum: { affiliateCutCad: true },
-  });
-  const grossEarnedCad = Number(grossEarnedAgg._sum.affiliateCutCad ?? 0);
+  const affiliateRate = Number(user.commissionPercent);
 
+  // Guard against old ratio-based cache format (pre v2) — treat as stale.
+  const cachedPayload = user.lifetimeStatsJson as unknown as LifetimeStatsPayload | null;
   const cachedFresh =
-    user.lifetimeStatsJson &&
+    cachedPayload &&
     user.lifetimeStatsCachedAt &&
-    Date.now() - user.lifetimeStatsCachedAt.getTime() < CACHE_TTL_MS;
+    Date.now() - user.lifetimeStatsCachedAt.getTime() < CACHE_TTL_MS &&
+    cachedPayload.paidCad !== undefined; // v2 format check
 
   if (cachedFresh) {
-    const cached = user.lifetimeStatsJson as unknown as LifetimeStatsPayload;
     return NextResponse.json({
-      ...cached,
-      grossEarnedCad,
+      ...cachedPayload,
       cachedAt: user.lifetimeStatsCachedAt,
       stale: false,
     });
   }
 
+  // Convert Rewardful cents to CAD at the affiliate's commission rate.
+  // Formula: Math.round(cents * rate / 100) / 100  →  dollars to 2dp
+  const applyRate = (cents: number) =>
+    Math.round(cents * affiliateRate / 100) / 100;
+
   try {
     const stats = await rewardful.getAffiliateLifetimeStats(
       user.rewardfulAffiliateId
     );
-    const totalCents = stats.totalCommissionCents;
+
     const payload: LifetimeStatsPayload = {
       visitors: stats.visitors,
       leads: stats.leads,
       conversions: stats.conversions,
       conversionRate: stats.conversionRate,
-      paidRatio: totalCents > 0 ? stats.paidCents / totalCents : 0,
-      unpaidRatio: totalCents > 0 ? stats.unpaidCents / totalCents : 0,
-      dueRatio: totalCents > 0 ? stats.dueCents / totalCents : 0,
+      grossEarnedCad: applyRate(stats.totalCommissionCents),
+      paidCad: applyRate(stats.paidCents),
+      unpaidCad: applyRate(stats.unpaidCents),
+      dueCad: applyRate(stats.dueCents),
       coupons: stats.coupons,
       fetchedAt: stats.fetchedAt,
     };
@@ -99,7 +105,6 @@ export async function GET() {
 
     return NextResponse.json({
       ...payload,
-      grossEarnedCad,
       cachedAt: new Date().toISOString(),
       stale: false,
     });
@@ -139,11 +144,10 @@ export async function GET() {
       );
     }
 
-    if (user.lifetimeStatsJson) {
-      const cached = user.lifetimeStatsJson as unknown as LifetimeStatsPayload;
+    // Return stale cache if available (v2 format only).
+    if (cachedPayload?.paidCad !== undefined) {
       return NextResponse.json({
-        ...cached,
-        grossEarnedCad,
+        ...cachedPayload,
         cachedAt: user.lifetimeStatsCachedAt,
         stale: true,
       });

@@ -9,9 +9,9 @@ import { useCurrency } from "@/providers/currency-provider";
 
 interface LifetimeStats {
   grossEarnedCad: number;
-  paidRatio: number;
-  unpaidRatio: number;
-  dueRatio: number;
+  paidCad: number;
+  unpaidCad: number;
+  dueCad: number;
   stale?: boolean;
   cachedAt?: string;
 }
@@ -82,14 +82,16 @@ export function EarningsSummary() {
   if (isLoading) return <Skeleton className="h-48 w-full" />;
   if (isError || !data || data.grossEarnedCad <= 0) return null;
 
-  const paidR = Math.max(0, Math.min(1, data.paidRatio ?? 0));
-  const unpaidR = Math.max(0, Math.min(1, data.unpaidRatio ?? 0));
-  const dueR = Math.max(0, Math.min(1, data.dueRatio ?? 0));
-
+  const paid = Math.max(0, data.paidCad ?? 0);
+  const unpaid = Math.max(0, data.unpaidCad ?? 0);
+  const due = Math.max(0, data.dueCad ?? 0);
   const gross = data.grossEarnedCad;
-  const paid = gross * paidR;
-  const unpaid = gross * unpaidR;
-  const due = gross * dueR;
+
+  // Proportions for the progress bar only — computed from absolute amounts.
+  const total = paid + unpaid + due;
+  const paidR = total > 0 ? paid / total : 0;
+  const unpaidR = total > 0 ? unpaid / total : 0;
+  const dueR = total > 0 ? due / total : 0;
 
   const fmtPct = (r: number) => `${(r * 100).toFixed(0)}%`;
 
@@ -127,7 +129,7 @@ export function EarningsSummary() {
             amount={format(paid)}
             percent={fmtPct(paidR)}
           />
-          {dueR > 0 && (
+          {due > 0 && (
             <Row
               color="bg-info"
               label="Due Now"

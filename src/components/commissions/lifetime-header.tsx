@@ -98,7 +98,7 @@ export function LifetimeHeader() {
         />
         <StatCard
           icon={<DollarSign className="h-4 w-4" />}
-          label="Gross earned to you"
+          label="Total earned"
           value={format(data.grossEarnedCad)}
         />
       </div>
