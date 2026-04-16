@@ -1,8 +1,9 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 
 import { authOptions } from "@/lib/auth-options";
 import { linkRewardfulAffiliate } from "@/lib/auth-rewardful-link";
+import { runBackfill } from "@/lib/backfill-service";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -53,6 +54,27 @@ export async function GET() {
     if (!user) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
+  }
+
+  // Stale-lock recovery: if a prior background job claimed the lock but
+  // never finished (crashed silently in `after()`), restart it here.
+  // Matches the 10-min threshold in `runBackfill`'s atomic claim, and
+  // re-runs the job via `after()` so the user doesn't have to refresh —
+  // the existing BackfillBanner `kickedRef` guard would otherwise prevent
+  // a client-side retry once it has fired.
+  if (
+    user.backfillStatus === "IN_PROGRESS" &&
+    user.backfillStartedAt &&
+    Date.now() - user.backfillStartedAt.getTime() > 10 * 60 * 1000
+  ) {
+    const userId = session.user.id;
+    after(async () => {
+      try {
+        await runBackfill(userId);
+      } catch (err) {
+        console.error(`[backfill] stale-lock recovery failed for ${userId}:`, err);
+      }
+    });
   }
 
   return NextResponse.json({
