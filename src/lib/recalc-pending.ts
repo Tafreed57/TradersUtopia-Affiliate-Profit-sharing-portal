@@ -123,6 +123,14 @@ export async function runRecalcPending(
   let teacherRowsAffected = 0;
   const noAttendanceReason = "No attendance submitted for conversion date";
 
+  // Track processed rows so we can compensate if rate drifts mid-recalc.
+  const processed: Array<{
+    rewardfulCommissionId: string;
+    fullAmountCad: string;
+    conversionDate: Date;
+    hadAttendance: boolean;
+  }> = [];
+
   for (const row of pendingRows) {
     if (!row.rewardfulCommissionId) continue;
 
@@ -174,6 +182,12 @@ export async function runRecalcPending(
 
     if (affiliateRes.count === 0) continue; // already processed by a concurrent recalc
     affiliateRowsUpdated += 1;
+    processed.push({
+      rewardfulCommissionId: row.rewardfulCommissionId,
+      fullAmountCad: row.fullAmountCad.toString(),
+      conversionDate: row.conversionDate,
+      hadAttendance: hadAttendance,
+    });
 
     // 5b. Sync teacher rows. Two-pass to avoid double-counting.
     // Order matters: sync first, then flip. If we flipped first, Pass A's
@@ -270,20 +284,56 @@ export async function runRecalcPending(
     });
   }
 
-  // 7. Rate drift check (informational — no transaction to rollback).
-  // A concurrent rate PATCH mid-recalc would cause some rows to use a stale rate.
-  // In practice this window is milliseconds wide and an admin re-run resolves it.
+  // 7. Rate drift compensation.
+  // Without a transaction, a concurrent PATCH could change the rate after we
+  // read it but before we finish. Re-read the rate; if it changed, re-price the
+  // rows we just committed so they reflect the current rate rather than the
+  // stale one. This keeps the rows correct without needing a DB transaction.
   const verifiedUser = await prisma.user.findUnique({
     where: { id: affiliateId },
     select: { commissionPercent: true },
   });
   const verifiedRate = new Decimal(verifiedUser!.commissionPercent.toString());
-  if (!verifiedRate.eq(currentRate)) {
+  if (!verifiedRate.eq(currentRate) && processed.length > 0) {
     console.error(
-      `[recalc] rate drifted during recalc for affiliate ${affiliateId}: ` +
-        `used ${currentRate.toFixed(2)}% but current rate is ${verifiedRate.toFixed(2)}%. ` +
-        `Re-run recalc to correct remaining rows.`
+      `[recalc] rate drifted mid-recalc for affiliate ${affiliateId}: ` +
+        `${currentRate.toFixed(2)}% → ${verifiedRate.toFixed(2)}%. Re-pricing ${processed.length} rows.`
     );
+    for (const p of processed) {
+      const fullAmount = new Decimal(p.fullAmountCad);
+      const teacherCutTotal =
+        teacherCutsByCommission.get(p.rewardfulCommissionId) ?? new Decimal(0);
+      const correctedCut = fullAmount.mul(verifiedRate).div(100);
+      const correctedCeoCut = p.hadAttendance
+        ? fullAmount.sub(correctedCut).sub(teacherCutTotal)
+        : fullAmount.sub(teacherCutTotal);
+
+      await prisma.commission.updateMany({
+        where: {
+          affiliateId,
+          rewardfulCommissionId: p.rewardfulCommissionId,
+          teacherId: null,
+          // Only reprice EARNED or FORFEITED rows we just wrote — not any
+          // genuinely pre-existing FORFEITED rows (which would have a
+          // different forfeitureReason).
+          status: p.hadAttendance ? "EARNED" : "FORFEITED",
+        },
+        data: {
+          affiliateCutPercent: verifiedRate.toDecimalPlaces(2).toNumber(),
+          affiliateCutCad: p.hadAttendance
+            ? correctedCut.toDecimalPlaces(2).toNumber()
+            : 0,
+          ceoCutCad: correctedCeoCut.toDecimalPlaces(2).toNumber(),
+        },
+      });
+    }
+    // Return the corrected rate so the caller shows the right value.
+    return {
+      kind: "ok" as const,
+      updated: affiliateRowsUpdated,
+      teacherRowsAffected,
+      newRate: verifiedRate.toDecimalPlaces(2).toNumber(),
+    };
   }
 
   return {
