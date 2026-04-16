@@ -15,6 +15,9 @@ interface LifetimeStatsPayload {
   leads: number;
   conversions: number;
   conversionRate: number;
+  paidRatio: number;
+  unpaidRatio: number;
+  dueRatio: number;
   coupons: Array<{ id: string; code: string }>;
   fetchedAt: string;
 }
@@ -73,11 +76,15 @@ export async function GET() {
     const stats = await rewardful.getAffiliateLifetimeStats(
       user.rewardfulAffiliateId
     );
+    const totalCents = stats.totalCommissionCents;
     const payload: LifetimeStatsPayload = {
       visitors: stats.visitors,
       leads: stats.leads,
       conversions: stats.conversions,
       conversionRate: stats.conversionRate,
+      paidRatio: totalCents > 0 ? stats.paidCents / totalCents : 0,
+      unpaidRatio: totalCents > 0 ? stats.unpaidCents / totalCents : 0,
+      dueRatio: totalCents > 0 ? stats.dueCents / totalCents : 0,
       coupons: stats.coupons,
       fetchedAt: stats.fetchedAt,
     };

@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { Loader2 } from "lucide-react";
 
 interface BackfillStatus {
@@ -42,13 +42,20 @@ export function BackfillBanner() {
     },
   });
 
+  const kickedRef = useRef(false);
+
   useEffect(() => {
     if (!data) return;
     if (!data.linked) return;
-    if (data.status === "NOT_STARTED" || data.status === "FAILED") {
+    if (
+      (data.status === "NOT_STARTED" || data.status === "FAILED") &&
+      !kickedRef.current
+    ) {
+      kickedRef.current = true;
       kickoff.mutate();
     }
-  }, [data, kickoff]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
 
   useEffect(() => {
     if (data?.status === "COMPLETED") {

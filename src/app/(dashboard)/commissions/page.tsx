@@ -5,6 +5,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { BackfillBanner } from "@/components/commissions/backfill-banner";
+import { EarningsSummary } from "@/components/commissions/earnings-summary";
 import { LifetimeHeader } from "@/components/commissions/lifetime-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -135,6 +136,7 @@ export default function CommissionsPage() {
 
       <BackfillBanner />
       <LifetimeHeader />
+      <EarningsSummary />
 
       {/* Filters */}
       <Card>

@@ -58,6 +58,17 @@ export interface RewardfulAffiliate {
     paid_commissions?: number;
     due_commissions?: number;
     unpaid_commissions?: number;
+    currencies?: Record<
+      string,
+      {
+        paid?: { cents: number };
+        unpaid?: { cents: number };
+        due?: { cents: number };
+        total?: { cents: number };
+        gross_revenue?: { cents: number };
+        net_revenue?: { cents: number };
+      }
+    >;
   };
   created_at: string;
   updated_at: string;
@@ -325,6 +336,9 @@ export interface AffiliateLifetimeStats {
   conversions: number;
   conversionRate: number;
   totalCommissionCents: number;
+  paidCents: number;
+  unpaidCents: number;
+  dueCents: number;
   coupons: { id: string; code: string }[];
   campaignId?: string;
   fetchedAt: string;
@@ -343,13 +357,24 @@ export async function getAffiliateLifetimeStats(
   const leads = affiliate.leads ?? 0;
   const conversions = affiliate.conversions ?? 0;
   const conversionRate = leads > 0 ? (conversions / leads) * 100 : 0;
+
+  const cs = affiliate.commission_stats;
+  const cad = cs?.currencies?.CAD;
+
+  const totalCents = cad?.total?.cents ?? cs?.total_commissions ?? 0;
+  const paidCents = cad?.paid?.cents ?? cs?.paid_commissions ?? 0;
+  const unpaidCents = cad?.unpaid?.cents ?? cs?.unpaid_commissions ?? 0;
+  const dueCents = cad?.due?.cents ?? cs?.due_commissions ?? 0;
+
   return {
     visitors,
     leads,
     conversions,
     conversionRate,
-    totalCommissionCents:
-      affiliate.commission_stats?.total_commissions ?? 0,
+    totalCommissionCents: totalCents,
+    paidCents,
+    unpaidCents,
+    dueCents,
     coupons: (affiliate.coupons ?? []).map((c) => ({
       id: c.id,
       code: c.code,
