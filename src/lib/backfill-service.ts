@@ -148,7 +148,7 @@ function mapCommissionToConversion(
   // full sale amount. Falling back to it would silently store a wrong
   // fullAmountCad and produce incorrect commission splits.
   if (!commission.sale) return null;
-  const amountRaw = commission.sale.amount;
+  const amountRaw = commission.sale.sale_amount_cents;
   if (typeof amountRaw !== "number") return null;
   const amountCad = amountRaw / 100;
 

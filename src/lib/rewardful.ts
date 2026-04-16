@@ -82,10 +82,12 @@ export interface RewardfulCommission {
   paid_at: string | null;
   sale?: {
     id: string;
-    amount: number;
     currency: string;
     charged_at: string;
     refunded_at: string | null;
+    sale_amount_cents: number;
+    charge_amount_cents: number;
+    refund_amount_cents: number;
     customer?: {
       id: string;
       email: string;
