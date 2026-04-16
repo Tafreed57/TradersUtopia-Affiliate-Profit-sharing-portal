@@ -103,8 +103,25 @@ export async function runRecalcPending(
     select: { date: true },
   });
   const attendanceSet = new Set(allAttendance.map((a) => a.date));
+  // Earliest attendance date — used for the grace rule below.
+  const earliestAttendanceDate =
+    allAttendance.length > 0
+      ? allAttendance.reduce(
+          (min, a) => (a.date < min ? a.date : min),
+          allAttendance[0].date
+        )
+      : null;
 
   function hasAttendanceFor(conversionDate: Date): boolean {
+    const convDateStr = conversionDate.toISOString().slice(0, 10);
+
+    // Grace rule: if no attendance was submitted on or before the conversion
+    // date the affiliate is exempt — the requirement wasn't active yet.
+    if (!earliestAttendanceDate || earliestAttendanceDate > convDateStr) {
+      return true;
+    }
+
+    // Attendance tracking is active — apply the normal ±1-day window.
     const d0 = new Date(conversionDate);
     const prev = new Date(d0);
     prev.setUTCDate(prev.getUTCDate() - 1);
@@ -112,7 +129,7 @@ export async function runRecalcPending(
     next.setUTCDate(next.getUTCDate() + 1);
     return (
       attendanceSet.has(prev.toISOString().slice(0, 10)) ||
-      attendanceSet.has(d0.toISOString().slice(0, 10)) ||
+      attendanceSet.has(convDateStr) ||
       attendanceSet.has(next.toISOString().slice(0, 10))
     );
   }

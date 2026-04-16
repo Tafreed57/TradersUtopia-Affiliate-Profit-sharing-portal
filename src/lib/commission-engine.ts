@@ -323,36 +323,47 @@ async function getTeacherChain(
 
 /**
  * Check if the affiliate submitted attendance for the conversion date.
- * Converts to the affiliate's stored timezone to determine "the day".
+ *
+ * Grace rule: if the affiliate has never submitted attendance for any date
+ * on or before the conversion date, they are exempt and this returns true.
+ * This covers brand-new affiliates, backfilled historical commissions, and
+ * anyone whose first-ever attendance post-dates this conversion — they didn't
+ * know the requirement existed yet.
+ *
+ * Once the affiliate has at least one attendance record on or before the
+ * conversion date, the normal ±1-day window applies as the ongoing commitment
+ * signal.
  */
 async function checkAttendance(
   userId: string,
   conversionDate: Date
 ): Promise<boolean> {
-  // Get the conversion date as YYYY-MM-DD in UTC
-  // The attendance records store dates in the user's local timezone as YYYY-MM-DD.
-  // We need to check if there's attendance for the same calendar date.
-  //
-  // Strategy: look for attendance on the UTC date and +/- 1 day to handle
-  // timezone differences, then verify the match using the stored timezone.
   const utcDate = conversionDate.toISOString().slice(0, 10);
 
-  // Also check adjacent dates to handle timezone edge cases
+  // Grace rule: no attendance on or before this date → exempt.
+  const anyPrior = await prisma.attendance.findFirst({
+    where: { userId, date: { lte: utcDate } },
+    select: { date: true },
+  });
+  if (!anyPrior) return true;
+
+  // Attendance tracking is active — check the ±1-day window for timezone
+  // edge cases (affiliate's local day vs UTC conversion timestamp).
   const prevDate = new Date(conversionDate);
   prevDate.setUTCDate(prevDate.getUTCDate() - 1);
   const nextDate = new Date(conversionDate);
   nextDate.setUTCDate(nextDate.getUTCDate() + 1);
 
-  const datesToCheck = [
-    prevDate.toISOString().slice(0, 10),
-    utcDate,
-    nextDate.toISOString().slice(0, 10),
-  ];
-
   const attendance = await prisma.attendance.findFirst({
     where: {
       userId,
-      date: { in: datesToCheck },
+      date: {
+        in: [
+          prevDate.toISOString().slice(0, 10),
+          utcDate,
+          nextDate.toISOString().slice(0, 10),
+        ],
+      },
     },
   });
 
