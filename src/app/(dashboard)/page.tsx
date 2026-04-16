@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { BackfillBanner } from "@/components/commissions/backfill-banner";
 import { RateNotSetBanner } from "@/components/commissions/rate-not-set-banner";
 import { useCurrency } from "@/providers/currency-provider";
 
@@ -196,6 +197,7 @@ export default function DashboardPage() {
         </Card>
       </div>
 
+      <BackfillBanner />
       <RateNotSetBanner />
 
       <div className="grid gap-6 lg:grid-cols-2">
