@@ -3,6 +3,7 @@
 import { CalendarCheck, DollarSign, Send, Users } from "lucide-react";
 import { useCallback, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -57,9 +58,11 @@ function getInitials(name: string | null, email: string) {
 export default function StudentsPage() {
   const { format } = useCurrency();
   const queryClient = useQueryClient();
+  const { data: session } = useSession();
+  const userId = session?.user?.id;
 
   const { data, isLoading } = useQuery<StudentsResponse>({
-    queryKey: ["students"],
+    queryKey: ["students", userId],
     queryFn: async () => {
       const res = await fetch("/api/students");
       if (!res.ok) throw new Error("Failed to fetch students");
