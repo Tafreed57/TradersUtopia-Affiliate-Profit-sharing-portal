@@ -185,35 +185,48 @@ export async function POST(
           }
           affiliateRowsUpdated += 1;
 
-          // 5b. Sync teacher rows for this conversion. Two passes when
-          // attendance now exists: recover any teacher rows that were
-          // FORFEITED at import time for missing attendance (rate-gate +
-          // no-attendance path created them that way in commission-engine),
-          // then sync duplicate affiliate/CEO fields on the remainder.
-          // When attendance still doesn't exist, teacher rows stay as-is
-          // status-wise; only the duplicate fields refresh.
+          // 5b. Sync teacher rows for this conversion. Modern engine never
+          // creates PENDING teacher rows (only EARNED or FORFEITED), but
+          // legacy data may have them — defensive recovery covers both.
+          //
+          // hadAttendance=true (two passes):
+          //   A. Sync rows that don't need a status flip (just refresh
+          //      duplicate cut/CEO fields).
+          //   B. Flip rows that should-now-be-EARNED:
+          //        - FORFEITED with `No attendance submitted...` (the
+          //          rate-gate + no-attendance import path), OR
+          //        - PENDING (legacy-only — modern engine never produces
+          //          this for teacher rows).
+          // hadAttendance=false (two passes):
+          //   A. Sync non-PENDING (just refresh duplicate fields).
+          //   B. Flip PENDING → FORFEITED+no-attendance-reason (legacy
+          //      defensive — these should have been FORFEITED at import).
+          //
+          // Order matters in BOTH branches: sync first, then status-flip.
+          // If we flipped first, Pass A's predicate would re-match the
+          // just-flipped rows (status now EARNED, reason now null), so
+          // their duplicate fields would be written twice and the count
+          // would be inflated.
           const baseTeacherData = {
             affiliateCutPercent: currentRate.toDecimalPlaces(2).toNumber(),
             affiliateCutCad: finalAffiliateCut.toDecimalPlaces(2).toNumber(),
             ceoCutCad: finalCeoCut.toDecimalPlaces(2).toNumber(),
           };
+          const noAttendanceReason =
+            "No attendance submitted for conversion date";
 
           if (hadAttendance) {
-            // Order matters: sync the complement FIRST, then run recovery.
-            // If we recovered first, Pass B's complement predicate would
-            // re-match the just-recovered rows (now EARNED) and double-
-            // count. The complement is expressed as an explicit null-safe
-            // OR — `NOT (status=FORFEITED AND reason=...)` collapses to
-            // NULL in SQL when `forfeitureReason` is NULL on a FORFEITED
-            // row, which would skip those rows from the duplicate-field
-            // refresh.
-            const noAttendanceReason =
-              "No attendance submitted for conversion date";
+            // Pass A: rows that aren't slated for recovery — non-PENDING
+            // AND non-(FORFEITED+no-attendance-reason). The OR is null-
+            // safe because `NOT (status=FORFEITED AND reason=...)` would
+            // collapse to NULL in SQL whenever forfeitureReason is NULL on
+            // a FORFEITED row, silently dropping those from the refresh.
             const synced = await tx.commission.updateMany({
               where: {
                 affiliateId: id,
                 rewardfulCommissionId: row.rewardfulCommissionId,
                 teacherId: { not: null },
+                status: { not: "PENDING" },
                 OR: [
                   { status: { not: "FORFEITED" } },
                   { forfeitureReason: { not: noAttendanceReason } },
@@ -227,26 +240,47 @@ export async function POST(
                 affiliateId: id,
                 rewardfulCommissionId: row.rewardfulCommissionId,
                 teacherId: { not: null },
-                status: "FORFEITED",
-                forfeitureReason: noAttendanceReason,
+                OR: [
+                  {
+                    status: "FORFEITED",
+                    forfeitureReason: noAttendanceReason,
+                  },
+                  { status: "PENDING" },
+                ],
               },
               data: {
                 ...baseTeacherData,
                 status: "EARNED",
                 forfeitureReason: null,
+                forfeitedToCeo: false,
               },
             });
             teacherRowsAffected += synced.count + recovered.count;
           } else {
-            const teacherRes = await tx.commission.updateMany({
+            const synced = await tx.commission.updateMany({
               where: {
                 affiliateId: id,
                 rewardfulCommissionId: row.rewardfulCommissionId,
                 teacherId: { not: null },
+                status: { not: "PENDING" },
               },
               data: baseTeacherData,
             });
-            teacherRowsAffected += teacherRes.count;
+            const flipped = await tx.commission.updateMany({
+              where: {
+                affiliateId: id,
+                rewardfulCommissionId: row.rewardfulCommissionId,
+                teacherId: { not: null },
+                status: "PENDING",
+              },
+              data: {
+                ...baseTeacherData,
+                status: "FORFEITED",
+                forfeitureReason: noAttendanceReason,
+                forfeitedToCeo: false,
+              },
+            });
+            teacherRowsAffected += synced.count + flipped.count;
           }
         }
 
