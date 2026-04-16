@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { BackfillBanner } from "@/components/commissions/backfill-banner";
 import { EarningsSummary } from "@/components/commissions/earnings-summary";
 import { LifetimeHeader } from "@/components/commissions/lifetime-header";
+import { RateNotSetBanner } from "@/components/commissions/rate-not-set-banner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -60,6 +61,14 @@ function formatConversionDate(iso: string) {
     minute: "2-digit",
     hour12: true,
   });
+}
+
+function friendlyForfeitureReason(raw: string | null): string | null {
+  if (!raw) return null;
+  if (raw === "rate_not_set") {
+    return "Pending until your commission rate is set";
+  }
+  return raw;
 }
 
 const STATUS_CONFIG = {
@@ -135,6 +144,7 @@ export default function CommissionsPage() {
       </div>
 
       <BackfillBanner />
+      <RateNotSetBanner />
       <LifetimeHeader />
       <EarningsSummary />
 
@@ -272,9 +282,13 @@ export default function CommissionsPage() {
                           >
                             {config.label}
                           </Badge>
-                          {commission.forfeitureReason && (
-                            <p className="mt-1 text-xs text-error/70">
-                              {commission.forfeitureReason}
+                          {friendlyForfeitureReason(
+                            commission.forfeitureReason
+                          ) && (
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              {friendlyForfeitureReason(
+                                commission.forfeitureReason
+                              )}
                             </p>
                           )}
                         </TableCell>

@@ -9,6 +9,7 @@ interface BackfillStatus {
   status: "NOT_STARTED" | "IN_PROGRESS" | "COMPLETED" | "FAILED";
   startedAt: string | null;
   completedAt: string | null;
+  commissionPercent: number;
 }
 
 export function BackfillBanner() {

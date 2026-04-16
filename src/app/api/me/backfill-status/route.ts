@@ -6,6 +6,16 @@ import { linkRewardfulAffiliate } from "@/lib/auth-rewardful-link";
 import { runBackfill } from "@/lib/backfill-service";
 import { prisma } from "@/lib/prisma";
 
+const USER_STATUS_SELECT = {
+  email: true,
+  name: true,
+  backfillStatus: true,
+  backfillStartedAt: true,
+  backfillCompletedAt: true,
+  rewardfulAffiliateId: true,
+  commissionPercent: true,
+} as const;
+
 /**
  * GET /api/me/backfill-status
  *
@@ -21,14 +31,7 @@ export async function GET() {
 
   let user = await prisma.user.findUnique({
     where: { id: session.user.id },
-    select: {
-      email: true,
-      name: true,
-      backfillStatus: true,
-      backfillStartedAt: true,
-      backfillCompletedAt: true,
-      rewardfulAffiliateId: true,
-    },
+    select: USER_STATUS_SELECT,
   });
   if (!user) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -42,14 +45,7 @@ export async function GET() {
     });
     user = await prisma.user.findUnique({
       where: { id: session.user.id },
-      select: {
-        email: true,
-        name: true,
-        backfillStatus: true,
-        backfillStartedAt: true,
-        backfillCompletedAt: true,
-        rewardfulAffiliateId: true,
-      },
+      select: USER_STATUS_SELECT,
     });
     if (!user) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -82,5 +78,6 @@ export async function GET() {
     status: user.backfillStatus,
     startedAt: user.backfillStartedAt,
     completedAt: user.backfillCompletedAt,
+    commissionPercent: Number(user.commissionPercent),
   });
 }

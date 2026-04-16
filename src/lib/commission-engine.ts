@@ -143,10 +143,10 @@ export async function processConversion(
   // CEO gets the remainder (can be negative — signals admin needs to fix)
   const ceoCut = fullAmount.sub(affiliateCut).sub(totalTeacherCuts);
 
-  // 5. Check attendance for forfeiture (skipped during historical backfill)
-  const hasAttendance = opts.skipAttendanceCheck
-    ? true
-    : await checkAttendance(affiliate.id, conversionDate);
+  // 5. Rate-gate: if admin hasn't set the affiliate's commission rate,
+  // park the commission as PENDING. CEO holds the remainder until the
+  // admin runs "Recalculate at current rate" on the affiliate.
+  const isRateNotSet = affiliatePercent.eq(0);
 
   let finalStatus: CommissionStatus;
   let forfeitedToCeo = false;
@@ -154,20 +154,31 @@ export async function processConversion(
   let finalAffiliateCut: Decimal;
   let finalCeoCut: Decimal;
 
-  if (!hasAttendance) {
-    // Forfeit affiliate cut → goes to CEO. Teachers still get theirs.
-    finalStatus = "FORFEITED";
-    forfeitedToCeo = true;
-    forfeitureReason = "No attendance submitted for conversion date";
+  if (isRateNotSet) {
+    finalStatus = "PENDING";
+    forfeitureReason = "rate_not_set";
     finalAffiliateCut = new Decimal(0);
-    finalCeoCut = ceoCut.add(affiliateCut);
-  } else {
-    finalStatus = "EARNED";
-    finalAffiliateCut = affiliateCut;
     finalCeoCut = ceoCut;
+  } else {
+    // 6. Attendance-based forfeiture (skipped during historical backfill).
+    const hasAttendance = opts.skipAttendanceCheck
+      ? true
+      : await checkAttendance(affiliate.id, conversionDate);
+    if (!hasAttendance) {
+      // Forfeit affiliate cut → goes to CEO. Teachers still get theirs.
+      finalStatus = "FORFEITED";
+      forfeitedToCeo = true;
+      forfeitureReason = "No attendance submitted for conversion date";
+      finalAffiliateCut = new Decimal(0);
+      finalCeoCut = ceoCut.add(affiliateCut);
+    } else {
+      finalStatus = "EARNED";
+      finalAffiliateCut = affiliateCut;
+      finalCeoCut = ceoCut;
+    }
   }
 
-  // 6. Store everything in a transaction
+  // 7. Persist commission rows (one per recipient: affiliate + each teacher)
   const commissionRecords: Prisma.CommissionCreateManyInput[] = [];
 
   // Affiliate's own commission record
@@ -215,7 +226,12 @@ export async function processConversion(
   // Build notifications
   const notifications: NotificationItem[] = [];
 
-  if (forfeitedToCeo) {
+  if (isRateNotSet) {
+    // Rate not set by admin yet — don't push a "commission earned"
+    // notification (nothing was earned). UI banner on /commissions
+    // already surfaces the unset-rate state. Admin will recalc once
+    // the rate is set.
+  } else if (forfeitedToCeo) {
     // Affiliate missed attendance — forfeiture alert
     notifications.push({
       userId: affiliate.id,
@@ -336,6 +352,9 @@ export async function reevaluateCommission(
       rewardfulCommissionId,
       teacherId: null, // Only the affiliate's own record
       status: { in: ["FORFEITED", "PENDING"] },
+      // Rate-not-set is resolved by the admin's "recalculate at current
+      // rate" flow, not by attendance recovery — its stored percent is 0.
+      NOT: { forfeitureReason: "rate_not_set" },
     },
   });
 

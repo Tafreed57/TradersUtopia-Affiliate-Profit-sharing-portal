@@ -44,8 +44,14 @@ export async function GET(
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  const [teachers, students, recentCommissions, rateHistory, totalEarned] =
-    await Promise.all([
+  const [
+    teachers,
+    students,
+    recentCommissions,
+    rateHistory,
+    totalEarned,
+    pendingRateNotSetCount,
+  ] = await Promise.all([
       // Teachers of this affiliate
       prisma.teacherStudent.findMany({
         where: { studentId: id, isActive: true },
@@ -96,6 +102,16 @@ export async function GET(
         _sum: { affiliateCutCad: true },
         _count: true,
       }),
+
+      // Pending commissions parked by the rate-gate (forfeitureReason='rate_not_set')
+      prisma.commission.count({
+        where: {
+          affiliateId: id,
+          teacherId: null,
+          status: "PENDING",
+          forfeitureReason: "rate_not_set",
+        },
+      }),
     ]);
 
   // Calculate total allocation %
@@ -140,6 +156,7 @@ export async function GET(
     totalConversions: totalEarned._count,
     totalAllocated,
     allocationWarning: totalAllocated > TEACHER_CUT_WARN_THRESHOLD,
+    pendingRateNotSetCount,
   });
 }
 

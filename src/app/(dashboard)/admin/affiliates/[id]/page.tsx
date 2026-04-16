@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   History,
   Percent,
+  RefreshCw,
   Save,
   Shield,
   UserX,
@@ -88,6 +89,7 @@ interface AffiliateDetail {
   totalConversions: number;
   totalAllocated: number;
   allocationWarning: boolean;
+  pendingRateNotSetCount: number;
 }
 
 export default function AffiliateDetailPage({
@@ -129,6 +131,28 @@ export default function AffiliateDetailPage({
       queryClient.invalidateQueries({ queryKey: ["admin-affiliate", id] });
       queryClient.invalidateQueries({ queryKey: ["admin-affiliates"] });
       toast.success("Affiliate updated");
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const recalcMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(
+        `/api/admin/affiliates/${id}/recalc-pending`,
+        { method: "POST" }
+      );
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(payload.error ?? "Failed to recalculate");
+      }
+      return payload as { updated: number; newRate: number };
+    },
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ["admin-affiliate", id] });
+      queryClient.invalidateQueries({ queryKey: ["admin-affiliates"] });
+      toast.success(
+        `Recalculated ${result.updated} commission${result.updated === 1 ? "" : "s"} at ${result.newRate}%.`
+      );
     },
     onError: (error: Error) => toast.error(error.message),
   });
@@ -265,6 +289,37 @@ export default function AffiliateDetailPage({
                 Update Rate
               </Button>
             </div>
+
+            {data.pendingRateNotSetCount > 0 && (
+              <>
+                <Separator />
+                <div className="rounded-lg border border-warning/30 bg-warning/10 p-3 space-y-2">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="h-4 w-4 mt-0.5 text-warning flex-shrink-0" />
+                    <p className="text-sm">
+                      <span className="font-medium">
+                        {data.pendingRateNotSetCount} pending commission
+                        {data.pendingRateNotSetCount === 1 ? "" : "s"}
+                      </span>{" "}
+                      imported before a rate was set. Recalculate at the
+                      current rate ({data.commissionPercent}%) to pay them out.
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-2 w-full"
+                    disabled={
+                      data.commissionPercent === 0 || recalcMutation.isPending
+                    }
+                    onClick={() => recalcMutation.mutate()}
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                    Recalculate at current rate
+                  </Button>
+                </div>
+              </>
+            )}
 
             <Separator />
 
