@@ -4,6 +4,7 @@ import {
   BarChart3,
   Bell,
   CalendarCheck,
+  ClipboardList,
   Home,
   Settings,
   Shield,
@@ -28,7 +29,8 @@ const navItems = [
 ];
 
 const adminItems = [
-  { href: "/admin", label: "Admin Panel", icon: Shield },
+  { href: "/admin", label: "Admin Panel", icon: Shield, exact: true },
+  { href: "/admin/proposals", label: "Proposals", icon: ClipboardList, exact: false },
 ];
 
 export function Sidebar() {
@@ -74,7 +76,7 @@ export function Sidebar() {
           <>
             <div className="my-4 border-t border-border/50" />
             {adminItems.map((item) => {
-              const active = pathname.startsWith(item.href);
+              const active = item.exact ? pathname === item.href : pathname.startsWith(item.href);
               return (
                 <Link
                   key={item.href}

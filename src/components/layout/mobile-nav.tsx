@@ -4,6 +4,7 @@ import {
   BarChart3,
   Bell,
   CalendarCheck,
+  ClipboardList,
   Home,
   Settings,
   Shield,
@@ -73,13 +74,25 @@ export function MobileNav() {
               href="/admin"
               className={cn(
                 "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
-                pathname.startsWith("/admin")
+                pathname === "/admin"
                   ? "bg-sidebar-accent text-sidebar-accent-foreground"
                   : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
               )}
             >
               <Shield className="h-4 w-4" />
               Admin Panel
+            </Link>
+            <Link
+              href="/admin/proposals"
+              className={cn(
+                "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
+                pathname.startsWith("/admin/proposals")
+                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+              )}
+            >
+              <ClipboardList className="h-4 w-4" />
+              Proposals
             </Link>
           </>
         )}
