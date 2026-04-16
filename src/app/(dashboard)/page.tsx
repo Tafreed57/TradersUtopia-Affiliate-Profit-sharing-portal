@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { RateNotSetBanner } from "@/components/commissions/rate-not-set-banner";
 import { useCurrency } from "@/providers/currency-provider";
 
 interface DashboardStats {
@@ -194,6 +195,8 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
       </div>
+
+      <RateNotSetBanner />
 
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Recent Commissions */}
