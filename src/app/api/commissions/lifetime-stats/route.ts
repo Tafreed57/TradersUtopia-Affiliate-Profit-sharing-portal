@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 
+import { Prisma } from "@prisma/client";
+
 import { authOptions } from "@/lib/auth-options";
+import { linkRewardfulAffiliate } from "@/lib/auth-rewardful-link";
 import { prisma } from "@/lib/prisma";
 import * as rewardful from "@/lib/rewardful";
 
@@ -94,7 +97,41 @@ export async function GET() {
       stale: false,
     });
   } catch (err) {
+    const is404 =
+      err instanceof Error && /404/.test(err.message);
     console.error(`[lifetime-stats] fetch failed for ${userId}:`, err);
+
+    if (is404) {
+      const dbUser = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { email: true, name: true },
+      });
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          rewardfulAffiliateId: null,
+          rewardfulEmail: null,
+          backfillStatus: "NOT_STARTED",
+          lifetimeStatsJson: Prisma.DbNull,
+          lifetimeStatsCachedAt: null,
+        },
+      });
+      console.log(
+        `[lifetime-stats] cleared stale affiliate for ${userId}, re-linking`
+      );
+      if (dbUser?.email) {
+        await linkRewardfulAffiliate({
+          userId,
+          email: dbUser.email,
+          name: dbUser.name,
+        });
+      }
+      return NextResponse.json(
+        { error: "Account re-linked, please refresh" },
+        { status: 409 }
+      );
+    }
+
     if (user.lifetimeStatsJson) {
       const cached = user.lifetimeStatsJson as unknown as LifetimeStatsPayload;
       return NextResponse.json({
