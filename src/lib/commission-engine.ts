@@ -144,19 +144,27 @@ export async function processConversion(
   const ceoCut = fullAmount.sub(affiliateCut).sub(totalTeacherCuts);
 
   // 5. Rate-gate: if admin hasn't set the affiliate's commission rate,
-  // park the commission as PENDING. CEO holds the remainder until the
-  // admin runs "Recalculate at current rate" on the affiliate.
+  // park the AFFILIATE row as PENDING. Teacher rows stay EARNED — teachers
+  // already have their cut configured and don't depend on the student's
+  // rate. CEO holds the affiliate's share until admin runs "Recalculate at
+  // current rate".
   const isRateNotSet = affiliatePercent.eq(0);
 
-  let finalStatus: CommissionStatus;
-  let forfeitedToCeo = false;
-  let forfeitureReason: string | null = null;
+  // Per-row outcome: the conversion event has one status for the affiliate
+  // and (potentially) a different one for each teacher. Today that split
+  // only matters for rate-not-set; FORFEITED/EARNED flow identically.
+  let affiliateStatus: CommissionStatus;
+  let affiliateForfeitedToCeo = false;
+  let affiliateReason: string | null = null;
+  let teacherStatus: CommissionStatus;
+  let teacherReason: string | null = null;
   let finalAffiliateCut: Decimal;
   let finalCeoCut: Decimal;
 
   if (isRateNotSet) {
-    finalStatus = "PENDING";
-    forfeitureReason = "rate_not_set";
+    affiliateStatus = "PENDING";
+    affiliateReason = "rate_not_set";
+    teacherStatus = "EARNED";
     finalAffiliateCut = new Decimal(0);
     finalCeoCut = ceoCut;
   } else {
@@ -166,13 +174,16 @@ export async function processConversion(
       : await checkAttendance(affiliate.id, conversionDate);
     if (!hasAttendance) {
       // Forfeit affiliate cut → goes to CEO. Teachers still get theirs.
-      finalStatus = "FORFEITED";
-      forfeitedToCeo = true;
-      forfeitureReason = "No attendance submitted for conversion date";
+      affiliateStatus = "FORFEITED";
+      affiliateForfeitedToCeo = true;
+      affiliateReason = "No attendance submitted for conversion date";
+      teacherStatus = "FORFEITED";
+      teacherReason = "No attendance submitted for conversion date";
       finalAffiliateCut = new Decimal(0);
       finalCeoCut = ceoCut.add(affiliateCut);
     } else {
-      finalStatus = "EARNED";
+      affiliateStatus = "EARNED";
+      teacherStatus = "EARNED";
       finalAffiliateCut = affiliateCut;
       finalCeoCut = ceoCut;
     }
@@ -193,9 +204,9 @@ export async function processConversion(
     teacherCutPercent: null,
     teacherCutCad: null,
     ceoCutCad: finalCeoCut.toDecimalPlaces(2).toNumber(),
-    status: finalStatus,
-    forfeitedToCeo,
-    forfeitureReason,
+    status: affiliateStatus,
+    forfeitedToCeo: affiliateForfeitedToCeo,
+    forfeitureReason: affiliateReason,
     conversionDate,
     rewardfulData: conversion.rawPayload as Prisma.InputJsonValue,
   });
@@ -213,9 +224,9 @@ export async function processConversion(
       teacherCutPercent: tc.teacherCutPercent.toDecimalPlaces(2).toNumber(),
       teacherCutCad: tc.amount.toDecimalPlaces(2).toNumber(),
       ceoCutCad: finalCeoCut.toDecimalPlaces(2).toNumber(),
-      status: finalStatus,
-      forfeitedToCeo,
-      forfeitureReason,
+      status: teacherStatus,
+      forfeitedToCeo: false,
+      forfeitureReason: teacherReason,
       conversionDate,
       rewardfulData: conversion.rawPayload as Prisma.InputJsonValue,
     });
@@ -231,7 +242,7 @@ export async function processConversion(
     // notification (nothing was earned). UI banner on /commissions
     // already surfaces the unset-rate state. Admin will recalc once
     // the rate is set.
-  } else if (forfeitedToCeo) {
+  } else if (affiliateForfeitedToCeo) {
     // Affiliate missed attendance — forfeiture alert
     notifications.push({
       userId: affiliate.id,

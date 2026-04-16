@@ -157,10 +157,14 @@ export async function POST(
             finalCeoCut = fullAmount.sub(teacherCutTotal);
           }
 
-          const res = await tx.commission.updateMany({
+          // 5a. Update the affiliate row (the only one parked as PENDING).
+          // Predicate includes status+reason so a concurrent recalc cannot
+          // overwrite rows already recalculated by a newer operation.
+          const affiliateRes = await tx.commission.updateMany({
             where: {
               affiliateId: id,
               rewardfulCommissionId: row.rewardfulCommissionId,
+              teacherId: null,
               status: "PENDING",
               forfeitureReason: "rate_not_set",
             },
@@ -174,10 +178,30 @@ export async function POST(
             },
           });
 
-          if (res.count > 0) {
-            affiliateRowsUpdated += 1; // one affiliate-row per conversion
-            teacherRowsAffected += Math.max(0, res.count - 1);
+          if (affiliateRes.count === 0) {
+            // Lost the race to another recalc — skip the teacher sync so
+            // we don't flap duplicate fields while that operation runs.
+            continue;
           }
+          affiliateRowsUpdated += 1;
+
+          // 5b. Sync the duplicate affiliate/CEO fields on teacher rows for
+          // this conversion. Teacher rows were created as EARNED with the
+          // student's stale 0% baked into `affiliateCutPercent/Cad`; keep
+          // their status/teacherCut untouched but refresh the duplicates.
+          const teacherRes = await tx.commission.updateMany({
+            where: {
+              affiliateId: id,
+              rewardfulCommissionId: row.rewardfulCommissionId,
+              teacherId: { not: null },
+            },
+            data: {
+              affiliateCutPercent: currentRate.toDecimalPlaces(2).toNumber(),
+              affiliateCutCad: finalAffiliateCut.toDecimalPlaces(2).toNumber(),
+              ceoCutCad: finalCeoCut.toDecimalPlaces(2).toNumber(),
+            },
+          });
+          teacherRowsAffected += teacherRes.count;
         }
 
         // 6. Audit + cache invalidation — only when we actually updated rows.
