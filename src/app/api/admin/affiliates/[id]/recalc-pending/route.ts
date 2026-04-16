@@ -185,23 +185,69 @@ export async function POST(
           }
           affiliateRowsUpdated += 1;
 
-          // 5b. Sync the duplicate affiliate/CEO fields on teacher rows for
-          // this conversion. Teacher rows were created as EARNED with the
-          // student's stale 0% baked into `affiliateCutPercent/Cad`; keep
-          // their status/teacherCut untouched but refresh the duplicates.
-          const teacherRes = await tx.commission.updateMany({
-            where: {
-              affiliateId: id,
-              rewardfulCommissionId: row.rewardfulCommissionId,
-              teacherId: { not: null },
-            },
-            data: {
-              affiliateCutPercent: currentRate.toDecimalPlaces(2).toNumber(),
-              affiliateCutCad: finalAffiliateCut.toDecimalPlaces(2).toNumber(),
-              ceoCutCad: finalCeoCut.toDecimalPlaces(2).toNumber(),
-            },
-          });
-          teacherRowsAffected += teacherRes.count;
+          // 5b. Sync teacher rows for this conversion. Two passes when
+          // attendance now exists: recover any teacher rows that were
+          // FORFEITED at import time for missing attendance (rate-gate +
+          // no-attendance path created them that way in commission-engine),
+          // then sync duplicate affiliate/CEO fields on the remainder.
+          // When attendance still doesn't exist, teacher rows stay as-is
+          // status-wise; only the duplicate fields refresh.
+          const baseTeacherData = {
+            affiliateCutPercent: currentRate.toDecimalPlaces(2).toNumber(),
+            affiliateCutCad: finalAffiliateCut.toDecimalPlaces(2).toNumber(),
+            ceoCutCad: finalCeoCut.toDecimalPlaces(2).toNumber(),
+          };
+
+          if (hadAttendance) {
+            // Order matters: sync the complement FIRST, then run recovery.
+            // If we recovered first, Pass B's complement predicate would
+            // re-match the just-recovered rows (now EARNED) and double-
+            // count. The complement is expressed as an explicit null-safe
+            // OR — `NOT (status=FORFEITED AND reason=...)` collapses to
+            // NULL in SQL when `forfeitureReason` is NULL on a FORFEITED
+            // row, which would skip those rows from the duplicate-field
+            // refresh.
+            const noAttendanceReason =
+              "No attendance submitted for conversion date";
+            const synced = await tx.commission.updateMany({
+              where: {
+                affiliateId: id,
+                rewardfulCommissionId: row.rewardfulCommissionId,
+                teacherId: { not: null },
+                OR: [
+                  { status: { not: "FORFEITED" } },
+                  { forfeitureReason: { not: noAttendanceReason } },
+                  { forfeitureReason: null },
+                ],
+              },
+              data: baseTeacherData,
+            });
+            const recovered = await tx.commission.updateMany({
+              where: {
+                affiliateId: id,
+                rewardfulCommissionId: row.rewardfulCommissionId,
+                teacherId: { not: null },
+                status: "FORFEITED",
+                forfeitureReason: noAttendanceReason,
+              },
+              data: {
+                ...baseTeacherData,
+                status: "EARNED",
+                forfeitureReason: null,
+              },
+            });
+            teacherRowsAffected += synced.count + recovered.count;
+          } else {
+            const teacherRes = await tx.commission.updateMany({
+              where: {
+                affiliateId: id,
+                rewardfulCommissionId: row.rewardfulCommissionId,
+                teacherId: { not: null },
+              },
+              data: baseTeacherData,
+            });
+            teacherRowsAffected += teacherRes.count;
+          }
         }
 
         // 6. Audit + cache invalidation — only when we actually updated rows.
