@@ -69,6 +69,9 @@ export async function runBackfill(userId: string): Promise<{
           user.rewardfulAffiliateId!
         );
         if (!conversion) {
+          console.error(
+            `[backfill] skipping commission ${commission.id}: missing or invalid sale data`
+          );
           failed++;
           continue;
         }
@@ -116,13 +119,23 @@ export async function runBackfill(userId: string): Promise<{
     console.error(
       `[backfill] runBackfill failed for ${userId}: ${name}: ${msg} | stack: ${stack}`
     );
-    await prisma.user.update({
-      where: { id: userId },
-      data: {
-        backfillStatus: "FAILED",
-        backfillError: `Import failed (${name}): ${msg}`.slice(0, 500),
-      },
-    });
+    // Wrap status write so a DB error here doesn't propagate out of runBackfill
+    // and mask the original error in Vercel's after() background context.
+    try {
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          backfillStatus: "FAILED",
+          backfillError: `Import failed (${name}): ${msg}`.slice(0, 500),
+        },
+      });
+    } catch (statusErr) {
+      const statusMsg =
+        statusErr instanceof Error ? statusErr.message : String(statusErr);
+      console.error(
+        `[backfill] failed to persist FAILED status for ${userId}: ${statusMsg}`
+      );
+    }
     return { imported, skipped, failed, status: "FAILED" };
   }
 }
@@ -131,7 +144,11 @@ function mapCommissionToConversion(
   commission: RewardfulCommission,
   affiliateRewardfulId: string
 ) {
-  const amountRaw = commission.sale?.amount ?? commission.amount;
+  // Require sale data — commission.amount is the affiliate payout, not the
+  // full sale amount. Falling back to it would silently store a wrong
+  // fullAmountCad and produce incorrect commission splits.
+  if (!commission.sale) return null;
+  const amountRaw = commission.sale.amount;
   if (typeof amountRaw !== "number") return null;
   const amountCad = amountRaw / 100;
 

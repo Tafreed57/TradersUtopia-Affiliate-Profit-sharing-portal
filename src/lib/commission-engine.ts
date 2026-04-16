@@ -207,6 +207,11 @@ export async function processConversion(
     teacherId: null,
     rewardfulCommissionId: conversion.rewardfulCommissionId,
     rewardfulReferralId: conversion.rewardfulReferralId ?? null,
+    // Null when rewardfulCommissionId is absent (manual commissions) — PostgreSQL
+    // UNIQUE allows multiple NULLs, so no collision risk for null-keyed rows.
+    idempotencyKey: conversion.rewardfulCommissionId
+      ? `${conversion.rewardfulCommissionId}:aff:${affiliate.id}`
+      : null,
     fullAmountCad: fullAmount.toDecimalPlaces(2).toNumber(),
     affiliateCutPercent: affiliatePercent.toDecimalPlaces(2).toNumber(),
     affiliateCutCad: finalAffiliateCut.toDecimalPlaces(2).toNumber(),
@@ -227,6 +232,9 @@ export async function processConversion(
       teacherId: tc.teacherId,
       rewardfulCommissionId: conversion.rewardfulCommissionId,
       rewardfulReferralId: conversion.rewardfulReferralId ?? null,
+      idempotencyKey: conversion.rewardfulCommissionId
+        ? `${conversion.rewardfulCommissionId}:teacher:${tc.teacherId}`
+        : null,
       fullAmountCad: fullAmount.toDecimalPlaces(2).toNumber(),
       affiliateCutPercent: affiliatePercent.toDecimalPlaces(2).toNumber(),
       affiliateCutCad: finalAffiliateCut.toDecimalPlaces(2).toNumber(),
@@ -241,7 +249,24 @@ export async function processConversion(
     });
   }
 
-  await prisma.commission.createMany({ data: commissionRecords });
+  // skipDuplicates handles the concurrent-burst race: if two webhook deliveries
+  // both pass the findFirst check above before either commits, the second
+  // createMany writes 0 rows (unique idempotencyKey blocks all inserts).
+  const createResult = await prisma.commission.createMany({
+    data: commissionRecords,
+    skipDuplicates: true,
+  });
+  if (createResult.count === 0) {
+    return { success: true, skipped: true, reason: "Duplicate webhook (concurrent)" };
+  }
+  if (createResult.count < commissionRecords.length) {
+    // Partial insert — createMany is a single atomic SQL statement so this
+    // should not occur in normal operation, but log if it does for diagnosis.
+    console.error(
+      `[commission] partial insert for ${conversion.rewardfulCommissionId}: ` +
+        `inserted ${createResult.count} of ${commissionRecords.length} rows`
+    );
+  }
 
   // Build notifications
   const notifications: NotificationItem[] = [];

@@ -112,6 +112,7 @@ model Commission {
   teacherId             String?
   rewardfulCommissionId String?
   rewardfulReferralId   String?
+  idempotencyKey        String?          @unique
   fullAmountCad         Decimal          @db.Decimal(10, 2)
   affiliateCutPercent   Decimal          @db.Decimal(5, 2)
   affiliateCutCad       Decimal          @db.Decimal(10, 2)
