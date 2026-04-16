@@ -62,6 +62,7 @@ export function BackfillBanner() {
     if (data?.status === "COMPLETED") {
       qc.invalidateQueries({ queryKey: ["commissions"] });
       qc.invalidateQueries({ queryKey: ["lifetime-stats"] });
+      qc.invalidateQueries({ queryKey: ["dashboard-stats"] });
     }
   }, [data?.status, qc]);
 
