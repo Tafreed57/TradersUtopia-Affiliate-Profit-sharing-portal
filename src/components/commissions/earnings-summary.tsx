@@ -127,12 +127,14 @@ export function EarningsSummary() {
             amount={format(paid)}
             percent={fmtPct(paidR)}
           />
-          <Row
-            color="bg-info"
-            label="Due Now"
-            amount={format(due)}
-            percent={fmtPct(dueR)}
-          />
+          {dueR > 0 && (
+            <Row
+              color="bg-info"
+              label="Due Now"
+              amount={format(due)}
+              percent={fmtPct(dueR)}
+            />
+          )}
           <Row
             color="bg-warning"
             label="Unpaid"

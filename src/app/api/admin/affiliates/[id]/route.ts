@@ -6,6 +6,7 @@ import { authOptions } from "@/lib/auth-options";
 import { TEACHER_CUT_WARN_THRESHOLD } from "@/lib/constants";
 import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
+import { runRecalcPending } from "@/lib/recalc-pending";
 
 /**
  * GET /api/admin/affiliates/:id
@@ -264,6 +265,8 @@ export async function PATCH(
       return NextResponse.json({ error: "No changes" }, { status: 400 });
     }
 
+    const previousRate = currentUser.commissionPercent.toNumber();
+
     const updated = await prisma.user.update({
       where: { id },
       data: updateData,
@@ -275,9 +278,34 @@ export async function PATCH(
       },
     });
 
+    // Auto-trigger recalc when rate moves from 0 → positive for the first time.
+    // Rate changes from positive → positive only apply to new commissions.
+    // Isolated try/catch: a recalc failure must NOT 500 a successful rate update.
+    let autoRecalc: { updated: number; teacherRowsAffected: number; newRate: number } | null = null;
+    if (
+      commissionPercent !== undefined &&
+      previousRate === 0 &&
+      commissionPercent > 0
+    ) {
+      try {
+        const recalcResult = await runRecalcPending(id, session.user.id);
+        if (recalcResult.kind === "ok" && recalcResult.updated > 0) {
+          autoRecalc = {
+            updated: recalcResult.updated,
+            teacherRowsAffected: recalcResult.teacherRowsAffected,
+            newRate: recalcResult.newRate,
+          };
+        }
+      } catch (recalcErr) {
+        const msg = recalcErr instanceof Error ? recalcErr.message : String(recalcErr);
+        console.error(`[auto-recalc] failed for affiliate ${id}: ${msg}`);
+      }
+    }
+
     return NextResponse.json({
       ...updated,
       commissionPercent: updated.commissionPercent.toNumber(),
+      ...(autoRecalc ? { autoRecalc } : {}),
     });
   } catch (error) {
     if (error instanceof z.ZodError) {

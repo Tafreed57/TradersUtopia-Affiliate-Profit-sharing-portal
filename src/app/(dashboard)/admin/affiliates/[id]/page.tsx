@@ -127,10 +127,16 @@ export default function AffiliateDetailPage({
       }
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ["admin-affiliate", id] });
       queryClient.invalidateQueries({ queryKey: ["admin-affiliates"] });
-      toast.success("Affiliate updated");
+      if (result.autoRecalc?.updated > 0) {
+        toast.success(
+          `Rate set and ${result.autoRecalc.updated} pending commission${result.autoRecalc.updated === 1 ? "" : "s"} automatically recalculated at ${result.autoRecalc.newRate}%.`
+        );
+      } else {
+        toast.success("Affiliate updated");
+      }
     },
     onError: (error: Error) => toast.error(error.message),
   });
