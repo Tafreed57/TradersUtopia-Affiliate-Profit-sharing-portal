@@ -265,6 +265,23 @@ export async function runRecalcPending(
         });
       }
 
+      // 7. Rate re-verification guard (ReadCommitted race guard).
+      // If a concurrent PATCH committed a new rate between our initial read and
+      // here, the math above used a stale rate. Throw to rollback rather than
+      // silently commit incorrect amounts.
+      const verifiedUser = await tx.user.findUnique({
+        where: { id: affiliateId },
+        select: { commissionPercent: true },
+      });
+      const verifiedRate = new Decimal(
+        verifiedUser!.commissionPercent.toString()
+      );
+      if (!verifiedRate.eq(currentRate)) {
+        throw new Error(
+          `Rate changed during recalc (${currentRate.toFixed(2)}% → ${verifiedRate.toFixed(2)}%); rolled back.`
+        );
+      }
+
       return {
         kind: "ok" as const,
         updated: affiliateRowsUpdated,
