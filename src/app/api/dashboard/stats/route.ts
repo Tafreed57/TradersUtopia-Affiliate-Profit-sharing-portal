@@ -79,7 +79,7 @@ export async function GET() {
         affiliateId: userId,
         teacherId: null,
       },
-      orderBy: [{ conversionDate: "desc" }, { createdAt: "desc" }],
+      orderBy: [{ conversionDate: "desc" }, { processedAt: "desc" }],
       take: 5,
       select: {
         id: true,
