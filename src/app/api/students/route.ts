@@ -20,7 +20,7 @@ export async function GET() {
 
   // Get all students where current user is teacher
   const relationships = await prisma.teacherStudent.findMany({
-    where: { teacherId, isActive: true },
+    where: { teacherId, status: "ACTIVE" },
     include: {
       student: {
         select: {

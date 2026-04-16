@@ -66,7 +66,7 @@ export async function POST(
       where: {
         teacherId: session.user.id,
         studentId: request.requesterId,
-        isActive: true,
+        status: "ACTIVE",
       },
     });
 

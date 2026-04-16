@@ -49,8 +49,8 @@ export async function GET(req: NextRequest) {
         _count: {
           select: {
             commissions: { where: { teacherId: null } },
-            studentRelations: { where: { isActive: true } },
-            teacherRelations: { where: { isActive: true } },
+            studentRelations: { where: { status: "ACTIVE" } },
+            teacherRelations: { where: { status: "ACTIVE" } },
           },
         },
       },

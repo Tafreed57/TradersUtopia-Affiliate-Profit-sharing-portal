@@ -89,21 +89,24 @@ model User {
 }
 
 model TeacherStudent {
-  id         String   @id @default(dbgenerated("(gen_random_uuid())::text"))
-  teacherId  String
-  studentId  String
-  depth      Int      @default(1)
-  teacherCut Decimal  @default(0) @db.Decimal(5, 2)
-  isActive   Boolean  @default(true)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @default(now()) @updatedAt
-  student    User     @relation("StudentRelation", fields: [studentId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  teacher    User     @relation("TeacherRelation", fields: [teacherId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  id           String               @id @default(dbgenerated("(gen_random_uuid())::text"))
+  teacherId    String
+  studentId    String
+  depth        Int                  @default(1)
+  teacherCut   Decimal              @default(0) @db.Decimal(5, 2)
+  status       TeacherStudentStatus @default(ACTIVE)
+  reviewedAt   DateTime?
+  reviewedById String?
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @default(now()) @updatedAt
+  student      User                 @relation("StudentRelation", fields: [studentId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  teacher      User                 @relation("TeacherRelation", fields: [teacherId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([teacherId, studentId])
   @@index([teacherId])
   @@index([studentId])
-  @@index([teacherId, isActive])
+  @@index([teacherId, status])
+  @@index([status])
 }
 
 model Commission {
@@ -282,6 +285,16 @@ enum NotificationType {
   RATE_PROPOSAL_SUBMITTED
   RATE_PROPOSAL_APPROVED
   RATE_PROPOSAL_REJECTED
+  STUDENT_PROPOSAL_RECEIVED
+  STUDENT_PROPOSAL_APPROVED
+  STUDENT_PROPOSAL_REJECTED
+}
+
+enum TeacherStudentStatus {
+  PENDING
+  ACTIVE
+  REJECTED
+  DEACTIVATED
 }
 
 enum RewardfulBackfillStatus {

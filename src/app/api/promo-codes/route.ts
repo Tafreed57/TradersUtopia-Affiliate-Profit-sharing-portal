@@ -56,7 +56,7 @@ export async function POST(req: NextRequest) {
 
     // Notify all teachers about the promo code request
     const teachers = await prisma.teacherStudent.findMany({
-      where: { studentId: session.user.id, isActive: true, depth: 1 },
+      where: { studentId: session.user.id, status: "ACTIVE", depth: 1 },
       select: { teacherId: true },
     });
 
@@ -115,7 +115,7 @@ export async function GET() {
 
   // Get requests from students (if user is a teacher)
   const studentIds = await prisma.teacherStudent.findMany({
-    where: { teacherId: userId, isActive: true, depth: 1 },
+    where: { teacherId: userId, status: "ACTIVE", depth: 1 },
     select: { studentId: true },
   });
 

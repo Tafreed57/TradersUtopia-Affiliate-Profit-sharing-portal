@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    if (!relationship || !relationship.isActive) {
+    if (!relationship || relationship.status !== "ACTIVE") {
       return NextResponse.json(
         { error: "No active teacher-student relationship found" },
         { status: 404 }

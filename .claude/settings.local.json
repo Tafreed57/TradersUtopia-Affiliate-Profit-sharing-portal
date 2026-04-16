@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmd /c \"taskkill /F /IM node.exe\")",
+      "Bash(cmd:*)",
+      "Bash(npm run:*)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3000)",
+      "mcp__playwright__browser_navigate",
+      "mcp__playwright__browser_console_messages",
+      "mcp__playwright__browser_snapshot",
+      "Bash(rm -f ~/.claude/.rem-sleep-last)",
+      "Bash(echo '{\"cwd\": \"D:\\\\\\\\\\\\\\\\tradersutopia-affilate-portal\"}')",
+      "Bash(python \"C:\\\\Users\\\\Tafre\\\\.claude\\\\hooks\\\\rem-sleep.py\")",
+      "Bash(mkdir -p \"C:/Users/Tafre/.claude/.session-state\")",
+      "Bash(printf 'HEAD=5cd2bb9f')",
+      "Read(//c/Users/Tafre/.claude/.session-state/**)"
+    ]
+  }
+}

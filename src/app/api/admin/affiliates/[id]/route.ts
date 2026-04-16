@@ -56,7 +56,7 @@ export async function GET(
   ] = await Promise.all([
       // Teachers of this affiliate
       prisma.teacherStudent.findMany({
-        where: { studentId: id, isActive: true },
+        where: { studentId: id, status: "ACTIVE" },
         include: {
           teacher: { select: { id: true, name: true, email: true } },
         },
@@ -64,7 +64,7 @@ export async function GET(
 
       // Students of this affiliate
       prisma.teacherStudent.findMany({
-        where: { teacherId: id, isActive: true },
+        where: { teacherId: id, status: "ACTIVE" },
         include: {
           student: {
             select: { id: true, name: true, email: true, status: true },
@@ -250,9 +250,9 @@ export async function PATCH(
         await prisma.teacherStudent.updateMany({
           where: {
             OR: [{ teacherId: id }, { studentId: id }],
-            isActive: true,
+            status: { in: ["PENDING", "ACTIVE"] },
           },
-          data: { isActive: false },
+          data: { status: "DEACTIVATED" },
         });
 
         // Notify affiliate about deactivation

@@ -329,7 +329,7 @@ async function getTeacherChain(
   const relations = await prisma.teacherStudent.findMany({
     where: {
       studentId: affiliateId,
-      isActive: true,
+      status: "ACTIVE",
     },
     select: {
       teacherId: true,
