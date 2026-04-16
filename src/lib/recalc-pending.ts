@@ -308,23 +308,34 @@ export async function runRecalcPending(
         ? fullAmount.sub(correctedCut).sub(teacherCutTotal)
         : fullAmount.sub(teacherCutTotal);
 
+      const correctedAffiliateData = {
+        affiliateCutPercent: verifiedRate.toDecimalPlaces(2).toNumber(),
+        affiliateCutCad: p.hadAttendance
+          ? correctedCut.toDecimalPlaces(2).toNumber()
+          : 0,
+        ceoCutCad: correctedCeoCut.toDecimalPlaces(2).toNumber(),
+      };
+
+      // Re-price affiliate row.
       await prisma.commission.updateMany({
         where: {
           affiliateId,
           rewardfulCommissionId: p.rewardfulCommissionId,
           teacherId: null,
-          // Only reprice EARNED or FORFEITED rows we just wrote — not any
-          // genuinely pre-existing FORFEITED rows (which would have a
-          // different forfeitureReason).
           status: p.hadAttendance ? "EARNED" : "FORFEITED",
         },
-        data: {
-          affiliateCutPercent: verifiedRate.toDecimalPlaces(2).toNumber(),
-          affiliateCutCad: p.hadAttendance
-            ? correctedCut.toDecimalPlaces(2).toNumber()
-            : 0,
-          ceoCutCad: correctedCeoCut.toDecimalPlaces(2).toNumber(),
+        data: correctedAffiliateData,
+      });
+
+      // Re-price teacher rows — they carry the same denormalized
+      // affiliateCutPercent / affiliateCutCad / ceoCutCad fields.
+      await prisma.commission.updateMany({
+        where: {
+          affiliateId,
+          rewardfulCommissionId: p.rewardfulCommissionId,
+          teacherId: { not: null },
         },
+        data: correctedAffiliateData,
       });
     }
     // Return the corrected rate so the caller shows the right value.
