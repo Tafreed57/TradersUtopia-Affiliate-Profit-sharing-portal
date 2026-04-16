@@ -26,15 +26,22 @@ export async function GET() {
 
   const [
     lifetimeStatsUser,
+    totalEarnedFallback,
     thisMonthEarned,
     commissionCount,
     attendanceThisMonth,
     recentCommissions,
   ] = await Promise.all([
-    // Total earned — use Rewardful-based lifetimeStatsJson (same source as /commissions page)
+    // Total earned — prefer Rewardful-based cache (same source as /commissions page)
     prisma.user.findUnique({
       where: { id: userId },
       select: { lifetimeStatsJson: true },
+    }),
+
+    // Fallback for when Rewardful cache is cold (new user / post-rate-change)
+    prisma.commission.aggregate({
+      where: { affiliateId: userId, teacherId: null, status: "EARNED" },
+      _sum: { affiliateCutCad: true },
     }),
 
     // This month earned
@@ -88,9 +95,10 @@ export async function GET() {
     | { grossEarnedCad?: number }
     | null
     | undefined;
+  const localFallback = totalEarnedFallback._sum.affiliateCutCad?.toNumber() ?? 0;
 
   return NextResponse.json({
-    totalEarnedCad: lifetimeStats?.grossEarnedCad ?? 0,
+    totalEarnedCad: lifetimeStats?.grossEarnedCad ?? localFallback,
     thisMonthEarnedCad:
       thisMonthEarned._sum.affiliateCutCad?.toNumber() ?? 0,
     commissionCount,
