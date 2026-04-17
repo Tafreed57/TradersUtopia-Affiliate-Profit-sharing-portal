@@ -97,9 +97,14 @@ export async function GET() {
     | undefined;
   const localFallback = totalEarnedFallback._sum.affiliateCutCad?.toNumber() ?? 0;
 
+  // When Rewardful cache is warm, totalEarned is in CAD (from commission_stats).
+  // When cold, it falls back to DB sum of affiliateCutCad which is actually USD.
+  const hasRewardfulCache = lifetimeStats?.grossEarnedCad != null;
+
   return NextResponse.json({
-    totalEarnedCad: lifetimeStats?.grossEarnedCad ?? localFallback,
-    thisMonthEarnedCad:
+    totalEarned: lifetimeStats?.grossEarnedCad ?? localFallback,
+    totalEarnedCurrency: hasRewardfulCache ? "CAD" : "USD",
+    thisMonthEarned:
       thisMonthEarned._sum.affiliateCutCad?.toNumber() ?? 0,
     commissionCount,
     attendanceDaysThisMonth: attendanceThisMonth.length,

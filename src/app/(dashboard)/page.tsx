@@ -24,8 +24,9 @@ import { RateNotSetBanner } from "@/components/commissions/rate-not-set-banner";
 import { useCurrency } from "@/providers/currency-provider";
 
 interface DashboardStats {
-  totalEarnedCad: number;
-  thisMonthEarnedCad: number;
+  totalEarned: number;
+  totalEarnedCurrency: "CAD" | "USD";
+  thisMonthEarned: number;
   commissionCount: number;
   attendanceDaysThisMonth: number;
   recentCommissions: {
@@ -121,7 +122,7 @@ export default function DashboardPage() {
             ) : (
               <>
                 <div className="text-2xl font-bold">
-                  {format(stats?.totalEarnedCad ?? 0, "CAD")}
+                  {format(stats?.totalEarned ?? 0, stats?.totalEarnedCurrency ?? "USD")}
                 </div>
                 <p className="text-xs text-muted-foreground">{currency}</p>
               </>
@@ -142,7 +143,7 @@ export default function DashboardPage() {
             ) : (
               <>
                 <div className="text-2xl font-bold">
-                  {format(stats?.thisMonthEarnedCad ?? 0)}
+                  {format(stats?.thisMonthEarned ?? 0)}
                 </div>
                 <p className="text-xs text-muted-foreground">{currency}</p>
               </>
