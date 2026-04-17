@@ -38,7 +38,8 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const eventType = (payload.event ?? payload.type ?? "") as string;
+    const rawEvent = payload.event ?? payload.type ?? "";
+    const eventType = typeof rawEvent === "string" ? rawEvent : String(rawEvent);
 
     // State-change event: commission.updated with state=paid or state=voided
     if (eventType.toLowerCase() === "commission.updated") {
