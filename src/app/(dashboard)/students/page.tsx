@@ -6,6 +6,20 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
+
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -47,6 +61,190 @@ interface UserResult {
   name: string | null;
   email: string;
   image: string | null;
+}
+
+interface DetailCommission {
+  id: string;
+  conversionDate: string;
+  teacherCutCad: number;
+  status: string;
+  forfeitureReason: string | null;
+}
+
+interface DetailAttendance {
+  id: string;
+  date: string;
+  timezone: string;
+  note: string | null;
+}
+
+interface StudentDetailResponse {
+  student: { id: string; name: string | null; email: string; image: string | null };
+  teacherCutPercent: number;
+  commissions: DetailCommission[];
+  attendance: DetailAttendance[];
+}
+
+function StudentDetailSheet({
+  student,
+  onClose,
+  format,
+}: {
+  student: Student | null;
+  onClose: () => void;
+  format: (cad: number) => string;
+}) {
+  const { data, isLoading } = useQuery<StudentDetailResponse>({
+    queryKey: ["student-detail", student?.id],
+    queryFn: async () => {
+      const res = await fetch(`/api/students/${student!.id}/detail`);
+      if (!res.ok) throw new Error("Failed to fetch");
+      return res.json();
+    },
+    enabled: !!student,
+  });
+
+  const earned = data?.commissions.filter((c) => c.status === "EARNED") ?? [];
+  const totalEarned = earned.reduce((s, c) => s + c.teacherCutCad, 0);
+
+  return (
+    <Sheet open={!!student} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <SheetContent side="right" className="flex w-full flex-col p-0 sm:max-w-md">
+        <SheetHeader className="border-b border-border/50 p-4 pb-0">
+          <div className="flex items-center gap-3 pb-4 pr-8">
+            <Avatar className="h-10 w-10">
+              <AvatarImage src={student?.image ?? undefined} />
+              <AvatarFallback className="bg-primary/10 text-sm text-primary">
+                {student ? getInitials(student.name, student.email) : ""}
+              </AvatarFallback>
+            </Avatar>
+            <div className="min-w-0 flex-1">
+              <SheetTitle>{student?.name ?? student?.email}</SheetTitle>
+              {student?.name && (
+                <SheetDescription className="truncate">{student.email}</SheetDescription>
+              )}
+            </div>
+          </div>
+
+          {data && (
+            <div className="flex gap-5 pb-4 text-sm">
+              <div>
+                <p className="font-semibold text-success">{format(totalEarned)}</p>
+                <p className="text-xs text-muted-foreground">Your total cut</p>
+              </div>
+              <div>
+                <p className="font-semibold">{earned.length}</p>
+                <p className="text-xs text-muted-foreground">Conversions</p>
+              </div>
+              <div>
+                <p className="font-semibold">{data.attendance.length}</p>
+                <p className="text-xs text-muted-foreground">Attendance</p>
+              </div>
+              <div>
+                <p className="font-semibold">{data.teacherCutPercent}%</p>
+                <p className="text-xs text-muted-foreground">Your rate</p>
+              </div>
+            </div>
+          )}
+        </SheetHeader>
+
+        {isLoading ? (
+          <div className="space-y-3 p-4">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <Skeleton key={i} className="h-12 w-full" />
+            ))}
+          </div>
+        ) : (
+          <Tabs defaultValue="commissions" className="flex flex-1 flex-col overflow-hidden">
+            <TabsList variant="line" className="w-full justify-start px-4 pt-2">
+              <TabsTrigger value="commissions">
+                Commissions ({data?.commissions.length ?? 0})
+              </TabsTrigger>
+              <TabsTrigger value="attendance">
+                Attendance ({data?.attendance.length ?? 0})
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="commissions" className="flex-1 space-y-2 overflow-y-auto px-4 py-3">
+              {!data?.commissions.length ? (
+                <p className="py-8 text-center text-sm text-muted-foreground">
+                  No commissions yet
+                </p>
+              ) : (
+                data.commissions.map((c) => (
+                  <div
+                    key={c.id}
+                    className="flex items-center justify-between rounded-lg border border-border/50 px-3 py-2.5"
+                  >
+                    <div>
+                      <p className="text-sm font-medium">
+                        {new Date(c.conversionDate).toLocaleDateString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                          year: "numeric",
+                        })}
+                      </p>
+                      {c.forfeitureReason && (
+                        <p className="text-xs capitalize text-muted-foreground">
+                          {c.forfeitureReason.replace(/_/g, " ")}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`text-sm font-semibold ${
+                          c.status === "EARNED" ? "text-success" : "text-muted-foreground"
+                        }`}
+                      >
+                        {format(c.teacherCutCad)}
+                      </span>
+                      <Badge
+                        variant="default"
+                        className={
+                          c.status === "EARNED"
+                            ? "bg-success/15 text-success border-success/30"
+                            : c.status === "FORFEITED"
+                            ? "bg-error/15 text-error border-error/30"
+                            : "bg-warning/15 text-warning border-warning/30"
+                        }
+                      >
+                        {c.status}
+                      </Badge>
+                    </div>
+                  </div>
+                ))
+              )}
+            </TabsContent>
+
+            <TabsContent value="attendance" className="flex-1 space-y-2 overflow-y-auto px-4 py-3">
+              {!data?.attendance.length ? (
+                <p className="py-8 text-center text-sm text-muted-foreground">
+                  No attendance records yet
+                </p>
+              ) : (
+                data.attendance.map((a) => (
+                  <div
+                    key={a.id}
+                    className="flex items-center justify-between rounded-lg border border-border/50 px-3 py-2.5"
+                  >
+                    <div>
+                      <p className="text-sm font-medium">{a.date}</p>
+                      <p className="text-xs text-muted-foreground">{a.timezone}</p>
+                    </div>
+                    {a.note && (
+                      <p className="max-w-[140px] truncate text-xs text-muted-foreground">
+                        {a.note}
+                      </p>
+                    )}
+                  </div>
+                ))
+              )}
+            </TabsContent>
+          </Tabs>
+        )}
+      </SheetContent>
+    </Sheet>
+  );
 }
 
 function getInitials(name: string | null, email: string) {
