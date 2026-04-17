@@ -7,7 +7,7 @@ import {
   type WebhookConversion,
 } from "@/lib/commission-engine";
 import { createNotifications } from "@/lib/notifications";
-import { handleCommissionPaid } from "@/lib/payment-service";
+import { handleCommissionPaid, handleCommissionVoided } from "@/lib/payment-service";
 
 /**
  * POST /api/webhooks/rewardful
@@ -40,20 +40,28 @@ export async function POST(req: NextRequest) {
 
     const eventType = (payload.event ?? payload.type ?? "") as string;
 
-    // Payment event: commission.updated with state=paid
+    // State-change event: commission.updated with state=paid or state=voided
     if (eventType.toLowerCase() === "commission.updated") {
       const data = (payload.data ?? payload) as Record<string, unknown>;
       const state = (data.state as string | undefined) ?? "";
-      if (state !== "paid") {
-        return NextResponse.json({ status: "ignored", reason: "state_not_paid" });
-      }
       const rewardfulCommissionId = (data.id as string | undefined) ?? "";
-      const paidAtStr = (data.paid_at as string | undefined) ?? new Date().toISOString();
       if (!rewardfulCommissionId) {
         return NextResponse.json({ error: "Missing commission id" }, { status: 400 });
       }
-      const result = await handleCommissionPaid(rewardfulCommissionId, new Date(paidAtStr));
-      return NextResponse.json({ ok: true, ...result });
+
+      if (state === "paid") {
+        const paidAtStr = (data.paid_at as string | undefined) ?? new Date().toISOString();
+        const result = await handleCommissionPaid(rewardfulCommissionId, new Date(paidAtStr));
+        return NextResponse.json({ ok: true, ...result });
+      }
+
+      if (state === "voided") {
+        const voidedAtStr = (data.voided_at as string | undefined) ?? new Date().toISOString();
+        const result = await handleCommissionVoided(rewardfulCommissionId, new Date(voidedAtStr));
+        return NextResponse.json({ ok: true, ...result });
+      }
+
+      return NextResponse.json({ status: "ignored", reason: `state_${state}` });
     }
 
     // Conversion event: create/process new commission

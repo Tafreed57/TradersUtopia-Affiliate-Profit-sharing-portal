@@ -85,3 +85,51 @@ export async function handleCommissionPaid(
 
   return { updated: rows.length };
 }
+
+/**
+ * Marks all Commission rows for a given rewardfulCommissionId as VOIDED
+ * and notifies the affiliate.
+ *
+ * Called by the webhook handler when Rewardful fires commission.updated
+ * with state="voided" (refund or chargeback).
+ */
+export async function handleCommissionVoided(
+  rewardfulCommissionId: string,
+  voidedAt: Date
+): Promise<{ updated: number }> {
+  const rows = await prisma.commission.findMany({
+    where: {
+      rewardfulCommissionId,
+      status: { in: ["EARNED", "PAID", "PENDING"] },
+    },
+    select: {
+      id: true,
+      affiliateId: true,
+      teacherId: true,
+      affiliateCutCad: true,
+      currency: true,
+    },
+  });
+  if (!rows.length) return { updated: 0 };
+
+  await prisma.commission.updateMany({
+    where: { id: { in: rows.map((r) => r.id) } },
+    data: { status: "VOIDED", voidedAt },
+  });
+
+  // Notify the affiliate (not teachers — keep it simple)
+  const affiliateRow = rows.find((r) => !r.teacherId);
+  if (affiliateRow) {
+    const cur = affiliateRow.currency ?? "USD";
+    const sym = cur === "CAD" ? "CA$" : "US$";
+    await createNotification({
+      userId: affiliateRow.affiliateId,
+      type: "COMMISSION_VOIDED",
+      title: "Commission Voided",
+      body: `A commission of ${sym}${affiliateRow.affiliateCutCad.toNumber().toFixed(2)} was voided due to a refund or chargeback.`,
+      data: { rewardfulCommissionId },
+    });
+  }
+
+  return { updated: rows.length };
+}

@@ -32,7 +32,7 @@ interface DashboardStats {
   recentCommissions: {
     id: string;
     affiliateCutCad: string;
-    status: "EARNED" | "FORFEITED" | "PENDING";
+    status: "EARNED" | "FORFEITED" | "PENDING" | "PAID" | "VOIDED";
     forfeitedToCeo: boolean;
     conversionDate: string;
   }[];
@@ -244,16 +244,24 @@ export default function DashboardPage() {
                       className={
                         c.status === "EARNED"
                           ? "bg-success/15 text-success border-success/30"
-                          : c.status === "FORFEITED"
-                            ? "bg-error/15 text-error border-error/30"
-                            : "bg-warning/15 text-warning border-warning/30"
+                          : c.status === "PAID"
+                            ? "bg-info/15 text-info border-info/30"
+                            : c.status === "VOIDED"
+                              ? "bg-destructive/15 text-destructive border-destructive/30"
+                              : c.status === "FORFEITED"
+                                ? "bg-error/15 text-error border-error/30"
+                                : "bg-warning/15 text-warning border-warning/30"
                       }
                     >
                       {c.status === "EARNED"
                         ? "Earned"
-                        : c.status === "FORFEITED"
-                          ? "Forfeited"
-                          : "Pending"}
+                        : c.status === "PAID"
+                          ? "Paid"
+                          : c.status === "VOIDED"
+                            ? "Voided"
+                            : c.status === "FORFEITED"
+                              ? "Forfeited"
+                              : "Pending"}
                     </Badge>
                   </div>
                 ))}

@@ -128,6 +128,7 @@ model Commission {
   forfeitureReason      String?
   conversionDate        DateTime
   paidAt                DateTime?
+  voidedAt              DateTime?
   processedAt           DateTime         @default(now())
   rewardfulData         Json?
   affiliate             User             @relation("AffiliateCommissions", fields: [affiliateId], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -274,6 +275,7 @@ enum CommissionStatus {
   FORFEITED
   PENDING
   PAID
+  VOIDED
 }
 
 enum NotificationType {
@@ -293,6 +295,7 @@ enum NotificationType {
   STUDENT_PROPOSAL_APPROVED
   STUDENT_PROPOSAL_REJECTED
   STUDENT_PAYMENT_RECEIVED
+  COMMISSION_VOIDED
 }
 
 enum TeacherStudentStatus {

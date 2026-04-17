@@ -34,7 +34,7 @@ interface Commission {
   id: string;
   affiliateCutPercent: string;
   affiliateCutCad: string;
-  status: "EARNED" | "FORFEITED" | "PENDING";
+  status: "EARNED" | "FORFEITED" | "PENDING" | "PAID" | "VOIDED";
   forfeitedToCeo: boolean;
   forfeitureReason: string | null;
   conversionDate: string;
@@ -86,6 +86,16 @@ const STATUS_CONFIG = {
     label: "Pending",
     variant: "default" as const,
     className: "bg-warning/15 text-warning border-warning/30",
+  },
+  PAID: {
+    label: "Paid",
+    variant: "default" as const,
+    className: "bg-info/15 text-info border-info/30",
+  },
+  VOIDED: {
+    label: "Voided",
+    variant: "default" as const,
+    className: "bg-destructive/15 text-destructive border-destructive/30",
   },
 };
 
@@ -166,8 +176,10 @@ export default function CommissionsPage() {
               <SelectContent>
                 <SelectItem value="all">All Status</SelectItem>
                 <SelectItem value="EARNED">Earned</SelectItem>
+                <SelectItem value="PAID">Paid</SelectItem>
                 <SelectItem value="FORFEITED">Forfeited</SelectItem>
                 <SelectItem value="PENDING">Pending</SelectItem>
+                <SelectItem value="VOIDED">Voided</SelectItem>
               </SelectContent>
             </Select>
           </div>

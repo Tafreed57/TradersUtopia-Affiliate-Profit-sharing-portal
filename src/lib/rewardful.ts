@@ -78,8 +78,10 @@ export interface RewardfulCommission {
   id: string;
   amount: number;
   currency: string;
+  state?: "pending" | "due" | "paid" | "voided";
   due_at: string | null;
   paid_at: string | null;
+  voided_at?: string | null;
   sale?: {
     id: string;
     currency: string;
