@@ -58,6 +58,7 @@ export async function GET(
         status: true,
         forfeitedToCeo: true,
         forfeitureReason: true,
+        paidAt: true,
       },
     }),
 
@@ -93,6 +94,7 @@ export async function GET(
       status: c.status,
       forfeitedToCeo: c.forfeitedToCeo,
       forfeitureReason: c.forfeitureReason,
+      paidAt: c.paidAt,
     })),
     attendance,
   });

@@ -46,7 +46,8 @@ interface Student {
   status: string;
   depth: number;
   teacherCutPercent: number;
-  teacherEarnedCad: number;
+  teacherDueNowCad: number;
+  teacherPaidCad: number;
   conversionCount: number;
   attendanceDaysThisMonth: number;
 }
@@ -69,6 +70,7 @@ interface DetailCommission {
   teacherCutCad: number;
   status: string;
   forfeitureReason: string | null;
+  paidAt: string | null;
 }
 
 interface DetailAttendance {
@@ -104,8 +106,10 @@ function StudentDetailSheet({
     enabled: !!student,
   });
 
-  const earned = data?.commissions.filter((c) => c.status === "EARNED") ?? [];
-  const totalEarned = earned.reduce((s, c) => s + c.teacherCutCad, 0);
+  const dueNow = data?.commissions.filter((c) => c.status === "EARNED") ?? [];
+  const paid = data?.commissions.filter((c) => c.status === "PAID") ?? [];
+  const totalDueNow = dueNow.reduce((s, c) => s + c.teacherCutCad, 0);
+  const totalPaid = paid.reduce((s, c) => s + c.teacherCutCad, 0);
 
   return (
     <Sheet open={!!student} onOpenChange={(open) => { if (!open) onClose(); }}>
@@ -129,11 +133,15 @@ function StudentDetailSheet({
           {data && (
             <div className="flex gap-5 pb-4 text-sm">
               <div>
-                <p className="font-semibold text-success">{format(totalEarned)}</p>
-                <p className="text-xs text-muted-foreground">Your total cut</p>
+                <p className="font-semibold text-success">{format(totalDueNow)}</p>
+                <p className="text-xs text-muted-foreground">Due now</p>
               </div>
               <div>
-                <p className="font-semibold">{earned.length}</p>
+                <p className="font-semibold text-muted-foreground">{format(totalPaid)}</p>
+                <p className="text-xs text-muted-foreground">Paid</p>
+              </div>
+              <div>
+                <p className="font-semibold">{data.commissions.length}</p>
                 <p className="text-xs text-muted-foreground">Conversions</p>
               </div>
               <div>
@@ -184,6 +192,11 @@ function StudentDetailSheet({
                           year: "numeric",
                         })}
                       </p>
+                      {c.status === "PAID" && c.paidAt && (
+                        <p className="text-xs text-muted-foreground">
+                          Paid {new Date(c.paidAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                        </p>
+                      )}
                       {c.forfeitureReason && (
                         <p className="text-xs capitalize text-muted-foreground">
                           {c.forfeitureReason.replace(/_/g, " ")}
@@ -203,12 +216,14 @@ function StudentDetailSheet({
                         className={
                           c.status === "EARNED"
                             ? "bg-success/15 text-success border-success/30"
+                            : c.status === "PAID"
+                            ? "bg-info/15 text-info border-info/30"
                             : c.status === "FORFEITED"
                             ? "bg-error/15 text-error border-error/30"
                             : "bg-warning/15 text-warning border-warning/30"
                         }
                       >
-                        {c.status}
+                        {c.status === "PAID" ? "Paid" : c.status === "EARNED" ? "Due" : c.status}
                       </Badge>
                     </div>
                   </div>
@@ -656,9 +671,9 @@ function StudentCard({
           <div>
             <DollarSign className="mx-auto mb-1 h-4 w-4 text-success" />
             <p className="text-sm font-semibold">
-              {format(student.teacherEarnedCad)}
+              {format(student.teacherDueNowCad)}
             </p>
-            <p className="text-xs text-muted-foreground">Your cut</p>
+            <p className="text-xs text-muted-foreground">Due now</p>
           </div>
           <div>
             <Users className="mx-auto mb-1 h-4 w-4 text-info" />
