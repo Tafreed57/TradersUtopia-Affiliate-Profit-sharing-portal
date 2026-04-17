@@ -134,7 +134,7 @@ function StudentDetailSheet({
             <div className="flex gap-5 pb-4 text-sm">
               <div>
                 <p className="font-semibold text-success">{format(totalDueNow)}</p>
-                <p className="text-xs text-muted-foreground">Due now</p>
+                <p className="text-xs text-muted-foreground">Unpaid</p>
               </div>
               <div>
                 <p className="font-semibold text-muted-foreground">{format(totalPaid)}</p>
@@ -673,7 +673,7 @@ function StudentCard({
             <p className="text-sm font-semibold">
               {format(student.teacherDueNowCad)}
             </p>
-            <p className="text-xs text-muted-foreground">Due now</p>
+            <p className="text-xs text-muted-foreground">Unpaid</p>
           </div>
           <div>
             <Users className="mx-auto mb-1 h-4 w-4 text-info" />
