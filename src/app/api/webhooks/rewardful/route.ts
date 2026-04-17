@@ -7,6 +7,7 @@ import {
   type WebhookConversion,
 } from "@/lib/commission-engine";
 import { createNotifications } from "@/lib/notifications";
+import { handleCommissionPaid } from "@/lib/payment-service";
 
 /**
  * POST /api/webhooks/rewardful
@@ -37,13 +38,29 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Rewardful sends various event types — we only care about conversions
-    const eventType = payload.event ?? payload.type;
+    const eventType = (payload.event ?? payload.type ?? "") as string;
+
+    // Payment event: commission.updated with state=paid
+    if (eventType.toLowerCase() === "commission.updated") {
+      const data = (payload.data ?? payload) as Record<string, unknown>;
+      const state = (data.state as string | undefined) ?? "";
+      if (state !== "paid") {
+        return NextResponse.json({ status: "ignored", reason: "state_not_paid" });
+      }
+      const rewardfulCommissionId = (data.id as string | undefined) ?? "";
+      const paidAtStr = (data.paid_at as string | undefined) ?? new Date().toISOString();
+      if (!rewardfulCommissionId) {
+        return NextResponse.json({ error: "Missing commission id" }, { status: 400 });
+      }
+      const result = await handleCommissionPaid(rewardfulCommissionId, new Date(paidAtStr));
+      return NextResponse.json({ ok: true, ...result });
+    }
+
+    // Conversion event: create/process new commission
     if (!isConversionEvent(eventType)) {
       return NextResponse.json({ status: "ignored", event: eventType });
     }
 
-    // Extract conversion data from webhook payload
     const conversion = extractConversion(payload);
     if (!conversion) {
       console.error("Could not extract conversion data from webhook:", payload);
@@ -59,7 +76,6 @@ export async function POST(req: NextRequest) {
       console.warn("Commission warnings:", result.warnings);
     }
 
-    // Send notifications for the conversion
     if (result.success && !result.skipped && result.notifications) {
       await createNotifications(result.notifications);
     }
