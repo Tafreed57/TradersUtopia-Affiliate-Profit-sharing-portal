@@ -121,7 +121,7 @@ export default function DashboardPage() {
             ) : (
               <>
                 <div className="text-2xl font-bold">
-                  {format(stats?.totalEarnedCad ?? 0)}
+                  {format(stats?.totalEarnedCad ?? 0, "CAD")}
                 </div>
                 <p className="text-xs text-muted-foreground">{currency}</p>
               </>
@@ -166,7 +166,7 @@ export default function DashboardPage() {
                   {stats?.commissionCount ?? 0}
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  total conversions
+                  total commissions
                 </p>
               </>
             )}

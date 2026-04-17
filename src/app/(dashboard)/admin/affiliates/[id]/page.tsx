@@ -389,7 +389,7 @@ export default function AffiliateDetailPage({
               <div>
                 <p className="font-medium">Total Earned</p>
                 <p className="text-xs text-muted-foreground">
-                  {data.totalConversions} conversions
+                  {data.totalConversions} commissions
                 </p>
               </div>
               <span className="text-lg font-bold text-success">

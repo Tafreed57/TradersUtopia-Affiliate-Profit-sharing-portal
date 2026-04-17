@@ -150,7 +150,8 @@ function mapCommissionToConversion(
   if (!commission.sale) return null;
   const amountRaw = commission.sale.sale_amount_cents;
   if (typeof amountRaw !== "number") return null;
-  const amountCad = amountRaw / 100;
+  const amount = amountRaw / 100;
+  const currency = commission.sale.currency ?? commission.currency ?? "USD";
 
   const conversionDate =
     commission.sale?.charged_at ??
@@ -161,7 +162,8 @@ function mapCommissionToConversion(
     rewardfulCommissionId: commission.id,
     rewardfulReferralId: commission.referral?.id,
     affiliateRewardfulId,
-    amountCad,
+    amount,
+    currency,
     conversionDate,
     rawPayload: commission as unknown as Record<string, unknown>,
   };

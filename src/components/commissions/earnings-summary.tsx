@@ -117,7 +117,7 @@ export function EarningsSummary() {
       <CardContent className="space-y-4">
         <div className="flex items-baseline justify-between">
           <span className="text-sm text-muted-foreground">Total Earned</span>
-          <span className="text-2xl font-bold">{format(gross)}</span>
+          <span className="text-2xl font-bold">{format(gross, "CAD")}</span>
         </div>
 
         <ProgressBar segments={segments} />
@@ -126,21 +126,21 @@ export function EarningsSummary() {
           <Row
             color="bg-success"
             label="Paid Out"
-            amount={format(paid)}
+            amount={format(paid, "CAD")}
             percent={fmtPct(paidR)}
           />
           {due > 0 && (
             <Row
               color="bg-info"
               label="Due Now"
-              amount={format(due)}
+              amount={format(due, "CAD")}
               percent={fmtPct(dueR)}
             />
           )}
           <Row
             color="bg-warning"
             label="Unpaid"
-            amount={format(unpaid)}
+            amount={format(unpaid, "CAD")}
             percent={fmtPct(unpaidR)}
           />
         </div>

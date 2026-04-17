@@ -133,15 +133,19 @@ function extractConversion(
     getString(data, "id") ?? getString(payload, "commission_id");
   if (!commissionId) return null;
 
-  // Amount — Rewardful amounts are in cents, convert to dollars
+  // Amount — Rewardful amounts are in cents, convert to dollars.
+  // The currency on individual commissions is typically USD.
   const amountRaw =
     getNumber(data, "amount") ??
     getNumber(data, "sale_amount") ??
     getNumber(payload, "amount");
   if (amountRaw == null) return null;
 
-  // Rewardful sends amounts in cents
-  const amountCad = amountRaw / 100;
+  const amount = amountRaw / 100;
+  const currency =
+    getString(data, "currency") ??
+    getString(payload, "currency") ??
+    "USD";
 
   // Affiliate ID
   const affiliateId =
@@ -172,7 +176,8 @@ function extractConversion(
     rewardfulCommissionId: commissionId,
     rewardfulReferralId: referralId ?? undefined,
     affiliateRewardfulId: affiliateId,
-    amountCad,
+    amount,
+    currency,
     conversionDate: dateStr,
     rawPayload: payload,
   };

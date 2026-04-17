@@ -78,7 +78,7 @@ export async function handleCommissionPaid(
       userId: teacherId,
       type: "STUDENT_PAYMENT_RECEIVED",
       title: "Student Payment Processed",
-      body: `${label} received a payment — your cut of CA$${cut.toFixed(2)} has been marked as paid.`,
+      body: `${label} received a payment — your cut of US$${cut.toFixed(2)} has been marked as paid.`,
       data: { studentId: affiliateId },
     });
   }

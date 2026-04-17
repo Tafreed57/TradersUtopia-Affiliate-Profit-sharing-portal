@@ -356,7 +356,7 @@ export default function AdminPage() {
                   <TableRow>
                     <TableHead>Affiliate</TableHead>
                     <TableHead>Rate</TableHead>
-                    <TableHead>Conversions</TableHead>
+                    <TableHead>Commissions</TableHead>
                     <TableHead>Students</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead></TableHead>

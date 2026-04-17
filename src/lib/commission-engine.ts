@@ -20,7 +20,10 @@ export interface WebhookConversion {
   rewardfulCommissionId: string;
   rewardfulReferralId?: string;
   affiliateRewardfulId: string;
-  amountCad: number;
+  /** Sale amount in the source currency (usually USD). */
+  amount: number;
+  /** ISO 4217 currency code of the amount (defaults to USD). */
+  currency?: string;
   conversionDate: string; // ISO 8601
   rawPayload: Record<string, unknown>;
 }
@@ -106,7 +109,8 @@ export async function processConversion(
     };
   }
 
-  const fullAmount = new Decimal(conversion.amountCad);
+  const fullAmount = new Decimal(conversion.amount);
+  const currency = conversion.currency ?? "USD";
   const conversionDate = new Date(conversion.conversionDate);
 
   // 3. Get teacher chain (active teachers at depth 1 and 2)
@@ -212,6 +216,7 @@ export async function processConversion(
     idempotencyKey: conversion.rewardfulCommissionId
       ? `${conversion.rewardfulCommissionId}:aff:${affiliate.id}`
       : null,
+    currency,
     fullAmountCad: fullAmount.toDecimalPlaces(2).toNumber(),
     affiliateCutPercent: affiliatePercent.toDecimalPlaces(2).toNumber(),
     affiliateCutCad: finalAffiliateCut.toDecimalPlaces(2).toNumber(),
@@ -235,6 +240,7 @@ export async function processConversion(
       idempotencyKey: conversion.rewardfulCommissionId
         ? `${conversion.rewardfulCommissionId}:teacher:${tc.teacherId}`
         : null,
+      currency,
       fullAmountCad: fullAmount.toDecimalPlaces(2).toNumber(),
       affiliateCutPercent: affiliatePercent.toDecimalPlaces(2).toNumber(),
       affiliateCutCad: finalAffiliateCut.toDecimalPlaces(2).toNumber(),
@@ -282,7 +288,7 @@ export async function processConversion(
       userId: affiliate.id,
       type: "ATTENDANCE_FORFEITURE_ALERT",
       title: "Commission Forfeited",
-      body: `You missed attendance on ${conversionDate.toLocaleDateString()} and your commission of $${affiliateCut.toFixed(2)} CAD was forfeited. Submit attendance to recover it.`,
+      body: `You missed attendance on ${conversionDate.toLocaleDateString()} and your commission of $${affiliateCut.toFixed(2)} ${currency} was forfeited. Submit attendance to recover it.`,
       data: { rewardfulCommissionId: conversion.rewardfulCommissionId },
     });
   } else {
@@ -291,7 +297,7 @@ export async function processConversion(
       userId: affiliate.id,
       type: "CONVERSION_RECEIVED",
       title: "New Commission Earned!",
-      body: `You earned $${finalAffiliateCut.toFixed(2)} CAD from a new conversion.`,
+      body: `You earned $${finalAffiliateCut.toFixed(2)} ${currency} from a new conversion.`,
       data: { rewardfulCommissionId: conversion.rewardfulCommissionId },
     });
   }
@@ -302,7 +308,7 @@ export async function processConversion(
       userId: tc.teacherId,
       type: "CONVERSION_RECEIVED",
       title: "Student Conversion",
-      body: `Your student earned a conversion. Your cut: $${tc.amount.toFixed(2)} CAD.`,
+      body: `Your student earned a conversion. Your cut: $${tc.amount.toFixed(2)} ${currency}.`,
       data: { rewardfulCommissionId: conversion.rewardfulCommissionId },
     });
   }

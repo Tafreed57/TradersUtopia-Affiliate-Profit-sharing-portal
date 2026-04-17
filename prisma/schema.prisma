@@ -116,6 +116,7 @@ model Commission {
   rewardfulCommissionId String?
   rewardfulReferralId   String?
   idempotencyKey        String?          @unique
+  currency              String           @default("USD")
   fullAmountCad         Decimal          @db.Decimal(10, 2)
   affiliateCutPercent   Decimal          @db.Decimal(5, 2)
   affiliateCutCad       Decimal          @db.Decimal(10, 2)

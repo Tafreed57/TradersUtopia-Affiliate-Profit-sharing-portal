@@ -18,8 +18,18 @@ interface CurrencyContextValue {
   rate: number | null;
   stale: boolean;
   loading: boolean;
-  convert: (cadAmount: number) => number;
-  format: (cadAmount: number) => string;
+  /**
+   * Convert an amount to the user's chosen display currency.
+   * @param amount   - the numeric value
+   * @param inputCurrency - currency the amount is in (default "USD" since DB stores USD)
+   */
+  convert: (amount: number, inputCurrency?: Currency) => number;
+  /**
+   * Format an amount for display in the user's chosen currency.
+   * @param amount   - the numeric value
+   * @param inputCurrency - currency the amount is in (default "USD" since DB stores USD)
+   */
+  format: (amount: number, inputCurrency?: Currency) => string;
 }
 
 const CurrencyContext = createContext<CurrencyContextValue | null>(null);
@@ -27,6 +37,7 @@ const CurrencyContext = createContext<CurrencyContextValue | null>(null);
 export function CurrencyProvider({ children }: { children: React.ReactNode }) {
   const [currency, setCurrency] = useState<Currency>("CAD");
 
+  // Fetches the CAD→USD rate from the server
   const { data, isLoading } = useQuery({
     queryKey: ["exchange-rate"],
     queryFn: async () => {
@@ -46,18 +57,31 @@ export function CurrencyProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const convert = useCallback(
-    (cadAmount: number) => {
-      if (currency === "CAD" || !data?.rate) return cadAmount;
-      return Math.round(cadAmount * data.rate * 100) / 100;
+    (amount: number, inputCurrency: Currency = "USD") => {
+      // Already in the display currency — no conversion needed
+      if (inputCurrency === currency) return amount;
+
+      const cadToUsd = data?.rate;
+      if (!cadToUsd) return amount; // No rate available — return as-is
+
+      if (inputCurrency === "USD" && currency === "CAD") {
+        // USD → CAD: divide by CAD→USD rate (i.e. multiply by USD→CAD)
+        return Math.round((amount / cadToUsd) * 100) / 100;
+      }
+      if (inputCurrency === "CAD" && currency === "USD") {
+        // CAD → USD: multiply by CAD→USD rate
+        return Math.round(amount * cadToUsd * 100) / 100;
+      }
+      return amount;
     },
     [currency, data?.rate]
   );
 
   const format = useCallback(
-    (cadAmount: number) => {
-      const amount = convert(cadAmount);
+    (amount: number, inputCurrency: Currency = "USD") => {
+      const converted = convert(amount, inputCurrency);
       const symbol = currency === "CAD" ? "CA$" : "US$";
-      return `${symbol}${amount.toFixed(2)}`;
+      return `${symbol}${converted.toFixed(2)}`;
     },
     [convert, currency]
   );
