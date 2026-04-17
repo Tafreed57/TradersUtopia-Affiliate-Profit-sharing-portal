@@ -126,6 +126,7 @@ model Commission {
   forfeitedToCeo        Boolean          @default(false)
   forfeitureReason      String?
   conversionDate        DateTime
+  paidAt                DateTime?
   processedAt           DateTime         @default(now())
   rewardfulData         Json?
   affiliate             User             @relation("AffiliateCommissions", fields: [affiliateId], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -135,6 +136,7 @@ model Commission {
   @@index([teacherId])
   @@index([conversionDate])
   @@index([status])
+  @@index([paidAt])
   @@index([rewardfulCommissionId])
 }
 
