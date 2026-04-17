@@ -2,6 +2,26 @@ import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
 
 /**
+ * Silent version of handleCommissionPaid — marks Commission rows PAID
+ * without sending notifications. Used for historical paid-status sync.
+ */
+export async function syncCommissionPaid(
+  rewardfulCommissionId: string,
+  paidAt: Date
+): Promise<number> {
+  const rows = await prisma.commission.findMany({
+    where: { rewardfulCommissionId, status: "EARNED" },
+    select: { id: true },
+  });
+  if (!rows.length) return 0;
+  await prisma.commission.updateMany({
+    where: { id: { in: rows.map((r) => r.id) } },
+    data: { status: "PAID", paidAt },
+  });
+  return rows.length;
+}
+
+/**
  * Marks all EARNED Commission rows for a given rewardfulCommissionId as PAID
  * and notifies each teacher once (10-minute dedup per teacher-student pair).
  *

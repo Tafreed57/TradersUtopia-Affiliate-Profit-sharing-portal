@@ -197,11 +197,13 @@ export async function listCommissions(params?: {
   page?: number;
   limit?: number;
   affiliate_id?: string;
+  state?: "due" | "pending" | "paid" | "voided";
 }) {
   const qs = new URLSearchParams();
   if (params?.page) qs.set("page", String(params.page));
   if (params?.limit) qs.set("limit", String(params.limit));
   if (params?.affiliate_id) qs.set("affiliate_id", params.affiliate_id);
+  if (params?.state) qs.set("state", params.state);
   const query = qs.toString() ? `?${qs}` : "";
   return request<PaginatedResponse<RewardfulCommission>>(
     `/commissions${query}`
