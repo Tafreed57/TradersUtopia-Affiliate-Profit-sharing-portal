@@ -136,6 +136,17 @@ export default function AdminPage() {
     onError: () => toast.error("Backfill failed — check logs"),
   });
 
+  const syncPaidMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/admin/commissions/sync-paid", { method: "POST" });
+      if (!res.ok) throw new Error("Sync failed");
+      return res.json() as Promise<{ fetched: number; updated: number }>;
+    },
+    onSuccess: (data) =>
+      toast.success(`Sync complete — ${data.updated} row${data.updated !== 1 ? "s" : ""} marked paid (${data.fetched} fetched from Rewardful)`),
+    onError: () => toast.error("Sync failed — check logs"),
+  });
+
   const pendingProposals =
     proposalsData?.data.filter((p) => p.status === "PENDING") ?? [];
   const pendingTeacherProposals = teacherProposalsData?.data ?? [];
@@ -269,6 +280,24 @@ export default function AdminPage() {
             >
               <RefreshCw className={`h-4 w-4 ${backfillMutation.isPending ? "animate-spin" : ""}`} />
               {backfillMutation.isPending ? "Running…" : "Run Backfill"}
+            </Button>
+          </div>
+          <div className="flex items-center justify-between border-t border-border/50 pt-4 mt-1">
+            <div>
+              <p className="text-sm font-medium">Sync Paid History</p>
+              <p className="text-xs text-muted-foreground">
+                Pulls all paid commissions from Rewardful and marks them PAID here. One-time baseline sync.
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2"
+              onClick={() => syncPaidMutation.mutate()}
+              disabled={syncPaidMutation.isPending}
+            >
+              <RefreshCw className={`h-4 w-4 ${syncPaidMutation.isPending ? "animate-spin" : ""}`} />
+              {syncPaidMutation.isPending ? "Syncing…" : "Sync Paid"}
             </Button>
           </div>
         </CardContent>
