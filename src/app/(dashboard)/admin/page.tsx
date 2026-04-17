@@ -191,7 +191,7 @@ export default function AdminPage() {
         </Card>
       </div>
 
-      {/* Pending Proposals Alert */}
+      {/* Pending Rate Proposals Alert */}
       {pendingProposals.length > 0 && (
         <Card className="border-warning/30">
           <CardHeader className="pb-3">
@@ -203,28 +203,76 @@ export default function AdminPage() {
           </CardHeader>
           <CardContent className="space-y-2">
             {pendingProposals.slice(0, 5).map((p) => (
-              <div
-                key={p.id}
-                className="flex items-center justify-between text-sm"
-              >
+              <div key={p.id} className="flex items-center justify-between text-sm">
                 <span>
-                  <strong>
-                    {p.proposer.name ?? p.proposer.email}
-                  </strong>{" "}
-                  wants to change rate for{" "}
+                  <strong>{p.proposer.name ?? p.proposer.email}</strong> wants
+                  to change rate for{" "}
                   <strong>{p.student.name ?? p.student.email}</strong>:{" "}
                   {p.currentPercent}% → {p.proposedPercent}%
                 </span>
-                <Link href={`/admin/proposals`}>
-                  <Button variant="outline" size="sm">
-                    Review
-                  </Button>
+                <Link href="/admin/proposals">
+                  <Button variant="outline" size="sm">Review</Button>
                 </Link>
               </div>
             ))}
           </CardContent>
         </Card>
       )}
+
+      {/* Pending Teacher-Student Proposals Alert */}
+      {pendingTeacherProposals.length > 0 && (
+        <Card className="border-warning/30">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-warning text-base">
+              <AlertTriangle className="h-5 w-5" />
+              {pendingTeacherProposals.length} Pending Student Relationship Request
+              {pendingTeacherProposals.length !== 1 ? "s" : ""}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {pendingTeacherProposals.slice(0, 5).map((p) => (
+              <div key={p.id} className="flex items-center justify-between text-sm">
+                <span>
+                  <strong>{p.teacher.name ?? p.teacher.email}</strong> wants to
+                  add <strong>{p.student.name ?? p.student.email}</strong> as a
+                  student at {p.proposedCut}% cut
+                </span>
+                <Link href="/admin/proposals">
+                  <Button variant="outline" size="sm">Review</Button>
+                </Link>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Admin Tools */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Admin Tools</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">Backfill Teacher Cuts</p>
+              <p className="text-xs text-muted-foreground">
+                Creates missing teacher Commission rows for all active relationships.
+                Safe to run multiple times.
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2"
+              onClick={() => backfillMutation.mutate()}
+              disabled={backfillMutation.isPending}
+            >
+              <RefreshCw className={`h-4 w-4 ${backfillMutation.isPending ? "animate-spin" : ""}`} />
+              {backfillMutation.isPending ? "Running…" : "Run Backfill"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Affiliates Table */}
       <Card>
