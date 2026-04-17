@@ -46,7 +46,7 @@ interface Student {
   status: string;
   depth: number;
   teacherCutPercent: number;
-  teacherDueNowCad: number;
+  teacherUnpaidCad: number;
   teacherPaidCad: number;
   conversionCount: number;
   attendanceDaysThisMonth: number;
@@ -671,7 +671,7 @@ function StudentCard({
           <div>
             <DollarSign className="mx-auto mb-1 h-4 w-4 text-success" />
             <p className="text-sm font-semibold">
-              {format(student.teacherDueNowCad)}
+              {format(student.teacherUnpaidCad)}
             </p>
             <p className="text-xs text-muted-foreground">Unpaid</p>
           </div>

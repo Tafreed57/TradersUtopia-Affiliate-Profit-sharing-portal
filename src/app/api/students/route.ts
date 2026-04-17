@@ -94,7 +94,7 @@ export async function GET() {
     status: r.student.status,
     depth: r.depth,
     teacherCutPercent: r.teacherCut.toNumber(),
-    teacherDueNowCad: earnedMap.get(r.studentId)?.dueNow ?? 0,
+    teacherUnpaidCad: earnedMap.get(r.studentId)?.dueNow ?? 0,
     teacherPaidCad: paidMap.get(r.studentId)?.paid ?? 0,
     conversionCount: (earnedMap.get(r.studentId)?.count ?? 0) + (paidMap.get(r.studentId)?.count ?? 0),
     attendanceDaysThisMonth: attendanceMap.get(r.studentId) ?? 0,
