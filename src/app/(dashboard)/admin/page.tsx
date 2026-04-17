@@ -4,13 +4,15 @@ import {
   AlertTriangle,
   CheckCircle,
   Clock,
+  RefreshCw,
   Search,
   Shield,
   Users,
 } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -69,10 +71,20 @@ interface Proposal {
   student: { id: string; name: string | null; email: string };
 }
 
+interface TeacherProposal {
+  id: string;
+  proposedCut: number;
+  status: string;
+  createdAt: string;
+  teacher: { id: string; name: string | null; email: string };
+  student: { id: string; name: string | null; email: string };
+}
+
 export default function AdminPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [page, setPage] = useState(1);
+  const queryClient = useQueryClient();
 
   const queryParams = new URLSearchParams();
   queryParams.set("page", String(page));
@@ -98,8 +110,36 @@ export default function AdminPage() {
     },
   });
 
+  const { data: teacherProposalsData } = useQuery<{ data: TeacherProposal[] }>({
+    queryKey: ["admin-teacher-proposals"],
+    queryFn: async () => {
+      const res = await fetch("/api/admin/teacher-proposals");
+      if (!res.ok) throw new Error("Failed to fetch");
+      return res.json();
+    },
+  });
+
+  const backfillMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/admin/teacher-proposals/backfill", {
+        method: "POST",
+      });
+      if (!res.ok) throw new Error("Backfill failed");
+      return res.json() as Promise<{ relationships: number; processed: number; created: number }>;
+    },
+    onSuccess: (data) => {
+      toast.success(
+        `Backfill complete — ${data.created} Commission row${data.created !== 1 ? "s" : ""} created across ${data.relationships} relationship${data.relationships !== 1 ? "s" : ""}`
+      );
+      queryClient.invalidateQueries({ queryKey: ["admin-affiliates"] });
+    },
+    onError: () => toast.error("Backfill failed — check logs"),
+  });
+
   const pendingProposals =
     proposalsData?.data.filter((p) => p.status === "PENDING") ?? [];
+  const pendingTeacherProposals = teacherProposalsData?.data ?? [];
+  const totalPending = pendingProposals.length + pendingTeacherProposals.length;
 
   return (
     <div className="space-y-6">
@@ -130,7 +170,7 @@ export default function AdminPage() {
           <CardContent className="flex items-center gap-3 pt-6">
             <Clock className="h-8 w-8 text-warning" />
             <div>
-              <p className="text-2xl font-bold">{pendingProposals.length}</p>
+              <p className="text-2xl font-bold">{totalPending}</p>
               <p className="text-sm text-muted-foreground">
                 Pending Proposals
               </p>
