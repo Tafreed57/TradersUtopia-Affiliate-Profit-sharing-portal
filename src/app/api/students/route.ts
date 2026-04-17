@@ -49,20 +49,20 @@ export async function GET() {
   const monthStartStr = monthStart.toISOString().slice(0, 10);
   const monthEndStr = monthEnd.toISOString().slice(0, 10);
 
-  const [commissionSummaries, attendanceSummaries] = await Promise.all([
-    // Commission totals per student (teacher's cut)
+  const baseWhere = { affiliateId: { in: studentIds }, teacherId };
+
+  const [earnedSummaries, paidSummaries, attendanceSummaries] = await Promise.all([
     prisma.commission.groupBy({
       by: ["affiliateId"],
-      where: {
-        affiliateId: { in: studentIds },
-        teacherId,
-        status: "EARNED",
-      },
+      where: { ...baseWhere, status: "EARNED" },
       _sum: { teacherCutCad: true },
       _count: true,
     }),
-
-    // Attendance days this month per student
+    prisma.commission.groupBy({
+      by: ["affiliateId"],
+      where: { ...baseWhere, status: "PAID" },
+      _sum: { teacherCutCad: true },
+    }),
     prisma.attendance.groupBy({
       by: ["userId"],
       where: {
@@ -73,14 +73,11 @@ export async function GET() {
     }),
   ]);
 
-  const commissionMap = new Map(
-    commissionSummaries.map((s) => [
-      s.affiliateId,
-      {
-        totalEarnedCad: s._sum.teacherCutCad?.toNumber() ?? 0,
-        conversionCount: s._count,
-      },
-    ])
+  const earnedMap = new Map(
+    earnedSummaries.map((s) => [s.affiliateId, { dueNow: s._sum.teacherCutCad?.toNumber() ?? 0, count: s._count }])
+  );
+  const paidMap = new Map(
+    paidSummaries.map((s) => [s.affiliateId, s._sum.teacherCutCad?.toNumber() ?? 0])
   );
 
   const attendanceMap = new Map(
@@ -96,8 +93,9 @@ export async function GET() {
     status: r.student.status,
     depth: r.depth,
     teacherCutPercent: r.teacherCut.toNumber(),
-    teacherEarnedCad: commissionMap.get(r.studentId)?.totalEarnedCad ?? 0,
-    conversionCount: commissionMap.get(r.studentId)?.conversionCount ?? 0,
+    teacherDueNowCad: earnedMap.get(r.studentId)?.dueNow ?? 0,
+    teacherPaidCad: paidMap.get(r.studentId) ?? 0,
+    conversionCount: earnedMap.get(r.studentId)?.count ?? 0,
     attendanceDaysThisMonth: attendanceMap.get(r.studentId) ?? 0,
   }));
 
