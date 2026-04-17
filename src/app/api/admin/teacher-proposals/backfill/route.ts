@@ -64,21 +64,31 @@ export async function POST() {
 
     if (historicalCommissions.length === 0) continue;
 
-    // Pre-check which idempotency keys already exist.
+    // Two-pronged duplicate check:
+    // (1) idempotencyKey scheme used by THIS backfill: "${affiliateCommissionId}:teacher:${teacherId}"
+    // (2) idempotencyKey scheme used by the LIVE commission engine: "${rewardfulCommissionId}:teacher:${teacherId}"
+    // Both must be checked — missing either causes duplicate teacher rows.
     const candidateKeys = historicalCommissions.map(
       (c) => `${c.id}:teacher:${rel.teacherId}`
+    );
+    const candidateRewardfulKeys = historicalCommissions.map(
+      (c) => `${c.rewardfulCommissionId}:teacher:${rel.teacherId}`
     );
     const existingKeys = new Set(
       (
         await prisma.commission.findMany({
-          where: { idempotencyKey: { in: candidateKeys } },
+          where: { idempotencyKey: { in: [...candidateKeys, ...candidateRewardfulKeys] } },
           select: { idempotencyKey: true },
         })
       ).map((r) => r.idempotencyKey)
     );
 
     const toProcess = historicalCommissions
-      .filter((c) => !existingKeys.has(`${c.id}:teacher:${rel.teacherId}`))
+      .filter(
+        (c) =>
+          !existingKeys.has(`${c.id}:teacher:${rel.teacherId}`) &&
+          !existingKeys.has(`${c.rewardfulCommissionId}:teacher:${rel.teacherId}`)
+      )
       .map((c) => {
         const full = c.fullAmountCad.toNumber();
         const ceo = c.ceoCutCad.toNumber();
