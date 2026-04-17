@@ -62,6 +62,7 @@ export async function GET() {
       by: ["affiliateId"],
       where: { ...baseWhere, status: "PAID" },
       _sum: { teacherCutCad: true },
+      _count: true,
     }),
     prisma.attendance.groupBy({
       by: ["userId"],
@@ -77,7 +78,7 @@ export async function GET() {
     earnedSummaries.map((s) => [s.affiliateId, { dueNow: s._sum.teacherCutCad?.toNumber() ?? 0, count: s._count }])
   );
   const paidMap = new Map(
-    paidSummaries.map((s) => [s.affiliateId, s._sum.teacherCutCad?.toNumber() ?? 0])
+    paidSummaries.map((s) => [s.affiliateId, { paid: s._sum.teacherCutCad?.toNumber() ?? 0, count: s._count }])
   );
 
   const attendanceMap = new Map(
@@ -94,8 +95,8 @@ export async function GET() {
     depth: r.depth,
     teacherCutPercent: r.teacherCut.toNumber(),
     teacherDueNowCad: earnedMap.get(r.studentId)?.dueNow ?? 0,
-    teacherPaidCad: paidMap.get(r.studentId) ?? 0,
-    conversionCount: earnedMap.get(r.studentId)?.count ?? 0,
+    teacherPaidCad: paidMap.get(r.studentId)?.paid ?? 0,
+    conversionCount: (earnedMap.get(r.studentId)?.count ?? 0) + (paidMap.get(r.studentId)?.count ?? 0),
     attendanceDaysThisMonth: attendanceMap.get(r.studentId) ?? 0,
   }));
 
