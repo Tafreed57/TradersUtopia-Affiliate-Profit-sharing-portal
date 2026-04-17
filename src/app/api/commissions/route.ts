@@ -31,7 +31,7 @@ export async function GET(req: NextRequest) {
     teacherId: null, // Only the affiliate's own commission entries
   };
 
-  if (status && ["EARNED", "FORFEITED", "PENDING"].includes(status)) {
+  if (status && ["EARNED", "FORFEITED", "PENDING", "PAID", "VOIDED"].includes(status)) {
     where.status = status;
   }
 
