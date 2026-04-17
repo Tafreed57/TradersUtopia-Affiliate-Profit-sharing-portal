@@ -465,6 +465,7 @@ export default function StudentsPage() {
   const queryClient = useQueryClient();
   const { data: session } = useSession();
   const userId = session?.user?.id;
+  const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
 
   const { data, isLoading } = useQuery<StudentsResponse>({
     queryKey: ["students", userId],
@@ -493,6 +494,12 @@ export default function StudentsPage() {
 
   return (
     <div className="space-y-6">
+      <StudentDetailSheet
+        student={selectedStudent}
+        onClose={() => setSelectedStudent(null)}
+        format={format}
+      />
+
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Students</h1>
@@ -533,6 +540,7 @@ export default function StudentsPage() {
                 onProposalSubmitted={() =>
                   queryClient.invalidateQueries({ queryKey: ["students"] })
                 }
+                onViewDetail={() => setSelectedStudent(student)}
               />
             ))}
           </div>
@@ -553,6 +561,7 @@ export default function StudentsPage() {
                 onProposalSubmitted={() =>
                   queryClient.invalidateQueries({ queryKey: ["students"] })
                 }
+                onViewDetail={() => setSelectedStudent(student)}
               />
             ))}
           </div>
@@ -566,10 +575,12 @@ function StudentCard({
   student,
   format,
   onProposalSubmitted,
+  onViewDetail,
 }: {
   student: Student;
   format: (cad: number) => string;
   onProposalSubmitted: () => void;
+  onViewDetail: () => void;
 }) {
   const [proposedRate, setProposedRate] = useState(
     String(student.teacherCutPercent)
@@ -607,7 +618,10 @@ function StudentCard({
   }, [proposedRate, proposalMutation]);
 
   return (
-    <Card>
+    <Card
+      className="cursor-pointer transition-colors hover:bg-accent/30"
+      onClick={onViewDetail}
+    >
       <CardContent className="pt-6">
         <div className="flex items-start gap-3">
           <Avatar className="h-10 w-10">
@@ -673,7 +687,7 @@ function StudentCard({
                 variant="ghost"
                 size="sm"
                 className="gap-1 text-xs"
-                onClick={() => setDialogOpen(true)}
+                onClick={(e) => { e.stopPropagation(); setDialogOpen(true); }}
               >
                 <Send className="h-3 w-3" />
                 Propose Rate
