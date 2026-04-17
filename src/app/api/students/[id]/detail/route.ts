@@ -1,0 +1,99 @@
+import { NextRequest, NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
+
+import { authOptions } from "@/lib/auth-options";
+import { prisma } from "@/lib/prisma";
+
+/**
+ * GET /api/students/:id/detail
+ *
+ * Returns the teacher's Commission rows for a student (what the teacher earns
+ * per conversion) plus the student's Attendance records.
+ *
+ * Auth: caller must have an ACTIVE TeacherStudent relationship with the student.
+ */
+export async function GET(
+  _req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const session = await getServerSession(authOptions);
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { id: studentId } = await params;
+  const teacherId = session.user.id;
+
+  // Verify active relationship (any depth)
+  const relationship = await prisma.teacherStudent.findFirst({
+    where: { teacherId, studentId, status: "ACTIVE" },
+    select: { depth: true, teacherCut: true },
+  });
+
+  if (!relationship) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
+  const [student, commissions, attendance] = await Promise.all([
+    prisma.user.findUnique({
+      where: { id: studentId },
+      select: { id: true, name: true, email: true, image: true },
+    }),
+
+    // Teacher's cut rows for this student — what the teacher earns per conversion
+    prisma.commission.findMany({
+      where: {
+        affiliateId: studentId,
+        teacherId,
+        status: { not: "PENDING" },
+      },
+      orderBy: { conversionDate: "desc" },
+      take: 200,
+      select: {
+        id: true,
+        conversionDate: true,
+        fullAmountCad: true,
+        teacherCutPercent: true,
+        teacherCutCad: true,
+        status: true,
+        forfeitedToCeo: true,
+        forfeitureReason: true,
+      },
+    }),
+
+    // Student's attendance records
+    prisma.attendance.findMany({
+      where: { userId: studentId },
+      orderBy: { date: "desc" },
+      take: 200,
+      select: {
+        id: true,
+        date: true,
+        timezone: true,
+        note: true,
+        submittedAt: true,
+      },
+    }),
+  ]);
+
+  if (!student) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
+  return NextResponse.json({
+    student,
+    depth: relationship.depth,
+    teacherCutPercent: relationship.teacherCut.toNumber(),
+    commissions: commissions.map((c) => ({
+      id: c.id,
+      conversionDate: c.conversionDate,
+      fullAmountCad: c.fullAmountCad.toNumber(),
+      teacherCutPercent: c.teacherCutPercent?.toNumber() ?? 0,
+      teacherCutCad: c.teacherCutCad?.toNumber() ?? 0,
+      status: c.status,
+      forfeitedToCeo: c.forfeitedToCeo,
+      forfeitureReason: c.forfeitureReason,
+    })),
+    attendance,
+  });
+}

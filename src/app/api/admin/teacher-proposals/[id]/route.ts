@@ -102,6 +102,87 @@ export async function PATCH(
           skipDuplicates: true,
         });
       }
+
+      // Retroactively create teacher Commission rows for the student's existing
+      // EARNED commissions. These were processed before the relationship existed,
+      // so no teacher rows were created at the time.
+      // Teacher cut = fullAmountCad × (teacherCut% / 100), capped at ceoCutCad.
+      const historicalCommissions = await prisma.commission.findMany({
+        where: { affiliateId: proposal.studentId, teacherId: null, status: "EARNED" },
+        select: {
+          id: true,
+          rewardfulCommissionId: true,
+          rewardfulReferralId: true,
+          fullAmountCad: true,
+          ceoCutCad: true,
+          forfeitedToCeo: true,
+          forfeitureReason: true,
+          conversionDate: true,
+        },
+      });
+
+      if (historicalCommissions.length > 0) {
+        const teacherCutPct = proposal.teacherCut.toNumber();
+
+        // Pre-check existing keys so a retry doesn't double-reduce CEO cuts.
+        const candidateKeys = historicalCommissions.map(
+          (c) => `${c.id}:teacher:${proposal.teacherId}`
+        );
+        const existingKeys = new Set(
+          (
+            await prisma.commission.findMany({
+              where: { idempotencyKey: { in: candidateKeys } },
+              select: { idempotencyKey: true },
+            })
+          ).map((r) => r.idempotencyKey)
+        );
+
+        const toProcess = historicalCommissions
+          .filter((c) => !existingKeys.has(`${c.id}:teacher:${proposal.teacherId}`))
+          .map((c) => {
+            const full = c.fullAmountCad.toNumber();
+            const ceo = c.ceoCutCad.toNumber();
+            const cut = Math.min(Number((full * teacherCutPct / 100).toFixed(2)), ceo);
+            return { commission: c, teacherCutCad: cut };
+          })
+          .filter(({ teacherCutCad }) => teacherCutCad > 0);
+
+        if (toProcess.length > 0) {
+          // Array-form $transaction: safe with PgBouncer (no interactive tx).
+          await prisma.$transaction([
+            prisma.commission.createMany({
+              data: toProcess.map(({ commission, teacherCutCad }) => ({
+                affiliateId: proposal.studentId,
+                teacherId: proposal.teacherId,
+                rewardfulCommissionId: commission.rewardfulCommissionId,
+                rewardfulReferralId: commission.rewardfulReferralId,
+                idempotencyKey: `${commission.id}:teacher:${proposal.teacherId}`,
+                fullAmountCad: commission.fullAmountCad,
+                affiliateCutPercent: 0,
+                affiliateCutCad: 0,
+                teacherCutPercent: proposal.teacherCut,
+                teacherCutCad,
+                ceoCutCad: 0,
+                status: "EARNED",
+                forfeitedToCeo: commission.forfeitedToCeo,
+                forfeitureReason: commission.forfeitureReason,
+                conversionDate: commission.conversionDate,
+              })),
+              skipDuplicates: true,
+            }),
+            ...toProcess.map(({ commission, teacherCutCad }) =>
+              prisma.commission.update({
+                where: { id: commission.id },
+                data: {
+                  ceoCutCad: Number(
+                    (commission.ceoCutCad.toNumber() - teacherCutCad).toFixed(2)
+                  ),
+                },
+              })
+            ),
+          ]);
+        }
+      }
     }
 
     // Notify the teacher
