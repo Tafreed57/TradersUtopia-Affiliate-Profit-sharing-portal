@@ -8,6 +8,15 @@ import { linkRewardfulAffiliate } from "@/lib/auth-rewardful-link";
 import { ADMIN_EMAIL } from "@/lib/constants";
 import { prisma } from "@/lib/prisma";
 
+// On Vercel, VERCEL_URL is auto-set to the deployment-specific URL which
+// causes redirect_uri_mismatch with Google OAuth. Force NEXTAUTH_URL to
+// take precedence. If neither is set, fall back to localhost for dev.
+const NEXTAUTH_URL =
+  process.env.NEXTAUTH_URL ??
+  (process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}`
+    : "http://localhost:3000");
+
 export const authOptions: AuthOptions = {
   adapter: PrismaAdapter(prisma) as AuthOptions["adapter"],
   providers: [
