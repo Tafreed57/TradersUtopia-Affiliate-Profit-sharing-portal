@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 
 import { authOptions } from "@/lib/auth-options";
-import { syncCommissionPaid } from "@/lib/payment-service";
+import { prisma } from "@/lib/prisma";
 import { listCommissions } from "@/lib/rewardful";
 
 const MAX_PAGES = 200; // 200 × 100 = 20 000 commissions max
@@ -13,6 +13,9 @@ const MAX_PAGES = 200; // 200 × 100 = 20 000 commissions max
  * One-time (idempotent) sync: pulls all state=paid commissions from Rewardful
  * and marks matching portal Commission rows PAID. No notifications sent.
  * Use to establish a clean historical baseline before payment webhook goes live.
+ *
+ * Batches DB writes by paid_at timestamp — one updateMany per unique batch
+ * timestamp per page instead of one DB round-trip per commission.
  */
 export async function POST() {
   const session = await getServerSession(authOptions);
@@ -29,10 +32,25 @@ export async function POST() {
     const items = resp.data ?? [];
     totalFetched += items.length;
 
+    // Group by paid_at timestamp — batch payments share the same timestamp,
+    // so this collapses ~100 DB calls per page down to ~1-2.
+    const byPaidAt = new Map<string, string[]>();
     for (const item of items) {
       if (!item.paid_at) continue;
-      const updated = await syncCommissionPaid(item.id, new Date(item.paid_at));
-      totalUpdated += updated;
+      const key = item.paid_at;
+      if (!byPaidAt.has(key)) byPaidAt.set(key, []);
+      byPaidAt.get(key)!.push(item.id);
+    }
+
+    for (const [paidAtStr, ids] of byPaidAt) {
+      const result = await prisma.commission.updateMany({
+        where: {
+          rewardfulCommissionId: { in: ids },
+          status: "EARNED",
+        },
+        data: { status: "PAID", paidAt: new Date(paidAtStr) },
+      });
+      totalUpdated += result.count;
     }
 
     if (!resp.pagination.next_page) break;
