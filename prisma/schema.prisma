@@ -272,6 +272,7 @@ enum CommissionStatus {
   EARNED
   FORFEITED
   PENDING
+  PAID
 }
 
 enum NotificationType {
@@ -290,6 +291,7 @@ enum NotificationType {
   STUDENT_PROPOSAL_RECEIVED
   STUDENT_PROPOSAL_APPROVED
   STUDENT_PROPOSAL_REJECTED
+  STUDENT_PAYMENT_RECEIVED
 }
 
 enum TeacherStudentStatus {
