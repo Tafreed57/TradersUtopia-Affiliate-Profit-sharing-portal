@@ -22,6 +22,6 @@ export default withSentryConfig(nextConfig, {
     // symbolication and deleted from the static output afterwards.
     filesToDeleteAfterUpload: ["**/*.map"],
   },
-  disableLogger: true,
-  automaticVercelMonitors: true,
+  // disableLogger + automaticVercelMonitors dropped: webpack-only in Sentry 10,
+  // ignored by Turbopack (our bundler). Produced deprecation WARN lines per build.
 });
