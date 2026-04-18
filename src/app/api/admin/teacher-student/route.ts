@@ -117,7 +117,6 @@ export async function POST(req: NextRequest) {
     }
 
     // Auto-cascade depth-2: one row per (teacher, studentOfStudent) at 0% cut.
-    // skipDuplicates handles re-pair case where depth-2 rows already exist.
     // Filter out the teacher themselves — if the student already teaches the
     // teacher, the cascade would otherwise create teacherId→teacherId, a
     // self-relationship the schema's @@unique would not block.
@@ -132,19 +131,48 @@ export async function POST(req: NextRequest) {
     });
 
     if (studentsOfStudent.length > 0) {
-      await prisma.teacherStudent.createMany({
-        data: studentsOfStudent.map((s) => ({
-          teacherId,
-          studentId: s.studentId,
-          depth: 2,
-          teacherCut: 0,
-          status: "ACTIVE" as const,
-          createdVia: "ADMIN_PAIR" as const,
-          reviewedAt: now,
-          reviewedById: session.user.id,
-        })),
-        skipDuplicates: true,
+      const sosIds = studentsOfStudent.map((s) => s.studentId);
+      // Partition into "existing row, needs resurrect" vs "brand new, create".
+      // Previous skipDuplicates-only approach left depth-2 rows deactivated
+      // when the teacher was unpaired + re-paired (cascade had deactivated
+      // them; create-skipDuplicates would ignore the existing DEACTIVATED row).
+      const existing = await prisma.teacherStudent.findMany({
+        where: { teacherId, studentId: { in: sosIds } },
+        select: { studentId: true },
       });
+      const existingIds = new Set(existing.map((r) => r.studentId));
+      const toCreate = sosIds.filter((id) => !existingIds.has(id));
+      const toResurrect = sosIds.filter((id) => existingIds.has(id));
+
+      if (toResurrect.length > 0) {
+        await prisma.teacherStudent.updateMany({
+          where: {
+            teacherId,
+            studentId: { in: toResurrect },
+          },
+          data: {
+            status: "ACTIVE",
+            depth: 2,
+            createdVia: "ADMIN_PAIR",
+            reviewedAt: now,
+            reviewedById: session.user.id,
+          },
+        });
+      }
+      if (toCreate.length > 0) {
+        await prisma.teacherStudent.createMany({
+          data: toCreate.map((sid) => ({
+            teacherId,
+            studentId: sid,
+            depth: 2,
+            teacherCut: 0,
+            status: "ACTIVE" as const,
+            createdVia: "ADMIN_PAIR" as const,
+            reviewedAt: now,
+            reviewedById: session.user.id,
+          })),
+        });
+      }
     }
 
     // Retroactive TEACHER splits for EARNED historical events. Per-event atomic
