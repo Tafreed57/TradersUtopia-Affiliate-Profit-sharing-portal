@@ -62,6 +62,7 @@ model User {
   backfillCompletedAt  DateTime?
   backfillError        String?
   linkError            String?
+  linkInProgressAt     DateTime?
   lifetimeStatsCachedAt DateTime?
   lifetimeStatsJson    Json?
   preferredCurrency    String                @default("CAD")

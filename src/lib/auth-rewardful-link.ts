@@ -39,6 +39,29 @@ export async function linkRewardfulAffiliate(args: {
   const { userId, email, name } = args;
   const normalizedEmail = email.toLowerCase();
 
+  // Singleflight lock: only one concurrent link attempt per user. /api/me/
+  // backfill-status polls every 15s and linkRewardfulAffiliateWithTimeout
+  // returns after 5s while the background work keeps running, so without a
+  // lock a slow Rewardful upstream stacks up createAffiliate calls for the
+  // same email and can create duplicate affiliates upstream. 30s TTL so a
+  // crashed request doesn't wedge the user forever.
+  const LOCK_TTL_MS = 30_000;
+  const claim = await prisma.user.updateMany({
+    where: {
+      id: userId,
+      rewardfulAffiliateId: null,
+      OR: [
+        { linkInProgressAt: null },
+        { linkInProgressAt: { lt: new Date(Date.now() - LOCK_TTL_MS) } },
+      ],
+    },
+    data: { linkInProgressAt: new Date() },
+  });
+  if (claim.count === 0) {
+    // Either already linked or another in-flight call holds the lock.
+    return;
+  }
+
   try {
     const current = await prisma.user.findUnique({
       where: { id: userId },
