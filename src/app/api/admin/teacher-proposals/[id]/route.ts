@@ -189,13 +189,30 @@ export async function PATCH(
 
     // Notify the teacher
     const studentLabel = proposal.student.name || proposal.student.email;
+    const teacherLabel = proposal.teacher.name || proposal.teacher.email;
     if (action === "approve") {
       await createNotification({
         userId: proposal.teacherId,
         type: "STUDENT_PROPOSAL_APPROVED",
         title: "Student Proposal Approved",
         body: `${studentLabel} has been added as your student at ${proposal.teacherCut.toString()}% cut. Commissions will now flow.`,
-        data: { studentId: proposal.studentId },
+        data: { studentId: proposal.studentId, href: "/students" },
+      });
+      // Both parties get a NEW_STUDENT_LINKED so the student also knows
+      // they're now linked under a teacher.
+      await createNotification({
+        userId: proposal.studentId,
+        type: "NEW_STUDENT_LINKED",
+        title: "You've been added to a teacher",
+        body: `${teacherLabel} is now earning a cut from your commissions.`,
+        data: { teacherId: proposal.teacherId, href: "/students" },
+      });
+      await createNotification({
+        userId: proposal.teacherId,
+        type: "NEW_STUDENT_LINKED",
+        title: "New student linked",
+        body: `${studentLabel} is now your student.`,
+        data: { studentId: proposal.studentId, href: "/students" },
       });
     } else {
       await createNotification({
