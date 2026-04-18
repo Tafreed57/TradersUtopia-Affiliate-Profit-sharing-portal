@@ -1,6 +1,16 @@
 "use client";
 
-import { CalendarCheck, DollarSign, Plus, Send, Users } from "lucide-react";
+import {
+  AlertTriangle,
+  CalendarCheck,
+  ChevronDown,
+  ChevronRight,
+  DollarSign,
+  Plus,
+  RefreshCw,
+  Send,
+  Users,
+} from "lucide-react";
 import { useCallback, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSession } from "next-auth/react";
@@ -50,10 +60,30 @@ interface Student {
   teacherPaidCad: number;
   conversionCount: number;
   attendanceDaysThisMonth: number;
+  dataStale: boolean;
+  dataReason:
+    | "ok"
+    | "stale-cache"
+    | "timeout"
+    | "error"
+    | "not-linked";
+  fetchedAt: string | null;
+}
+
+interface DirectStudent extends Student {
+  subStudents: Student[];
+}
+
+interface GrandTotals {
+  totalUnpaidCad: number;
+  directUnpaidCad: number;
+  indirectUnpaidCad: number;
+  totalPaidCad: number;
 }
 
 interface StudentsResponse {
-  students: Student[];
+  directStudents: DirectStudent[];
+  grandTotals: GrandTotals;
   isTeacher: boolean;
 }
 
@@ -83,6 +113,16 @@ interface DetailAttendance {
 interface StudentDetailResponse {
   student: { id: string; name: string | null; email: string; image: string | null };
   teacherCutPercent: number;
+  teacherUnpaidCad: number;
+  teacherPaidCad: number;
+  dataStale: boolean;
+  dataReason:
+    | "ok"
+    | "stale-cache"
+    | "timeout"
+    | "error"
+    | "not-linked";
+  fetchedAt: string | null;
   commissions: DetailCommission[];
   attendance: DetailAttendance[];
 }
@@ -106,10 +146,8 @@ function StudentDetailSheet({
     enabled: !!student,
   });
 
-  const dueNow = data?.commissions.filter((c) => c.status === "EARNED") ?? [];
-  const paid = data?.commissions.filter((c) => c.status === "PAID") ?? [];
-  const totalDueNow = dueNow.reduce((s, c) => s + c.teacherCutCad, 0);
-  const totalPaid = paid.reduce((s, c) => s + c.teacherCutCad, 0);
+  const totalDueNow = data?.teacherUnpaidCad ?? 0;
+  const totalPaid = data?.teacherPaidCad ?? 0;
 
   return (
     <Sheet open={!!student} onOpenChange={(open) => { if (!open) onClose(); }}>
@@ -482,7 +520,7 @@ export default function StudentsPage() {
   const userId = session?.user?.id;
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
 
-  const { data, isLoading } = useQuery<StudentsResponse>({
+  const { data, isLoading, isFetching, refetch } = useQuery<StudentsResponse>({
     queryKey: ["students", userId],
     queryFn: async () => {
       const res = await fetch("/api/students");
@@ -491,8 +529,12 @@ export default function StudentsPage() {
     },
   });
 
-  const directStudents = data?.students.filter((s) => s.depth === 1) ?? [];
-  const indirectStudents = data?.students.filter((s) => s.depth === 2) ?? [];
+  const directStudents = data?.directStudents ?? [];
+  const grandTotals = data?.grandTotals;
+  const indirectCount = directStudents.reduce(
+    (n, s) => n + s.subStudents.length,
+    0
+  );
 
   if (isLoading) {
     return (
@@ -520,7 +562,7 @@ export default function StudentsPage() {
           <h1 className="text-2xl font-bold tracking-tight">Students</h1>
           <p className="text-muted-foreground">
             {data?.isTeacher
-              ? `${directStudents.length} direct student${directStudents.length !== 1 ? "s" : ""}${indirectStudents.length > 0 ? `, ${indirectStudents.length} indirect` : ""}`
+              ? `${directStudents.length} direct student${directStudents.length !== 1 ? "s" : ""}${indirectCount > 0 ? `, ${indirectCount} indirect` : ""}`
               : "Propose students for admin approval"}
           </p>
         </div>
@@ -530,6 +572,15 @@ export default function StudentsPage() {
           }
         />
       </div>
+
+      {data?.isTeacher && grandTotals && (
+        <GrandTotalSummary
+          totals={grandTotals}
+          format={format}
+          onRefresh={() => refetch()}
+          isRefreshing={isFetching}
+        />
+      )}
 
       {!data?.isTeacher && directStudents.length === 0 && (
         <Card>
@@ -545,8 +596,8 @@ export default function StudentsPage() {
 
       {directStudents.length > 0 && (
         <div>
-          <h2 className="mb-3 text-lg font-semibold">Direct Students</h2>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <h2 className="mb-3 text-lg font-semibold">Your Students</h2>
+          <div className="space-y-4">
             {directStudents.map((student) => (
               <StudentCard
                 key={student.id}
@@ -556,27 +607,7 @@ export default function StudentsPage() {
                   queryClient.invalidateQueries({ queryKey: ["students"] })
                 }
                 onViewDetail={() => setSelectedStudent(student)}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {indirectStudents.length > 0 && (
-        <div>
-          <h2 className="mb-3 text-lg font-semibold">
-            Students&apos; Students
-          </h2>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {indirectStudents.map((student) => (
-              <StudentCard
-                key={student.id}
-                student={student}
-                format={format}
-                onProposalSubmitted={() =>
-                  queryClient.invalidateQueries({ queryKey: ["students"] })
-                }
-                onViewDetail={() => setSelectedStudent(student)}
+                onSubStudentClick={(sub) => setSelectedStudent(sub)}
               />
             ))}
           </div>
@@ -586,21 +617,108 @@ export default function StudentsPage() {
   );
 }
 
+function GrandTotalSummary({
+  totals,
+  format,
+  onRefresh,
+  isRefreshing,
+}: {
+  totals: GrandTotals;
+  format: (cad: number) => string;
+  onRefresh: () => void;
+  isRefreshing: boolean;
+}) {
+  const denom = totals.totalUnpaidCad > 0 ? totals.totalUnpaidCad : 1;
+  const directPct = Math.min(100, (totals.directUnpaidCad / denom) * 100);
+  const indirectPct = Math.min(100, (totals.indirectUnpaidCad / denom) * 100);
+
+  return (
+    <Card>
+      <CardContent className="pt-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">
+              Total Unpaid
+            </p>
+            <p className="mt-1 text-3xl font-bold tracking-tight text-success">
+              {format(totals.totalUnpaidCad)}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Across all students · {format(totals.totalPaidCad)} lifetime paid
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onRefresh}
+            disabled={isRefreshing}
+            className="gap-2 self-start"
+          >
+            <RefreshCw className={`h-3 w-3 ${isRefreshing ? "animate-spin" : ""}`} />
+            {isRefreshing ? "Refreshing…" : "Refresh"}
+          </Button>
+        </div>
+
+        <div className="mt-5 space-y-3">
+          <div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-muted-foreground">Your students</span>
+              <span className="font-medium">
+                {format(totals.directUnpaidCad)}
+              </span>
+            </div>
+            <div className="mt-1 h-2 overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full bg-success transition-all"
+                style={{ width: `${directPct}%` }}
+              />
+            </div>
+          </div>
+          <div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-muted-foreground">
+                Your students&apos; students
+              </span>
+              <span className="font-medium">
+                {format(totals.indirectUnpaidCad)}
+              </span>
+            </div>
+            <div className="mt-1 h-2 overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full bg-info transition-all"
+                style={{ width: `${indirectPct}%` }}
+              />
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function StudentCard({
   student,
   format,
   onProposalSubmitted,
   onViewDetail,
+  onSubStudentClick,
 }: {
-  student: Student;
+  student: DirectStudent;
   format: (cad: number) => string;
   onProposalSubmitted: () => void;
   onViewDetail: () => void;
+  onSubStudentClick: (sub: Student) => void;
 }) {
   const [proposedRate, setProposedRate] = useState(
     String(student.teacherCutPercent)
   );
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const subCount = student.subStudents.length;
+  const subUnpaid = student.subStudents.reduce(
+    (s, sub) => s + sub.teacherUnpaidCad,
+    0
+  );
 
   const proposalMutation = useMutation({
     mutationFn: async (proposedPercent: number) => {
@@ -655,16 +773,22 @@ function StudentCard({
             </p>
           </div>
 
-          <Badge
-            variant="default"
-            className={
-              student.depth === 1
-                ? "bg-primary/15 text-primary border-primary/30"
-                : "bg-info/15 text-info border-info/30"
-            }
-          >
-            {student.depth === 1 ? "Direct" : "Depth 2"}
-          </Badge>
+          {student.dataStale && (
+            <Badge
+              variant="default"
+              className="gap-1 bg-warning/15 text-warning border-warning/30"
+              title={
+                student.dataReason === "timeout"
+                  ? "Could not refresh — showing last known value"
+                  : student.dataReason === "error"
+                  ? "Refresh failed — showing last known value"
+                  : "Using cached value"
+              }
+            >
+              <AlertTriangle className="h-3 w-3" />
+              Stale
+            </Badge>
+          )}
         </div>
 
         <div className="mt-4 grid grid-cols-3 gap-3 text-center">
@@ -689,8 +813,7 @@ function StudentCard({
           </div>
         </div>
 
-        {student.depth === 1 && (
-          <div className="mt-4 flex items-center justify-between border-t border-border/50 pt-3">
+        <div className="mt-4 flex items-center justify-between border-t border-border/50 pt-3">
             <div className="text-xs text-muted-foreground">
               Your rate:{" "}
               <span className="font-medium text-foreground">
@@ -752,8 +875,101 @@ function StudentCard({
               </DialogContent>
             </Dialog>
           </div>
+
+        {subCount > 0 && (
+          <div className="mt-3 border-t border-border/50 pt-3">
+            <button
+              type="button"
+              className="flex w-full items-center justify-between gap-2 text-xs text-muted-foreground hover:text-foreground"
+              aria-expanded={expanded}
+              onClick={(e) => {
+                e.stopPropagation();
+                setExpanded((v) => !v);
+              }}
+            >
+              <span className="flex items-center gap-2">
+                {expanded ? (
+                  <ChevronDown className="h-3 w-3" />
+                ) : (
+                  <ChevronRight className="h-3 w-3" />
+                )}
+                {subCount} student{subCount !== 1 ? "s" : ""}&apos; student
+                {subCount !== 1 ? "s" : ""}
+              </span>
+              <span className="font-medium text-foreground">
+                {format(subUnpaid)}
+              </span>
+            </button>
+            {expanded && (
+              <div className="mt-3 space-y-2">
+                {student.subStudents.map((sub) => (
+                  <SubStudentRow
+                    key={sub.id}
+                    sub={sub}
+                    format={format}
+                    onClick={() => onSubStudentClick(sub)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function SubStudentRow({
+  sub,
+  format,
+  onClick,
+}: {
+  sub: Student;
+  format: (cad: number) => string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      className="group flex w-full items-center gap-3 rounded-lg border border-border/40 px-3 py-2 text-left transition-colors hover:bg-accent/30"
+    >
+      <Avatar className="h-8 w-8">
+        <AvatarImage src={sub.image ?? undefined} />
+        <AvatarFallback className="bg-info/10 text-info text-xs">
+          {getInitials(sub.name, sub.email)}
+        </AvatarFallback>
+      </Avatar>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium">
+          {sub.name ?? sub.email}
+        </p>
+        <p className="truncate text-xs text-muted-foreground">
+          {sub.conversionCount} conversions · {sub.attendanceDaysThisMonth}
+          {" "}attendance · {sub.teacherCutPercent}% your rate
+        </p>
+      </div>
+      <div className="flex flex-col items-end">
+        <span className="text-sm font-semibold text-success">
+          {format(sub.teacherUnpaidCad)}
+        </span>
+        {sub.dataStale && (
+          <span
+            className="flex items-center gap-0.5 text-[10px] text-warning"
+            title={
+              sub.dataReason === "timeout"
+                ? "Could not refresh — showing last known value"
+                : "Using cached value"
+            }
+          >
+            <AlertTriangle className="h-2.5 w-2.5" />
+            Stale
+          </span>
+        )}
+      </div>
+    </button>
   );
 }
