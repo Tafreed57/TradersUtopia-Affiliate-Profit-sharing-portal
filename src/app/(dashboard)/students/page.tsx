@@ -83,6 +83,7 @@ interface GrandTotals {
 
 interface StudentsResponse {
   directStudents: DirectStudent[];
+  orphanedSubStudents?: Student[];
   grandTotals: GrandTotals;
   isTeacher: boolean;
 }
@@ -544,11 +545,16 @@ export default function StudentsPage() {
   });
 
   const directStudents = data?.directStudents ?? [];
+  const orphanedSubStudents = data?.orphanedSubStudents ?? [];
   const grandTotals = data?.grandTotals;
-  const indirectCount = directStudents.reduce(
-    (n, s) => n + s.subStudents.length,
-    0
-  );
+  // Count both nested sub-students (under a direct parent) AND orphaned ones
+  // (depth-2 relationships whose direct-parent link is missing). grandTotals
+  // .indirectUnpaidCad aggregates over both, so indirectCount must too —
+  // otherwise a teacher whose only indirect earnings come from orphans would
+  // have their sub-students progress bar hidden despite a nonzero total.
+  const indirectCount =
+    directStudents.reduce((n, s) => n + s.subStudents.length, 0) +
+    orphanedSubStudents.length;
 
   if (isLoading) {
     return (
