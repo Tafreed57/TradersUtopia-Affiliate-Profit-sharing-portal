@@ -134,7 +134,7 @@ function StudentDetailSheet({
 }: {
   student: Student | null;
   onClose: () => void;
-  format: (cad: number) => string;
+  format: (amount: number, inputCurrency?: "CAD" | "USD") => string;
 }) {
   const { data, isLoading } = useQuery<StudentDetailResponse>({
     queryKey: ["student-detail", student?.id],
@@ -171,7 +171,7 @@ function StudentDetailSheet({
           {data && (
             <div className="flex gap-5 pb-4 text-sm">
               <div>
-                <p className="font-semibold text-success">{format(totalDueNow)}</p>
+                <p className="font-semibold text-success">{format(totalDueNow, "CAD")}</p>
                 <p className="text-xs text-muted-foreground">Unpaid</p>
               </div>
               <div>
@@ -624,7 +624,7 @@ function GrandTotalSummary({
   isRefreshing,
 }: {
   totals: GrandTotals;
-  format: (cad: number) => string;
+  format: (amount: number, inputCurrency?: "CAD" | "USD") => string;
   onRefresh: () => void;
   isRefreshing: boolean;
 }) {
@@ -641,7 +641,7 @@ function GrandTotalSummary({
               Total Unpaid
             </p>
             <p className="mt-1 text-3xl font-bold tracking-tight text-success">
-              {format(totals.totalUnpaidCad)}
+              {format(totals.totalUnpaidCad, "CAD")}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
               Across all students · {format(totals.totalPaidCad)} lifetime paid
@@ -664,7 +664,7 @@ function GrandTotalSummary({
             <div className="flex items-center justify-between text-xs">
               <span className="text-muted-foreground">Your students</span>
               <span className="font-medium">
-                {format(totals.directUnpaidCad)}
+                {format(totals.directUnpaidCad, "CAD")}
               </span>
             </div>
             <div className="mt-1 h-2 overflow-hidden rounded-full bg-muted">
@@ -680,7 +680,7 @@ function GrandTotalSummary({
                 Your students&apos; students
               </span>
               <span className="font-medium">
-                {format(totals.indirectUnpaidCad)}
+                {format(totals.indirectUnpaidCad, "CAD")}
               </span>
             </div>
             <div className="mt-1 h-2 overflow-hidden rounded-full bg-muted">
@@ -704,7 +704,7 @@ function StudentCard({
   onSubStudentClick,
 }: {
   student: DirectStudent;
-  format: (cad: number) => string;
+  format: (amount: number, inputCurrency?: "CAD" | "USD") => string;
   onProposalSubmitted: () => void;
   onViewDetail: () => void;
   onSubStudentClick: (sub: Student) => void;
@@ -795,7 +795,7 @@ function StudentCard({
           <div>
             <DollarSign className="mx-auto mb-1 h-4 w-4 text-success" />
             <p className="text-sm font-semibold">
-              {format(student.teacherUnpaidCad)}
+              {format(student.teacherUnpaidCad, "CAD")}
             </p>
             <p className="text-xs text-muted-foreground">Unpaid</p>
           </div>
@@ -897,7 +897,7 @@ function StudentCard({
                 {subCount !== 1 ? "s" : ""}
               </span>
               <span className="font-medium text-foreground">
-                {format(subUnpaid)}
+                {format(subUnpaid, "CAD")}
               </span>
             </button>
             {expanded && (
@@ -925,7 +925,7 @@ function SubStudentRow({
   onClick,
 }: {
   sub: Student;
-  format: (cad: number) => string;
+  format: (amount: number, inputCurrency?: "CAD" | "USD") => string;
   onClick: () => void;
 }) {
   return (
@@ -954,7 +954,7 @@ function SubStudentRow({
       </div>
       <div className="flex flex-col items-end">
         <span className="text-sm font-semibold text-success">
-          {format(sub.teacherUnpaidCad)}
+          {format(sub.teacherUnpaidCad, "CAD")}
         </span>
         {sub.dataStale && (
           <span
