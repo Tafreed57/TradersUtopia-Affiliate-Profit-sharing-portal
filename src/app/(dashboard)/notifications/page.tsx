@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useSession } from "next-auth/react";
 import { Bell, Check, CheckCheck, Filter } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
@@ -52,12 +53,15 @@ const TYPE_LABELS: Record<string, string> = {
 };
 
 export default function NotificationsPage() {
+  const { data: session } = useSession();
+  const userId = session?.user?.id;
   const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
   const [filter, setFilter] = useState<"all" | "unread">("all");
 
   const { data, isLoading } = useQuery<NotificationsResponse>({
-    queryKey: ["notifications-page", page, filter],
+    queryKey: ["notifications-page", userId, page, filter],
+    enabled: !!userId,
     queryFn: async () => {
       const params = new URLSearchParams();
       params.set("page", String(page));

@@ -32,11 +32,13 @@ interface UserProfile {
 
 export default function SettingsPage() {
   const { data: session } = useSession();
+  const userId = session?.user?.id;
   const { currency, setCurrency } = useCurrency();
   const queryClient = useQueryClient();
 
   const { data: profile, isLoading } = useQuery<UserProfile>({
-    queryKey: ["user-profile"],
+    queryKey: ["user-profile", userId],
+    enabled: !!userId,
     queryFn: async () => {
       const res = await fetch("/api/settings/profile");
       if (!res.ok) throw new Error("Failed to fetch profile");

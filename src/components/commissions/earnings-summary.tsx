@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { useSession } from "next-auth/react";
 import { Wallet } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -66,10 +67,13 @@ function Row({
 }
 
 export function EarningsSummary() {
+  const { data: session } = useSession();
+  const userId = session?.user?.id;
   const { format } = useCurrency();
 
   const { data, isLoading, isError } = useQuery<LifetimeStats>({
-    queryKey: ["lifetime-stats"],
+    queryKey: ["lifetime-stats", userId],
+    enabled: !!userId,
     queryFn: async () => {
       const res = await fetch("/api/commissions/lifetime-stats");
       if (!res.ok) throw new Error("failed");

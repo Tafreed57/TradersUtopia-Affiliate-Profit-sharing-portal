@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { useSession } from "next-auth/react";
 import { AlertCircle } from "lucide-react";
 
 interface BackfillStatus {
@@ -12,8 +13,11 @@ interface BackfillStatus {
 }
 
 export function RateNotSetBanner() {
+  const { data: session } = useSession();
+  const userId = session?.user?.id;
   const { data } = useQuery<BackfillStatus>({
-    queryKey: ["backfill-status"],
+    queryKey: ["backfill-status", userId],
+    enabled: !!userId,
     queryFn: async () => {
       const res = await fetch("/api/me/backfill-status");
       if (!res.ok) throw new Error("failed");

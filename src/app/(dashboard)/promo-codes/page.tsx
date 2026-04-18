@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { useCallback, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -74,11 +75,14 @@ const STATUS_CONFIG: Record<
 };
 
 export default function PromoCodesPage() {
+  const { data: session } = useSession();
+  const userId = session?.user?.id;
   const queryClient = useQueryClient();
   const [newCode, setNewCode] = useState("");
 
   const { data, isLoading } = useQuery<PromoCodesResponse>({
-    queryKey: ["promo-codes"],
+    queryKey: ["promo-codes", userId],
+    enabled: !!userId,
     queryFn: async () => {
       const res = await fetch("/api/promo-codes");
       if (!res.ok) throw new Error("Failed to fetch promo codes");

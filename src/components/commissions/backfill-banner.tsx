@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useSession } from "next-auth/react";
 import { useEffect, useRef } from "react";
 import { Loader2 } from "lucide-react";
 
@@ -13,10 +14,13 @@ interface BackfillStatus {
 }
 
 export function BackfillBanner() {
+  const { data: session } = useSession();
+  const userId = session?.user?.id;
   const qc = useQueryClient();
 
   const { data } = useQuery<BackfillStatus>({
-    queryKey: ["backfill-status"],
+    queryKey: ["backfill-status", userId],
+    enabled: !!userId,
     queryFn: async () => {
       const res = await fetch("/api/me/backfill-status");
       if (!res.ok) throw new Error("failed");

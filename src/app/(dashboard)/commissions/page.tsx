@@ -3,6 +3,7 @@
 import { ArrowDownUp, DollarSign, Filter } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useSession } from "next-auth/react";
 
 import { BackfillBanner } from "@/components/commissions/backfill-banner";
 import { EarningsSummary } from "@/components/commissions/earnings-summary";
@@ -100,6 +101,8 @@ const STATUS_CONFIG = {
 };
 
 export default function CommissionsPage() {
+  const { data: session } = useSession();
+  const userId = session?.user?.id;
   const { currency, toggle, format, stale } = useCurrency();
   const [page, setPage] = useState(1);
   const [statusFilter, setStatusFilter] = useState<string>("all");
@@ -114,7 +117,8 @@ export default function CommissionsPage() {
   if (toDate) queryParams.set("to", toDate);
 
   const { data, isLoading } = useQuery<CommissionResponse>({
-    queryKey: ["commissions", page, statusFilter, fromDate, toDate],
+    queryKey: ["commissions", userId, page, statusFilter, fromDate, toDate],
+    enabled: !!userId,
     queryFn: async () => {
       const res = await fetch(`/api/commissions?${queryParams}`);
       if (!res.ok) throw new Error("Failed to fetch commissions");

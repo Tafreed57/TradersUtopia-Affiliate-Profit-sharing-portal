@@ -54,8 +54,10 @@ export default function DashboardPage() {
   const queryClient = useQueryClient();
   const [note, setNote] = useState("");
 
+  const userId = session?.user?.id;
   const { data: stats, isLoading } = useQuery<DashboardStats>({
-    queryKey: ["dashboard-stats"],
+    queryKey: ["dashboard-stats", userId],
+    enabled: !!userId,
     queryFn: async () => {
       const res = await fetch("/api/dashboard/stats");
       if (!res.ok) throw new Error("Failed to fetch stats");

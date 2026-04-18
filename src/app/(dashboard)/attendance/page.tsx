@@ -3,6 +3,7 @@
 import { CalendarCheck, Clock, Plus } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -61,6 +62,8 @@ function formatTime(isoStr: string) {
 }
 
 export default function AttendancePage() {
+  const { data: session } = useSession();
+  const userId = session?.user?.id;
   const queryClient = useQueryClient();
   const [note, setNote] = useState("");
   const [selectedMonth, setSelectedMonth] = useState(() => {
@@ -78,7 +81,8 @@ export default function AttendancePage() {
   })();
 
   const { data, isLoading } = useQuery<AttendanceResponse>({
-    queryKey: ["attendance", fromDate, toDate],
+    queryKey: ["attendance", userId, fromDate, toDate],
+    enabled: !!userId,
     queryFn: async () => {
       const res = await fetch(
         `/api/attendance?from=${fromDate}&to=${toDate}&limit=100`
