@@ -43,9 +43,13 @@ export async function linkRewardfulAffiliate(args: {
   // backfill-status polls every 15s and linkRewardfulAffiliateWithTimeout
   // returns after 5s while the background work keeps running, so without a
   // lock a slow Rewardful upstream stacks up createAffiliate calls for the
-  // same email and can create duplicate affiliates upstream. 30s TTL so a
-  // crashed request doesn't wedge the user forever.
-  const LOCK_TTL_MS = 30_000;
+  // same email and can create duplicate affiliates upstream.
+  //
+  // TTL must exceed realistic worst-case upstream latency — a 30s TTL can
+  // expire mid-createAffiliate and let a second poll re-enter, creating a
+  // duplicate. 5 min covers very slow upstream while still self-recovering
+  // after a crashed Lambda (user can't sit locked forever).
+  const LOCK_TTL_MS = 5 * 60_000;
   const claim = await prisma.user.updateMany({
     where: {
       id: userId,
