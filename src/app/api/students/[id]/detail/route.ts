@@ -34,7 +34,7 @@ export async function GET(
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  const [student, commissions, attendance, affiliateEarned, affiliatePaid] = await Promise.all([
+  const [student, commissions, attendance] = await Promise.all([
     prisma.user.findUnique({
       where: { id: studentId },
       select: { id: true, name: true, email: true, image: true },
@@ -53,8 +53,6 @@ export async function GET(
         id: true,
         conversionDate: true,
         fullAmountCad: true,
-        affiliateCutPercent: true,
-        affiliateCutCad: true,
         teacherCutPercent: true,
         teacherCutCad: true,
         status: true,
@@ -77,18 +75,6 @@ export async function GET(
         submittedAt: true,
       },
     }),
-
-    // Student's own unpaid earnings (affiliate rows, not teacher rows)
-    prisma.commission.aggregate({
-      where: { affiliateId: studentId, teacherId: null, status: "EARNED" },
-      _sum: { affiliateCutCad: true },
-    }),
-
-    // Student's own paid earnings
-    prisma.commission.aggregate({
-      where: { affiliateId: studentId, teacherId: null, status: "PAID" },
-      _sum: { affiliateCutCad: true },
-    }),
   ]);
 
   if (!student) {
@@ -99,14 +85,10 @@ export async function GET(
     student,
     depth: relationship.depth,
     teacherCutPercent: relationship.teacherCut.toNumber(),
-    affiliateUnpaidCad: affiliateEarned._sum.affiliateCutCad?.toNumber() ?? 0,
-    affiliatePaidCad: affiliatePaid._sum.affiliateCutCad?.toNumber() ?? 0,
     commissions: commissions.map((c) => ({
       id: c.id,
       conversionDate: c.conversionDate,
       fullAmountCad: c.fullAmountCad.toNumber(),
-      affiliateCutPercent: c.affiliateCutPercent.toNumber(),
-      affiliateCutCad: c.affiliateCutCad.toNumber(),
       teacherCutPercent: c.teacherCutPercent?.toNumber() ?? 0,
       teacherCutCad: c.teacherCutCad?.toNumber() ?? 0,
       status: c.status,

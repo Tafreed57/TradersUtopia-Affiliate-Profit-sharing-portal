@@ -67,9 +67,6 @@ interface UserResult {
 interface DetailCommission {
   id: string;
   conversionDate: string;
-  affiliateCutPercent: number;
-  affiliateCutCad: number;
-  teacherCutPercent: number;
   teacherCutCad: number;
   status: string;
   forfeitureReason: string | null;
@@ -86,8 +83,6 @@ interface DetailAttendance {
 interface StudentDetailResponse {
   student: { id: string; name: string | null; email: string; image: string | null };
   teacherCutPercent: number;
-  affiliateUnpaidCad: number;
-  affiliatePaidCad: number;
   commissions: DetailCommission[];
   attendance: DetailAttendance[];
 }
@@ -111,8 +106,10 @@ function StudentDetailSheet({
     enabled: !!student,
   });
 
-  const totalDueNow = data?.affiliateUnpaidCad ?? 0;
-  const totalPaid = data?.affiliatePaidCad ?? 0;
+  const dueNow = data?.commissions.filter((c) => c.status === "EARNED") ?? [];
+  const paid = data?.commissions.filter((c) => c.status === "PAID") ?? [];
+  const totalDueNow = dueNow.reduce((s, c) => s + c.teacherCutCad, 0);
+  const totalPaid = paid.reduce((s, c) => s + c.teacherCutCad, 0);
 
   return (
     <Sheet open={!!student} onOpenChange={(open) => { if (!open) onClose(); }}>
@@ -206,33 +203,28 @@ function StudentDetailSheet({
                         </p>
                       )}
                     </div>
-                    <div className="flex flex-col items-end gap-0.5">
-                      <div className="flex items-center gap-2">
-                        <span
-                          className={`text-sm font-semibold ${
-                            c.status === "EARNED" ? "text-success" : "text-muted-foreground"
-                          }`}
-                        >
-                          {c.affiliateCutCad > 0 ? format(c.affiliateCutCad) : "—"}
-                        </span>
-                        <Badge
-                          variant="default"
-                          className={
-                            c.status === "EARNED"
-                              ? "bg-success/15 text-success border-success/30"
-                              : c.status === "PAID"
-                              ? "bg-info/15 text-info border-info/30"
-                              : c.status === "FORFEITED"
-                              ? "bg-error/15 text-error border-error/30"
-                              : "bg-warning/15 text-warning border-warning/30"
-                          }
-                        >
-                          {c.status === "PAID" ? "Paid" : c.status === "EARNED" ? "Due" : c.status}
-                        </Badge>
-                      </div>
-                      <span className="text-xs text-muted-foreground/60">
-                        your cut {format(c.teacherCutCad)}
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`text-sm font-semibold ${
+                          c.status === "EARNED" ? "text-success" : "text-muted-foreground"
+                        }`}
+                      >
+                        {format(c.teacherCutCad)}
                       </span>
+                      <Badge
+                        variant="default"
+                        className={
+                          c.status === "EARNED"
+                            ? "bg-success/15 text-success border-success/30"
+                            : c.status === "PAID"
+                            ? "bg-info/15 text-info border-info/30"
+                            : c.status === "FORFEITED"
+                            ? "bg-error/15 text-error border-error/30"
+                            : "bg-warning/15 text-warning border-warning/30"
+                        }
+                      >
+                        {c.status === "PAID" ? "Paid" : c.status === "EARNED" ? "Due" : c.status}
+                      </Badge>
                     </div>
                   </div>
                 ))
