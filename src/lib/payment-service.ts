@@ -2,28 +2,29 @@ import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
 
 /**
- * Silent version of handleCommissionPaid — marks Commission rows PAID
- * without sending notifications. Used for historical paid-status sync.
+ * Silent version of handleCommissionPaid — marks splits PAID without
+ * notifications. Used for historical paid-status sync.
  */
 export async function syncCommissionPaid(
   rewardfulCommissionId: string,
   paidAt: Date
 ): Promise<number> {
-  const rows = await prisma.commission.findMany({
-    where: { rewardfulCommissionId, status: "EARNED" },
+  const event = await prisma.commissionEvent.findUnique({
+    where: { rewardfulCommissionId },
     select: { id: true },
   });
-  if (!rows.length) return 0;
-  await prisma.commission.updateMany({
-    where: { id: { in: rows.map((r) => r.id) } },
+  if (!event) return 0;
+
+  const res = await prisma.commissionSplit.updateMany({
+    where: { eventId: event.id, status: "EARNED" },
     data: { status: "PAID", paidAt },
   });
-  return rows.length;
+  return res.count;
 }
 
 /**
- * Marks all EARNED Commission rows for a given rewardfulCommissionId as PAID
- * and notifies each teacher once (10-minute dedup per teacher-student pair).
+ * Marks all EARNED splits for a given rewardfulCommissionId as PAID and
+ * notifies each teacher once (10-minute dedup per teacher-student pair).
  *
  * Called by the webhook handler when Rewardful fires commission.updated
  * with state="paid".
@@ -32,104 +33,103 @@ export async function handleCommissionPaid(
   rewardfulCommissionId: string,
   paidAt: Date
 ): Promise<{ updated: number }> {
-  const rows = await prisma.commission.findMany({
-    where: { rewardfulCommissionId, status: "EARNED" },
-    select: { id: true, affiliateId: true, teacherId: true, teacherCutCad: true },
+  const event = await prisma.commissionEvent.findUnique({
+    where: { rewardfulCommissionId },
+    select: {
+      id: true,
+      affiliateId: true,
+      splits: {
+        where: { status: "EARNED" },
+        select: { id: true, recipientId: true, role: true, cutCad: true },
+      },
+    },
   });
-  if (!rows.length) return { updated: 0 };
+  if (!event || event.splits.length === 0) return { updated: 0 };
 
-  await prisma.commission.updateMany({
-    where: { id: { in: rows.map((r) => r.id) } },
+  await prisma.commissionSplit.updateMany({
+    where: { id: { in: event.splits.map((s) => s.id) } },
     data: { status: "PAID", paidAt },
   });
 
-  // Aggregate teacher cuts per (teacher, student) pair then notify once each.
-  const byPair = new Map<string, { teacherId: string; affiliateId: string; cut: number }>();
-  for (const r of rows) {
-    if (!r.teacherId) continue;
-    const k = `${r.teacherId}:${r.affiliateId}`;
-    const prev = byPair.get(k);
-    byPair.set(k, {
-      teacherId: r.teacherId,
-      affiliateId: r.affiliateId,
-      cut: (prev?.cut ?? 0) + (r.teacherCutCad?.toNumber() ?? 0),
+  // Aggregate teacher cuts per teacher then notify once each.
+  const byTeacher = new Map<string, { teacherId: string; cut: number }>();
+  for (const s of event.splits) {
+    if (s.role !== "TEACHER") continue;
+    const prev = byTeacher.get(s.recipientId);
+    byTeacher.set(s.recipientId, {
+      teacherId: s.recipientId,
+      cut: (prev?.cut ?? 0) + s.cutCad.toNumber(),
     });
   }
 
-  for (const { teacherId, affiliateId, cut } of byPair.values()) {
-    // 10-minute dedup: skip if already notified for this teacher-student pair
+  for (const { teacherId, cut } of byTeacher.values()) {
     const recent = await prisma.notification.findFirst({
       where: {
         userId: teacherId,
         type: "STUDENT_PAYMENT_RECEIVED",
         createdAt: { gte: new Date(Date.now() - 600_000) },
-        data: { path: ["studentId"], equals: affiliateId },
+        data: { path: ["studentId"], equals: event.affiliateId },
       },
     });
     if (recent) continue;
 
     const student = await prisma.user.findUnique({
-      where: { id: affiliateId },
+      where: { id: event.affiliateId },
       select: { name: true, email: true },
     });
-    const label = student?.name ?? student?.email ?? affiliateId;
+    const label = student?.name ?? student?.email ?? event.affiliateId;
 
     await createNotification({
       userId: teacherId,
       type: "STUDENT_PAYMENT_RECEIVED",
       title: "Student Payment Processed",
       body: `${label} received a payment — your cut of US$${cut.toFixed(2)} has been marked as paid.`,
-      data: { studentId: affiliateId },
+      data: { studentId: event.affiliateId },
     });
   }
 
-  return { updated: rows.length };
+  return { updated: event.splits.length };
 }
 
 /**
- * Marks all Commission rows for a given rewardfulCommissionId as VOIDED
- * and notifies the affiliate.
- *
- * Called by the webhook handler when Rewardful fires commission.updated
- * with state="voided" (refund or chargeback).
+ * Marks all splits for a given rewardfulCommissionId as VOIDED and notifies
+ * the affiliate. Called when Rewardful fires commission.updated state="voided".
  */
 export async function handleCommissionVoided(
   rewardfulCommissionId: string,
   voidedAt: Date
 ): Promise<{ updated: number }> {
-  const rows = await prisma.commission.findMany({
-    where: {
-      rewardfulCommissionId,
-      status: { in: ["EARNED", "PAID", "PENDING"] },
-    },
+  const event = await prisma.commissionEvent.findUnique({
+    where: { rewardfulCommissionId },
     select: {
       id: true,
       affiliateId: true,
-      teacherId: true,
-      affiliateCutCad: true,
       currency: true,
+      splits: {
+        where: { status: { in: ["EARNED", "PAID", "PENDING"] } },
+        select: { id: true, role: true, cutCad: true },
+      },
     },
   });
-  if (!rows.length) return { updated: 0 };
+  if (!event || event.splits.length === 0) return { updated: 0 };
 
-  await prisma.commission.updateMany({
-    where: { id: { in: rows.map((r) => r.id) } },
+  await prisma.commissionSplit.updateMany({
+    where: { id: { in: event.splits.map((s) => s.id) } },
     data: { status: "VOIDED", voidedAt },
   });
 
-  // Notify the affiliate (not teachers — keep it simple)
-  const affiliateRow = rows.find((r) => !r.teacherId);
-  if (affiliateRow) {
-    const cur = affiliateRow.currency ?? "USD";
-    const sym = cur === "CAD" ? "CA$" : "US$";
+  // Notify the affiliate (not teachers — keep it simple).
+  const affiliateSplit = event.splits.find((s) => s.role === "AFFILIATE");
+  if (affiliateSplit) {
+    const sym = event.currency === "CAD" ? "CA$" : "US$";
     await createNotification({
-      userId: affiliateRow.affiliateId,
+      userId: event.affiliateId,
       type: "COMMISSION_VOIDED",
       title: "Commission Voided",
-      body: `A commission of ${sym}${affiliateRow.affiliateCutCad.toNumber().toFixed(2)} was voided due to a refund or chargeback.`,
+      body: `A commission of ${sym}${affiliateSplit.cutCad.toNumber().toFixed(2)} was voided due to a refund or chargeback.`,
       data: { rewardfulCommissionId },
     });
   }
 
-  return { updated: rows.length };
+  return { updated: event.splits.length };
 }

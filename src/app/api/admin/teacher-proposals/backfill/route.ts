@@ -7,15 +7,14 @@ import { prisma } from "@/lib/prisma";
 /**
  * POST /api/admin/teacher-proposals/backfill
  *
- * Retroactively creates teacher Commission rows for all ACTIVE depth-1
- * TeacherStudent relationships. Safe to run multiple times — idempotent
- * via idempotencyKey pre-check (`${commissionId}:teacher:${teacherId}`).
+ * Retroactively creates TEACHER CommissionSplit rows for all ACTIVE depth-1
+ * TeacherStudent relationships. Safe to run multiple times — idempotent via
+ * the (eventId, recipientId) unique constraint on CommissionSplit.
  *
  * Use case: relationships approved before the retroactive-on-approval fix
- * (commit c3538ba) never received teacher Commission rows for commissions
- * that pre-dated the relationship.
+ * never received teacher rows for events that pre-dated the relationship.
  *
- * Returns: { processed: number; created: number; relationships: number }
+ * Returns: { processed, created, relationships }
  */
 export async function POST() {
   const session = await getServerSession(authOptions);
@@ -23,16 +22,12 @@ export async function POST() {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  // Only depth-1 (direct) relationships generate teacher Commission rows.
-  // Depth-2 rows are derivative — their Commission rows come from new
-  // conversions run by the commission engine after the relationship is live.
+  // Only depth-1 relationships generate teacher rows. Depth-2 rows are
+  // derivative — their splits come from new conversions processed after the
+  // relationship is live.
   const relationships = await prisma.teacherStudent.findMany({
     where: { status: "ACTIVE", depth: 1 },
-    select: {
-      teacherId: true,
-      studentId: true,
-      teacherCut: true,
-    },
+    select: { teacherId: true, studentId: true, teacherCut: true, depth: true },
   });
 
   let totalCreated = 0;
@@ -42,103 +37,71 @@ export async function POST() {
     const teacherCutPct = rel.teacherCut.toNumber();
     if (teacherCutPct === 0) continue;
 
-    // Find EARNED affiliate Commission rows for this student that have no
-    // teacher row yet (teacherId = null ensures we don't double-count).
-    const historicalCommissions = await prisma.commission.findMany({
+    const historicalEvents = await prisma.commissionEvent.findMany({
       where: {
         affiliateId: rel.studentId,
-        teacherId: null,
-        status: "EARNED",
+        splits: { some: { role: "AFFILIATE", status: "EARNED" } },
       },
       select: {
         id: true,
         rewardfulCommissionId: true,
-        rewardfulReferralId: true,
-        currency: true,
         fullAmountCad: true,
         ceoCutCad: true,
-        forfeitedToCeo: true,
-        forfeitureReason: true,
-        conversionDate: true,
+        splits: {
+          where: { role: "TEACHER", recipientId: rel.teacherId },
+          select: { id: true },
+        },
       },
     });
 
-    if (historicalCommissions.length === 0) continue;
+    if (historicalEvents.length === 0) continue;
+    totalProcessed += historicalEvents.length;
 
-    // Two-pronged duplicate check:
-    // (1) idempotencyKey scheme used by THIS backfill: "${affiliateCommissionId}:teacher:${teacherId}"
-    // (2) idempotencyKey scheme used by the LIVE commission engine: "${rewardfulCommissionId}:teacher:${teacherId}"
-    // Both must be checked — missing either causes duplicate teacher rows.
-    const candidateKeys = historicalCommissions.map(
-      (c) => `${c.id}:teacher:${rel.teacherId}`
-    );
-    const candidateRewardfulKeys = historicalCommissions.map(
-      (c) => `${c.rewardfulCommissionId}:teacher:${rel.teacherId}`
-    );
-    const existingKeys = new Set(
-      (
-        await prisma.commission.findMany({
-          where: { idempotencyKey: { in: [...candidateKeys, ...candidateRewardfulKeys] } },
-          select: { idempotencyKey: true },
-        })
-      ).map((r) => r.idempotencyKey)
-    );
-
-    const toProcess = historicalCommissions
-      .filter(
-        (c) =>
-          !existingKeys.has(`${c.id}:teacher:${rel.teacherId}`) &&
-          !existingKeys.has(`${c.rewardfulCommissionId}:teacher:${rel.teacherId}`)
-      )
-      .map((c) => {
-        const full = c.fullAmountCad.toNumber();
-        const ceo = c.ceoCutCad.toNumber();
+    const toProcess = historicalEvents
+      .filter((e) => e.splits.length === 0)
+      .map((e) => {
+        const full = e.fullAmountCad.toNumber();
+        const ceo = e.ceoCutCad.toNumber();
         const cut = Math.min(
           Number(((full * teacherCutPct) / 100).toFixed(2)),
           ceo
         );
-        return { commission: c, teacherCutCad: cut };
+        return { event: e, teacherCutCad: cut };
       })
       .filter(({ teacherCutCad }) => teacherCutCad > 0);
 
     if (toProcess.length === 0) continue;
 
-    // Array-form $transaction: safe with PgBouncer (no interactive tx).
     await prisma.$transaction([
-      prisma.commission.createMany({
-        data: toProcess.map(({ commission, teacherCutCad }) => ({
-          affiliateId: rel.studentId,
-          teacherId: rel.teacherId,
-          rewardfulCommissionId: commission.rewardfulCommissionId,
-          rewardfulReferralId: commission.rewardfulReferralId,
-          idempotencyKey: `${commission.id}:teacher:${rel.teacherId}`,
-          currency: commission.currency ?? "USD",
-          fullAmountCad: commission.fullAmountCad,
-          affiliateCutPercent: 0,
-          affiliateCutCad: 0,
-          teacherCutPercent: rel.teacherCut,
-          teacherCutCad,
-          ceoCutCad: 0,
-          status: "EARNED",
-          forfeitedToCeo: commission.forfeitedToCeo,
-          forfeitureReason: commission.forfeitureReason,
-          conversionDate: commission.conversionDate,
+      prisma.commissionSplit.createMany({
+        data: toProcess.map(({ event, teacherCutCad }) => ({
+          eventId: event.id,
+          recipientId: rel.teacherId,
+          role: "TEACHER" as const,
+          depth: rel.depth,
+          cutPercent: rel.teacherCut,
+          cutCad: teacherCutCad,
+          status: "EARNED" as const,
+          forfeitedToCeo: false,
+          forfeitureReason: null,
+          idempotencyKey: event.rewardfulCommissionId
+            ? `${event.rewardfulCommissionId}:teacher:${rel.teacherId}`
+            : `evt:${event.id}:teacher:${rel.teacherId}`,
         })),
         skipDuplicates: true,
       }),
-      ...toProcess.map(({ commission, teacherCutCad }) =>
-        prisma.commission.update({
-          where: { id: commission.id },
+      ...toProcess.map(({ event, teacherCutCad }) =>
+        prisma.commissionEvent.update({
+          where: { id: event.id },
           data: {
             ceoCutCad: Number(
-              (commission.ceoCutCad.toNumber() - teacherCutCad).toFixed(2)
+              (event.ceoCutCad.toNumber() - teacherCutCad).toFixed(2)
             ),
           },
         })
       ),
     ]);
 
-    totalProcessed += historicalCommissions.length;
     totalCreated += toProcess.length;
   }
 

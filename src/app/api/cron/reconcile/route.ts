@@ -10,7 +10,7 @@ import { handleCommissionPaid, handleCommissionVoided } from "@/lib/payment-serv
  *
  * Vercel Cron — runs every 6 hours.
  * For each linked affiliate: pulls all commissions from Rewardful,
- * creates any missing rows, and syncs paid/voided state changes.
+ * creates any missing events, and syncs paid/voided state changes.
  *
  * Protected by CRON_SECRET header check.
  */
@@ -48,17 +48,21 @@ export async function GET(req: NextRequest) {
       );
 
       for (const commission of commissions) {
-        // 1. Check if this commission exists in the portal
-        const existing = await prisma.commission.findFirst({
-          where: {
-            rewardfulCommissionId: commission.id,
-            teacherId: null,
+        // Check if the event exists, and if any AFFILIATE split reflects
+        // current state (for the paid/voided sync check).
+        const existing = await prisma.commissionEvent.findUnique({
+          where: { rewardfulCommissionId: commission.id },
+          select: {
+            id: true,
+            splits: {
+              where: { role: "AFFILIATE" },
+              select: { status: true },
+              take: 1,
+            },
           },
-          select: { id: true, status: true },
         });
 
         if (!existing) {
-          // Missing — create via processConversion
           if (!commission.sale) continue;
           const amountRaw = commission.sale.sale_amount_cents;
           if (typeof amountRaw !== "number") continue;
@@ -82,8 +86,9 @@ export async function GET(req: NextRequest) {
           continue;
         }
 
-        // 2. Sync state changes for existing rows
-        if (commission.state === "paid" && existing.status !== "PAID") {
+        const affiliateStatus = existing.splits[0]?.status;
+
+        if (commission.state === "paid" && affiliateStatus !== "PAID") {
           await handleCommissionPaid(
             commission.id,
             new Date(commission.paid_at ?? Date.now())
@@ -91,7 +96,7 @@ export async function GET(req: NextRequest) {
           totalPaidSynced++;
         }
 
-        if (commission.state === "voided" && existing.status !== "VOIDED") {
+        if (commission.state === "voided" && affiliateStatus !== "VOIDED") {
           await handleCommissionVoided(
             commission.id,
             new Date(commission.voided_at ?? Date.now())

@@ -18,8 +18,10 @@ const schema = z.object({
  *
  * On approve:
  *   - status → ACTIVE (atomic: updateMany guards on PENDING)
- *   - Depth-2 rows auto-created for the student's own active students
- *   - Teacher notified
+ *   - Depth-2 TeacherStudent rows auto-created for the student's own active students
+ *   - Retroactive TEACHER CommissionSplit rows created for the student's EARNED
+ *     historical events (capped at each event's current ceoCutCad)
+ *   - Teacher + student notified
  *
  * On reject:
  *   - status → REJECTED (atomic)
@@ -40,7 +42,6 @@ export async function PATCH(
     const body = await req.json();
     const { action, reviewNote } = schema.parse(body);
 
-    // Read proposal for notification data (before atomic write)
     const proposal = await prisma.teacherStudent.findUnique({
       where: { id },
       include: {
@@ -62,7 +63,6 @@ export async function PATCH(
 
     const newStatus = action === "approve" ? "ACTIVE" : "REJECTED";
 
-    // Atomic write: guard on PENDING so concurrent requests can't double-process
     const updated = await prisma.teacherStudent.updateMany({
       where: { id, status: "PENDING" },
       data: {
@@ -79,10 +79,10 @@ export async function PATCH(
       );
     }
 
-    // On approve: auto-create depth-2 rows for the student's own active students.
-    // These are derivative relationships — no separate proposal needed.
-    // teacherCut defaults to 0 (admin can adjust per student via rate tools).
     if (action === "approve") {
+      // Auto-create depth-2 TeacherStudent rows for the student's own active
+      // students. Derivative — no separate proposal needed. teacherCut=0;
+      // admin can adjust per student via rate tools.
       const studentsOfStudent = await prisma.teacherStudent.findMany({
         where: { teacherId: proposal.studentId, status: "ACTIVE", depth: 1 },
         select: { studentId: true },
@@ -103,81 +103,68 @@ export async function PATCH(
         });
       }
 
-      // Retroactively create teacher Commission rows for the student's existing
-      // EARNED commissions. These were processed before the relationship existed,
-      // so no teacher rows were created at the time.
-      // Teacher cut = fullAmountCad × (teacherCut% / 100), capped at ceoCutCad.
-      const historicalCommissions = await prisma.commission.findMany({
-        where: { affiliateId: proposal.studentId, teacherId: null, status: "EARNED" },
+      // Retroactive TEACHER splits for the student's EARNED historical events.
+      // These were processed before the relationship existed, so no teacher
+      // split was created at the time. Teacher cut = fullAmount × % / 100,
+      // capped at each event's current ceoCutCad.
+      const historicalEvents = await prisma.commissionEvent.findMany({
+        where: {
+          affiliateId: proposal.studentId,
+          splits: { some: { role: "AFFILIATE", status: "EARNED" } },
+        },
         select: {
           id: true,
           rewardfulCommissionId: true,
-          rewardfulReferralId: true,
-          currency: true,
           fullAmountCad: true,
           ceoCutCad: true,
-          forfeitedToCeo: true,
-          forfeitureReason: true,
-          conversionDate: true,
+          splits: {
+            where: { role: "TEACHER", recipientId: proposal.teacherId },
+            select: { id: true },
+          },
         },
       });
 
-      if (historicalCommissions.length > 0) {
-        const teacherCutPct = proposal.teacherCut.toNumber();
-
-        // Pre-check existing keys so a retry doesn't double-reduce CEO cuts.
-        const candidateKeys = historicalCommissions.map(
-          (c) => `${c.id}:teacher:${proposal.teacherId}`
-        );
-        const existingKeys = new Set(
-          (
-            await prisma.commission.findMany({
-              where: { idempotencyKey: { in: candidateKeys } },
-              select: { idempotencyKey: true },
-            })
-          ).map((r) => r.idempotencyKey)
-        );
-
-        const toProcess = historicalCommissions
-          .filter((c) => !existingKeys.has(`${c.id}:teacher:${proposal.teacherId}`))
-          .map((c) => {
-            const full = c.fullAmountCad.toNumber();
-            const ceo = c.ceoCutCad.toNumber();
-            const cut = Math.min(Number((full * teacherCutPct / 100).toFixed(2)), ceo);
-            return { commission: c, teacherCutCad: cut };
+      const teacherCutPct = proposal.teacherCut.toNumber();
+      if (historicalEvents.length > 0 && teacherCutPct > 0) {
+        const toProcess = historicalEvents
+          .filter((e) => e.splits.length === 0)
+          .map((e) => {
+            const full = e.fullAmountCad.toNumber();
+            const ceo = e.ceoCutCad.toNumber();
+            const cut = Math.min(
+              Number(((full * teacherCutPct) / 100).toFixed(2)),
+              ceo
+            );
+            return { event: e, teacherCutCad: cut };
           })
           .filter(({ teacherCutCad }) => teacherCutCad > 0);
 
         if (toProcess.length > 0) {
           // Array-form $transaction: safe with PgBouncer (no interactive tx).
           await prisma.$transaction([
-            prisma.commission.createMany({
-              data: toProcess.map(({ commission, teacherCutCad }) => ({
-                affiliateId: proposal.studentId,
-                teacherId: proposal.teacherId,
-                rewardfulCommissionId: commission.rewardfulCommissionId,
-                rewardfulReferralId: commission.rewardfulReferralId,
-                idempotencyKey: `${commission.id}:teacher:${proposal.teacherId}`,
-                currency: commission.currency ?? "USD",
-                fullAmountCad: commission.fullAmountCad,
-                affiliateCutPercent: 0,
-                affiliateCutCad: 0,
-                teacherCutPercent: proposal.teacherCut,
-                teacherCutCad,
-                ceoCutCad: 0,
-                status: "EARNED",
-                forfeitedToCeo: commission.forfeitedToCeo,
-                forfeitureReason: commission.forfeitureReason,
-                conversionDate: commission.conversionDate,
+            prisma.commissionSplit.createMany({
+              data: toProcess.map(({ event, teacherCutCad }) => ({
+                eventId: event.id,
+                recipientId: proposal.teacherId,
+                role: "TEACHER" as const,
+                depth: proposal.depth,
+                cutPercent: proposal.teacherCut,
+                cutCad: teacherCutCad,
+                status: "EARNED" as const,
+                forfeitedToCeo: false,
+                forfeitureReason: null,
+                idempotencyKey: event.rewardfulCommissionId
+                  ? `${event.rewardfulCommissionId}:teacher:${proposal.teacherId}`
+                  : `evt:${event.id}:teacher:${proposal.teacherId}`,
               })),
               skipDuplicates: true,
             }),
-            ...toProcess.map(({ commission, teacherCutCad }) =>
-              prisma.commission.update({
-                where: { id: commission.id },
+            ...toProcess.map(({ event, teacherCutCad }) =>
+              prisma.commissionEvent.update({
+                where: { id: event.id },
                 data: {
                   ceoCutCad: Number(
-                    (commission.ceoCutCad.toNumber() - teacherCutCad).toFixed(2)
+                    (event.ceoCutCad.toNumber() - teacherCutCad).toFixed(2)
                   ),
                 },
               })
@@ -187,7 +174,6 @@ export async function PATCH(
       }
     }
 
-    // Notify the teacher
     const studentLabel = proposal.student.name || proposal.student.email;
     const teacherLabel = proposal.teacher.name || proposal.teacher.email;
     if (action === "approve") {
@@ -198,8 +184,6 @@ export async function PATCH(
         body: `${studentLabel} has been added as your student at ${proposal.teacherCut.toString()}% cut. Commissions will now flow.`,
         data: { studentId: proposal.studentId, href: "/students" },
       });
-      // Both parties get a NEW_STUDENT_LINKED so the student also knows
-      // they're now linked under a teacher.
       await createNotification({
         userId: proposal.studentId,
         type: "NEW_STUDENT_LINKED",

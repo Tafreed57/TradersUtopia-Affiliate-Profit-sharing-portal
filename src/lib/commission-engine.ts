@@ -1,9 +1,11 @@
 /**
  * Commission Calculation Engine
  *
- * Processes Rewardful webhook conversions into commission splits.
- * Handles: idempotency, teacher chain resolution, attendance-based forfeiture,
- * multi-teacher allocation, and CEO remainder calculation.
+ * Processes Rewardful webhook conversions into CommissionEvent + CommissionSplit rows.
+ * One event per conversion; one split per recipient (affiliate + each teacher).
+ * Per-event fields (fullAmountCad, ceoCutCad, currency, conversionDate) live on
+ * the event; per-recipient fields (status, cutCad, paidAt, forfeitureReason) live
+ * on the splits. CEO cut is implicit — no CEO split rows.
  */
 
 import { CommissionStatus, NotificationType, Prisma } from "@prisma/client";
@@ -34,20 +36,6 @@ interface TeacherCutInfo {
   depth: number;
 }
 
-interface CommissionSplit {
-  affiliateId: string;
-  teacherId: string | null;
-  fullAmountCad: Decimal;
-  affiliateCutPercent: Decimal;
-  affiliateCutCad: Decimal;
-  teacherCutPercent: Decimal | null;
-  teacherCutCad: Decimal | null;
-  ceoCutCad: Decimal;
-  status: CommissionStatus;
-  forfeitedToCeo: boolean;
-  forfeitureReason: string | null;
-}
-
 interface NotificationItem {
   userId: string;
   type: NotificationType;
@@ -69,9 +57,6 @@ export interface ProcessingResult {
 // Engine
 // ---------------------------------------------------------------------------
 
-/**
- * Process a single conversion from a Rewardful webhook.
- */
 export interface ProcessConversionOptions {
   /**
    * When true, skip the attendance check and treat the conversion as if
@@ -87,15 +72,16 @@ export async function processConversion(
 ): Promise<ProcessingResult> {
   const warnings: string[] = [];
 
-  // 1. Idempotency — skip if already processed
-  const existing = await prisma.commission.findFirst({
+  // 1. Idempotency — skip if already processed.
+  const existingEvent = await prisma.commissionEvent.findUnique({
     where: { rewardfulCommissionId: conversion.rewardfulCommissionId },
+    select: { id: true },
   });
-  if (existing) {
+  if (existingEvent) {
     return { success: true, skipped: true, reason: "Duplicate webhook" };
   }
 
-  // 2. Find affiliate by Rewardful ID
+  // 2. Find affiliate by Rewardful ID.
   const affiliate = await prisma.user.findFirst({
     where: {
       rewardfulAffiliateId: conversion.affiliateRewardfulId,
@@ -113,10 +99,10 @@ export async function processConversion(
   const currency = conversion.currency ?? "USD";
   const conversionDate = new Date(conversion.conversionDate);
 
-  // 3. Get teacher chain (active teachers at depth 1 and 2)
+  // 3. Get teacher chain (active teachers at depth 1 and 2).
   const teacherChain = await getTeacherChain(affiliate.id);
 
-  // 4. Calculate splits
+  // 4. Calculate splits.
   const affiliatePercent = new Decimal(affiliate.commissionPercent.toString());
   const affiliateCut = fullAmount.mul(affiliatePercent).div(100);
 
@@ -137,26 +123,27 @@ export async function processConversion(
     )
   );
 
-  // Warn if total allocation exceeds threshold
   if (totalAllocatedPercent.gt(TEACHER_CUT_WARN_THRESHOLD)) {
     warnings.push(
       `Total allocation for ${affiliate.email} is ${totalAllocatedPercent}% (threshold: ${TEACHER_CUT_WARN_THRESHOLD}%)`
     );
   }
 
-  // CEO gets the remainder (can be negative — signals admin needs to fix)
+  // CEO gets the remainder (can be negative — signals admin needs to fix).
   const ceoCut = fullAmount.sub(affiliateCut).sub(totalTeacherCuts);
 
-  // 5. Rate-gate: if admin hasn't set the affiliate's commission rate,
-  // park the AFFILIATE row as PENDING. Teacher rows don't wait on the
-  // rate-gate (teachers have their own cuts), but they still follow the
-  // same attendance-forfeiture rule as the normal path. CEO holds the
-  // affiliate's share until admin runs "Recalculate at current rate".
+  // 5. Rate-gate: if admin hasn't set the affiliate's commission rate, park
+  // the AFFILIATE split as PENDING. Teacher splits don't wait on the rate-gate
+  // (teachers have their own cuts). CEO holds the affiliate's share until
+  // admin runs "Recalculate at current rate".
   const isRateNotSet = affiliatePercent.eq(0);
 
-  // Per-row outcome: the conversion event has one status for the affiliate
-  // and (potentially) a different one for each teacher. Today that split
-  // only matters for rate-not-set; FORFEITED/EARNED flow identically.
+  // 6. Attendance evaluated up-front so teacher-split status stays consistent
+  // across the rate-gate and non-rate-gate branches.
+  const hasAttendance = opts.skipAttendanceCheck
+    ? true
+    : await checkAttendance(affiliate.id, conversionDate);
+
   let affiliateStatus: CommissionStatus;
   let affiliateForfeitedToCeo = false;
   let affiliateReason: string | null = null;
@@ -165,20 +152,9 @@ export async function processConversion(
   let finalAffiliateCut: Decimal;
   let finalCeoCut: Decimal;
 
-  // 6. Attendance is evaluated up-front so teacher-row status is consistent
-  // across the rate-gate and non-rate-gate branches. A no-attendance
-  // conversion forfeits teacher rows regardless of whether the affiliate's
-  // rate is set — otherwise a rate-gated-then-recalc path would silently
-  // flip teachers from PENDING→EARNED without revisiting attendance.
-  const hasAttendance = opts.skipAttendanceCheck
-    ? true
-    : await checkAttendance(affiliate.id, conversionDate);
-
   if (isRateNotSet) {
     affiliateStatus = "PENDING";
     affiliateReason = "rate_not_set";
-    // Teacher rows don't wait for the rate-gate (teachers have their own
-    // cuts configured), but they still respect attendance forfeiture.
     teacherStatus = hasAttendance ? "EARNED" : "FORFEITED";
     teacherReason = hasAttendance
       ? null
@@ -186,8 +162,6 @@ export async function processConversion(
     finalAffiliateCut = new Decimal(0);
     finalCeoCut = ceoCut;
   } else if (!hasAttendance) {
-    // Forfeit affiliate cut → goes to CEO. Teacher rows also FORFEITED
-    // as a label; teacherCutCad still credits their amount per product rule.
     affiliateStatus = "FORFEITED";
     affiliateForfeitedToCeo = true;
     affiliateReason = "No attendance submitted for conversion date";
@@ -202,88 +176,78 @@ export async function processConversion(
     finalCeoCut = ceoCut;
   }
 
-  // 7. Persist commission rows (one per recipient: affiliate + each teacher)
-  const commissionRecords: Prisma.CommissionCreateManyInput[] = [];
+  // 7. Persist event + splits in one transaction.
+  // Unique constraint on CommissionEvent.rewardfulCommissionId means a
+  // concurrent webhook delivery racing past the findUnique check above will
+  // fail the create with P2002 — we treat that as a duplicate skip.
+  const splitData: Prisma.CommissionSplitCreateWithoutEventInput[] = [];
 
-  // Affiliate's own commission record
-  commissionRecords.push({
-    affiliateId: affiliate.id,
-    teacherId: null,
-    rewardfulCommissionId: conversion.rewardfulCommissionId,
-    rewardfulReferralId: conversion.rewardfulReferralId ?? null,
-    // Null when rewardfulCommissionId is absent (manual commissions) — PostgreSQL
-    // UNIQUE allows multiple NULLs, so no collision risk for null-keyed rows.
-    idempotencyKey: conversion.rewardfulCommissionId
-      ? `${conversion.rewardfulCommissionId}:aff:${affiliate.id}`
-      : null,
-    currency,
-    fullAmountCad: fullAmount.toDecimalPlaces(2).toNumber(),
-    affiliateCutPercent: affiliatePercent.toDecimalPlaces(2).toNumber(),
-    affiliateCutCad: finalAffiliateCut.toDecimalPlaces(2).toNumber(),
-    teacherCutPercent: null,
-    teacherCutCad: null,
-    ceoCutCad: finalCeoCut.toDecimalPlaces(2).toNumber(),
+  splitData.push({
+    recipient: { connect: { id: affiliate.id } },
+    role: "AFFILIATE",
+    cutPercent: affiliatePercent.toDecimalPlaces(2).toNumber(),
+    cutCad: finalAffiliateCut.toDecimalPlaces(2).toNumber(),
     status: affiliateStatus,
     forfeitedToCeo: affiliateForfeitedToCeo,
     forfeitureReason: affiliateReason,
-    conversionDate,
-    rewardfulData: conversion.rawPayload as Prisma.InputJsonValue,
+    idempotencyKey: `${conversion.rewardfulCommissionId}:aff:${affiliate.id}`,
   });
 
-  // Teacher commission records (one per teacher in chain)
   for (const tc of teacherCuts) {
-    commissionRecords.push({
-      affiliateId: affiliate.id,
-      teacherId: tc.teacherId,
-      rewardfulCommissionId: conversion.rewardfulCommissionId,
-      rewardfulReferralId: conversion.rewardfulReferralId ?? null,
-      idempotencyKey: conversion.rewardfulCommissionId
-        ? `${conversion.rewardfulCommissionId}:teacher:${tc.teacherId}`
-        : null,
-      currency,
-      fullAmountCad: fullAmount.toDecimalPlaces(2).toNumber(),
-      affiliateCutPercent: affiliatePercent.toDecimalPlaces(2).toNumber(),
-      affiliateCutCad: finalAffiliateCut.toDecimalPlaces(2).toNumber(),
-      teacherCutPercent: tc.teacherCutPercent.toDecimalPlaces(2).toNumber(),
-      teacherCutCad: tc.amount.toDecimalPlaces(2).toNumber(),
-      ceoCutCad: finalCeoCut.toDecimalPlaces(2).toNumber(),
+    splitData.push({
+      recipient: { connect: { id: tc.teacherId } },
+      role: "TEACHER",
+      depth: tc.depth,
+      cutPercent: tc.teacherCutPercent.toDecimalPlaces(2).toNumber(),
+      cutCad: tc.amount.toDecimalPlaces(2).toNumber(),
       status: teacherStatus,
       forfeitedToCeo: false,
       forfeitureReason: teacherReason,
-      conversionDate,
-      rewardfulData: conversion.rawPayload as Prisma.InputJsonValue,
+      idempotencyKey: `${conversion.rewardfulCommissionId}:teacher:${tc.teacherId}`,
     });
   }
 
-  // skipDuplicates handles the concurrent-burst race: if two webhook deliveries
-  // both pass the findFirst check above before either commits, the second
-  // createMany writes 0 rows (unique idempotencyKey blocks all inserts).
-  const createResult = await prisma.commission.createMany({
-    data: commissionRecords,
-    skipDuplicates: true,
-  });
-  if (createResult.count === 0) {
-    return { success: true, skipped: true, reason: "Duplicate webhook (concurrent)" };
-  }
-  if (createResult.count < commissionRecords.length) {
-    // Partial insert — createMany is a single atomic SQL statement so this
-    // should not occur in normal operation, but log if it does for diagnosis.
-    console.error(
-      `[commission] partial insert for ${conversion.rewardfulCommissionId}: ` +
-        `inserted ${createResult.count} of ${commissionRecords.length} rows`
-    );
+  try {
+    await prisma.commissionEvent.create({
+      data: {
+        rewardfulCommissionId: conversion.rewardfulCommissionId,
+        rewardfulReferralId: conversion.rewardfulReferralId ?? null,
+        affiliateId: affiliate.id,
+        conversionDate,
+        currency,
+        fullAmountCad: fullAmount.toDecimalPlaces(2).toNumber(),
+        ceoCutCad: finalCeoCut.toDecimalPlaces(2).toNumber(),
+        rewardfulData: conversion.rawPayload as Prisma.InputJsonValue,
+        splits: { create: splitData },
+      },
+    });
+  } catch (err) {
+    // P2002 on rewardfulCommissionId or idempotencyKey → a concurrent webhook
+    // delivery beat us to it. Inspect `target` so unrelated unique violations
+    // (e.g., a bug introducing a new unique field) surface as errors instead
+    // of being silently masked as duplicates.
+    if (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === "P2002"
+    ) {
+      const target = err.meta?.target;
+      const targetStr = Array.isArray(target) ? target.join(",") : String(target ?? "");
+      if (
+        targetStr.includes("rewardfulCommissionId") ||
+        targetStr.includes("idempotencyKey")
+      ) {
+        return { success: true, skipped: true, reason: "Duplicate webhook (concurrent)" };
+      }
+    }
+    throw err;
   }
 
-  // Build notifications
+  // 8. Notifications.
   const notifications: NotificationItem[] = [];
 
   if (isRateNotSet) {
-    // Rate not set by admin yet — don't push a "commission earned"
-    // notification (nothing was earned). UI banner on /commissions
-    // already surfaces the unset-rate state. Admin will recalc once
-    // the rate is set.
+    // Rate not set — no notification; UI banner surfaces the unset-rate state.
   } else if (affiliateForfeitedToCeo) {
-    // Affiliate missed attendance — forfeiture alert
     notifications.push({
       userId: affiliate.id,
       type: "ATTENDANCE_FORFEITURE_ALERT",
@@ -292,7 +256,6 @@ export async function processConversion(
       data: { rewardfulCommissionId: conversion.rewardfulCommissionId },
     });
   } else {
-    // Affiliate earned a commission
     notifications.push({
       userId: affiliate.id,
       type: "CONVERSION_RECEIVED",
@@ -302,7 +265,6 @@ export async function processConversion(
     });
   }
 
-  // Notify teachers about the conversion
   for (const tc of teacherCuts) {
     notifications.push({
       userId: tc.teacherId,
@@ -315,7 +277,7 @@ export async function processConversion(
 
   return {
     success: true,
-    commissionsCreated: commissionRecords.length,
+    commissionsCreated: 1 + teacherCuts.length,
     warnings: warnings.length > 0 ? warnings : undefined,
     notifications,
   };
@@ -325,23 +287,12 @@ export async function processConversion(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Get the full teacher chain for an affiliate (max depth 2).
- * Returns all active teacher relationships ordered by depth.
- */
 async function getTeacherChain(
   affiliateId: string
 ): Promise<TeacherCutInfo[]> {
   const relations = await prisma.teacherStudent.findMany({
-    where: {
-      studentId: affiliateId,
-      status: "ACTIVE",
-    },
-    select: {
-      teacherId: true,
-      teacherCut: true,
-      depth: true,
-    },
+    where: { studentId: affiliateId, status: "ACTIVE" },
+    select: { teacherId: true, teacherCut: true, depth: true },
     orderBy: { depth: "asc" },
   });
 
@@ -357,13 +308,7 @@ async function getTeacherChain(
  *
  * Grace rule: if the affiliate has never submitted attendance for any date
  * on or before the conversion date, they are exempt and this returns true.
- * This covers brand-new affiliates, backfilled historical commissions, and
- * anyone whose first-ever attendance post-dates this conversion — they didn't
- * know the requirement existed yet.
- *
- * Once the affiliate has at least one attendance record on or before the
- * conversion date, the normal ±1-day window applies as the ongoing commitment
- * signal.
+ * Once tracking is active, the normal ±1-day window applies.
  */
 async function checkAttendance(
   userId: string,
@@ -371,15 +316,12 @@ async function checkAttendance(
 ): Promise<boolean> {
   const utcDate = conversionDate.toISOString().slice(0, 10);
 
-  // Grace rule: no attendance on or before this date → exempt.
   const anyPrior = await prisma.attendance.findFirst({
     where: { userId, date: { lte: utcDate } },
     select: { date: true },
   });
   if (!anyPrior) return true;
 
-  // Attendance tracking is active — check the ±1-day window for timezone
-  // edge cases (affiliate's local day vs UTC conversion timestamp).
   const prevDate = new Date(conversionDate);
   prevDate.setUTCDate(prevDate.getUTCDate() - 1);
   const nextDate = new Date(conversionDate);
@@ -402,54 +344,74 @@ async function checkAttendance(
 }
 
 /**
- * Re-evaluate a PENDING commission (e.g., when attendance is submitted
- * after the conversion was processed). If attendance now exists, upgrade
- * from FORFEITED/PENDING to EARNED.
+ * Re-evaluate a previously-forfeited affiliate split (e.g., when attendance
+ * is submitted after the conversion). If attendance now exists, flip the
+ * AFFILIATE split + any attendance-forfeited TEACHER splits from FORFEITED
+ * to EARNED, and reduce the event's ceoCutCad by the recovered affiliate cut.
  */
 export async function reevaluateCommission(
   rewardfulCommissionId: string
 ): Promise<{ updated: boolean }> {
-  const commissions = await prisma.commission.findMany({
-    where: {
-      rewardfulCommissionId,
-      teacherId: null, // Only the affiliate's own record
-      status: { in: ["FORFEITED", "PENDING"] },
-      // Rate-not-set is resolved by the admin's "recalculate at current
-      // rate" flow, not by attendance recovery — its stored percent is 0.
-      NOT: { forfeitureReason: "rate_not_set" },
+  const event = await prisma.commissionEvent.findUnique({
+    where: { rewardfulCommissionId },
+    include: {
+      splits: {
+        where: {
+          role: "AFFILIATE",
+          status: { in: ["FORFEITED", "PENDING"] },
+          // rate_not_set is resolved by the admin recalc flow, not attendance.
+          NOT: { forfeitureReason: "rate_not_set" },
+        },
+      },
     },
   });
 
-  if (commissions.length === 0) return { updated: false };
+  if (!event || event.splits.length === 0) return { updated: false };
 
-  const commission = commissions[0];
+  const affiliateSplit = event.splits[0];
   const hasAttendance = await checkAttendance(
-    commission.affiliateId,
-    commission.conversionDate
+    event.affiliateId,
+    event.conversionDate
   );
 
   if (!hasAttendance) return { updated: false };
 
-  // Recalculate: restore affiliate cut, reduce CEO cut
-  const fullAmount = new Decimal(commission.fullAmountCad.toString());
-  const affiliatePercent = new Decimal(
-    commission.affiliateCutPercent.toString()
-  );
+  // Restore affiliate cut, reduce CEO cut, flip attendance-forfeited teachers.
+  const fullAmount = new Decimal(event.fullAmountCad.toString());
+  const affiliatePercent = new Decimal(affiliateSplit.cutPercent.toString());
   const affiliateCut = fullAmount.mul(affiliatePercent).div(100);
-  const oldCeoCut = new Decimal(commission.ceoCutCad.toString());
+  const oldCeoCut = new Decimal(event.ceoCutCad.toString());
   const newCeoCut = oldCeoCut.sub(affiliateCut);
+  const noAttendanceReason = "No attendance submitted for conversion date";
 
-  // Update all records for this rewardfulCommissionId (affiliate + teachers)
-  await prisma.commission.updateMany({
-    where: { rewardfulCommissionId },
-    data: {
-      status: "EARNED",
-      forfeitedToCeo: false,
-      forfeitureReason: null,
-      affiliateCutCad: affiliateCut.toDecimalPlaces(2).toNumber(),
-      ceoCutCad: newCeoCut.toDecimalPlaces(2).toNumber(),
-    },
-  });
+  await prisma.$transaction([
+    prisma.commissionSplit.update({
+      where: { id: affiliateSplit.id },
+      data: {
+        status: "EARNED",
+        forfeitedToCeo: false,
+        forfeitureReason: null,
+        cutCad: affiliateCut.toDecimalPlaces(2).toNumber(),
+      },
+    }),
+    prisma.commissionSplit.updateMany({
+      where: {
+        eventId: event.id,
+        role: "TEACHER",
+        status: "FORFEITED",
+        forfeitureReason: noAttendanceReason,
+      },
+      data: {
+        status: "EARNED",
+        forfeitedToCeo: false,
+        forfeitureReason: null,
+      },
+    }),
+    prisma.commissionEvent.update({
+      where: { id: event.id },
+      data: { ceoCutCad: newCeoCut.toDecimalPlaces(2).toNumber() },
+    }),
+  ]);
 
   return { updated: true };
 }

@@ -11,11 +11,11 @@ const MAX_PAGES = 200; // 200 × 100 = 20 000 commissions max
  * POST /api/admin/commissions/sync-paid
  *
  * One-time (idempotent) sync: pulls all state=paid commissions from Rewardful
- * and marks matching portal Commission rows PAID. No notifications sent.
- * Use to establish a clean historical baseline before payment webhook goes live.
+ * and marks matching portal splits PAID. No notifications sent. Use to
+ * establish a clean historical baseline before payment webhook goes live.
  *
- * Batches DB writes by paid_at timestamp — one updateMany per unique batch
- * timestamp per page instead of one DB round-trip per commission.
+ * Batches DB writes by paid_at timestamp — batch payments share a timestamp,
+ * so this collapses ~100 DB calls per page down to ~1-2.
  */
 export async function POST() {
   const session = await getServerSession(authOptions);
@@ -32,8 +32,6 @@ export async function POST() {
     const items = resp.data ?? [];
     totalFetched += items.length;
 
-    // Group by paid_at timestamp — batch payments share the same timestamp,
-    // so this collapses ~100 DB calls per page down to ~1-2.
     const byPaidAt = new Map<string, string[]>();
     for (const item of items) {
       if (!item.paid_at) continue;
@@ -42,10 +40,17 @@ export async function POST() {
       byPaidAt.get(key)!.push(item.id);
     }
 
-    for (const [paidAtStr, ids] of byPaidAt) {
-      const result = await prisma.commission.updateMany({
+    for (const [paidAtStr, rcids] of byPaidAt) {
+      // Resolve rcids → eventIds, then update their EARNED splits.
+      const events = await prisma.commissionEvent.findMany({
+        where: { rewardfulCommissionId: { in: rcids } },
+        select: { id: true },
+      });
+      if (events.length === 0) continue;
+
+      const result = await prisma.commissionSplit.updateMany({
         where: {
-          rewardfulCommissionId: { in: ids },
+          eventId: { in: events.map((e) => e.id) },
           status: "EARNED",
         },
         data: { status: "PAID", paidAt: new Date(paidAtStr) },

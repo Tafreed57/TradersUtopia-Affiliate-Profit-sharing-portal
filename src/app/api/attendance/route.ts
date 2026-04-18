@@ -56,22 +56,26 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Re-evaluate any forfeited commissions for this date range
-    // (the commission engine checks +/- 1 day for timezone handling)
-    const forfeitedCommissions = await prisma.commission.findMany({
+    // Re-evaluate any forfeited commissions for this user — the engine's
+    // ±1-day window handles timezone edges. Pull unique rcids from the
+    // user's FORFEITED AFFILIATE splits.
+    const forfeitedSplits = await prisma.commissionSplit.findMany({
       where: {
-        affiliateId: session.user.id,
-        teacherId: null,
+        role: "AFFILIATE",
+        recipientId: session.user.id,
         status: "FORFEITED",
       },
-      select: { rewardfulCommissionId: true },
-      distinct: ["rewardfulCommissionId"],
+      select: { event: { select: { rewardfulCommissionId: true } } },
     });
 
+    const rcids = new Set<string>();
+    for (const s of forfeitedSplits) {
+      if (s.event.rewardfulCommissionId) rcids.add(s.event.rewardfulCommissionId);
+    }
+
     let reevaluated = 0;
-    for (const c of forfeitedCommissions) {
-      if (!c.rewardfulCommissionId) continue;
-      const result = await reevaluateCommission(c.rewardfulCommissionId);
+    for (const rcid of rcids) {
+      const result = await reevaluateCommission(rcid);
       if (result.updated) reevaluated++;
     }
 

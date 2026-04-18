@@ -9,19 +9,21 @@ export type RecalcResult =
   | { kind: "ok"; updated: number; teacherRowsAffected: number; newRate: number };
 
 /**
- * Recalculates all PENDING commissions with forfeitureReason='rate_not_set'
- * for an affiliate, applying their CURRENT commissionPercent. Re-checks
- * attendance per commission.
+ * Recalculates all AFFILIATE splits with forfeitureReason='rate_not_set' for
+ * an affiliate, applying their CURRENT commissionPercent. Re-checks attendance
+ * per event.
  *
  * Intentionally runs WITHOUT a Prisma interactive transaction — Supabase uses
  * PgBouncer in transaction mode, which routes each statement to a different
- * backend connection, causing P2028 "Transaction not found" errors on
- * multi-statement interactive transactions.
+ * backend connection and causes P2028 on multi-statement interactive txns.
+ * Idempotency is enforced by the updateMany predicate (status=PENDING AND
+ * forfeitureReason=rate_not_set) — a crashed or concurrent recalc skips
+ * already-processed rows. Re-running is safe.
  *
- * Idempotency is enforced by the updateMany predicates:
- *   status=PENDING AND forfeitureReason=rate_not_set
- * A crashed or concurrent recalc skips already-processed rows. Re-running is
- * safe and will pick up any remaining rows.
+ * Since per-event fields (fullAmount, ceoCut) live on CommissionEvent and
+ * per-recipient fields (status, cutCad) live on CommissionSplit, the old
+ * 5a/5b two-pass "duplicate fields sync" collapses: each event's ceoCutCad
+ * updates once, each split's status/cutCad updates once.
  *
  * Called from:
  *  - POST /api/admin/affiliates/:id/recalc-pending (manual admin button)
@@ -31,7 +33,6 @@ export async function runRecalcPending(
   affiliateId: string,
   adminId: string
 ): Promise<RecalcResult> {
-  // 1. Re-read affiliate's rate to prevent stale math.
   const affiliate = await prisma.user.findUnique({
     where: { id: affiliateId },
     select: { id: true, commissionPercent: true },
@@ -41,23 +42,29 @@ export async function runRecalcPending(
   const currentRate = new Decimal(affiliate.commissionPercent.toString());
   if (currentRate.eq(0)) return { kind: "rate_zero" as const };
 
-  // 2. Load pending/rate-gated affiliate rows.
-  const pendingRows = await prisma.commission.findMany({
+  // Load pending/rate-gated AFFILIATE splits along with their parent event.
+  const pendingSplits = await prisma.commissionSplit.findMany({
     where: {
-      affiliateId,
-      teacherId: null,
+      role: "AFFILIATE",
+      recipientId: affiliateId,
       status: "PENDING",
       forfeitureReason: "rate_not_set",
     },
     select: {
       id: true,
-      rewardfulCommissionId: true,
-      fullAmountCad: true,
-      conversionDate: true,
+      event: {
+        select: {
+          id: true,
+          rewardfulCommissionId: true,
+          fullAmountCad: true,
+          ceoCutCad: true,
+          conversionDate: true,
+        },
+      },
     },
   });
 
-  if (pendingRows.length === 0) {
+  if (pendingSplits.length === 0) {
     return {
       kind: "ok" as const,
       updated: 0,
@@ -66,44 +73,29 @@ export async function runRecalcPending(
     };
   }
 
-  const rewardfulIds = pendingRows
-    .map((r) => r.rewardfulCommissionId)
-    .filter((v): v is string => Boolean(v));
+  const eventIds = pendingSplits.map((s) => s.event.id);
 
-  // 3. Load teacher rows to sum teacher cuts per conversion.
-  const teacherRows = rewardfulIds.length
-    ? await prisma.commission.findMany({
-        where: {
-          affiliateId,
-          rewardfulCommissionId: { in: rewardfulIds },
-          teacherId: { not: null },
-        },
-        select: {
-          rewardfulCommissionId: true,
-          teacherCutCad: true,
-        },
-      })
-    : [];
-
-  const teacherCutsByCommission = new Map<string, Decimal>();
-  for (const tr of teacherRows) {
-    if (!tr.rewardfulCommissionId) continue;
-    const prev =
-      teacherCutsByCommission.get(tr.rewardfulCommissionId) ??
-      new Decimal(0);
-    teacherCutsByCommission.set(
-      tr.rewardfulCommissionId,
-      prev.add(new Decimal((tr.teacherCutCad ?? 0).toString()))
+  // Sum teacher cuts per event so we can compute the correct ceoCutCad.
+  // Teacher splits are unchanged by recalc; we only read their cutCad totals.
+  const teacherSplits = await prisma.commissionSplit.findMany({
+    where: { eventId: { in: eventIds }, role: "TEACHER" },
+    select: { eventId: true, cutCad: true },
+  });
+  const teacherCutsByEvent = new Map<string, Decimal>();
+  for (const t of teacherSplits) {
+    const prev = teacherCutsByEvent.get(t.eventId) ?? new Decimal(0);
+    teacherCutsByEvent.set(
+      t.eventId,
+      prev.add(new Decimal(t.cutCad.toString()))
     );
   }
 
-  // 4. Load affiliate's attendance for the re-check.
+  // Load affiliate's attendance for the re-check.
   const allAttendance = await prisma.attendance.findMany({
     where: { userId: affiliateId },
     select: { date: true },
   });
   const attendanceSet = new Set(allAttendance.map((a) => a.date));
-  // Earliest attendance date — used for the grace rule below.
   const earliestAttendanceDate =
     allAttendance.length > 0
       ? allAttendance.reduce(
@@ -114,14 +106,9 @@ export async function runRecalcPending(
 
   function hasAttendanceFor(conversionDate: Date): boolean {
     const convDateStr = conversionDate.toISOString().slice(0, 10);
-
-    // Grace rule: if no attendance was submitted on or before the conversion
-    // date the affiliate is exempt — the requirement wasn't active yet.
     if (!earliestAttendanceDate || earliestAttendanceDate > convDateStr) {
       return true;
     }
-
-    // Attendance tracking is active — apply the normal ±1-day window.
     const d0 = new Date(conversionDate);
     const prev = new Date(d0);
     prev.setUTCDate(prev.getUTCDate() - 1);
@@ -134,31 +121,24 @@ export async function runRecalcPending(
     );
   }
 
-  // 5. Fan out per-conversion updates.
-  // updateMany predicates (status=PENDING + forfeitureReason=rate_not_set) make
-  // each update idempotent — a concurrent or re-run recalc skips processed rows.
+  const noAttendanceReason = "No attendance submitted for conversion date";
   let affiliateRowsUpdated = 0;
   let teacherRowsAffected = 0;
-  const noAttendanceReason = "No attendance submitted for conversion date";
 
-  // Track processed rows so we can compensate if rate drifts mid-recalc.
   const processed: Array<{
-    id: string;
-    rewardfulCommissionId: string;
+    splitId: string;
+    eventId: string;
     fullAmountCad: string;
     conversionDate: Date;
     hadAttendance: boolean;
   }> = [];
 
-  for (const row of pendingRows) {
-    if (!row.rewardfulCommissionId) continue;
-
-    const fullAmount = new Decimal(row.fullAmountCad.toString());
+  for (const p of pendingSplits) {
+    const fullAmount = new Decimal(p.event.fullAmountCad.toString());
     const teacherCutTotal =
-      teacherCutsByCommission.get(row.rewardfulCommissionId) ??
-      new Decimal(0);
+      teacherCutsByEvent.get(p.event.id) ?? new Decimal(0);
     const newAffiliateCut = fullAmount.mul(currentRate).div(100);
-    const hadAttendance = hasAttendanceFor(row.conversionDate);
+    const hadAttendance = hasAttendanceFor(p.event.conversionDate);
 
     let finalStatus: CommissionStatus;
     let forfeitedToCeo: boolean;
@@ -180,15 +160,11 @@ export async function runRecalcPending(
       finalCeoCut = fullAmount.sub(teacherCutTotal);
     }
 
-    // 5a. Update the affiliate row.
-    // Scope by `id` so siblings sharing rewardfulCommissionId (duplicate rows
-    // from the @@index idempotency gap) are not silently committed here and
-    // left unrecorded in `processed`. status+forfeitureReason guards remain
-    // so a concurrent recalc that already processed this row returns count=0
-    // and the loop skips it.
-    const affiliateRes = await prisma.commission.updateMany({
+    // Predicate-guarded: concurrent recalc that already processed this split
+    // returns count=0 and we skip.
+    const affRes = await prisma.commissionSplit.updateMany({
       where: {
-        id: row.id,
+        id: p.id,
         status: "PENDING",
         forfeitureReason: "rate_not_set",
       },
@@ -196,98 +172,64 @@ export async function runRecalcPending(
         status: finalStatus,
         forfeitedToCeo,
         forfeitureReason,
-        affiliateCutPercent: currentRate.toDecimalPlaces(2).toNumber(),
-        affiliateCutCad: finalAffiliateCut.toDecimalPlaces(2).toNumber(),
-        ceoCutCad: finalCeoCut.toDecimalPlaces(2).toNumber(),
+        cutPercent: currentRate.toDecimalPlaces(2).toNumber(),
+        cutCad: finalAffiliateCut.toDecimalPlaces(2).toNumber(),
       },
     });
-
-    if (affiliateRes.count === 0) continue; // already processed by a concurrent recalc
+    if (affRes.count === 0) continue;
     affiliateRowsUpdated += 1;
-    processed.push({
-      id: row.id,
-      rewardfulCommissionId: row.rewardfulCommissionId,
-      fullAmountCad: row.fullAmountCad.toString(),
-      conversionDate: row.conversionDate,
-      hadAttendance: hadAttendance,
+
+    // Per-event field — updated once per event.
+    await prisma.commissionEvent.update({
+      where: { id: p.event.id },
+      data: { ceoCutCad: finalCeoCut.toDecimalPlaces(2).toNumber() },
     });
 
-    // 5b. Sync teacher rows. Two-pass to avoid double-counting.
-    // Order matters: sync first, then flip. If we flipped first, Pass A's
-    // predicate would re-match just-flipped rows and inflate the count.
-    const baseTeacherData = {
-      affiliateCutPercent: currentRate.toDecimalPlaces(2).toNumber(),
-      affiliateCutCad: finalAffiliateCut.toDecimalPlaces(2).toNumber(),
-      ceoCutCad: finalCeoCut.toDecimalPlaces(2).toNumber(),
-    };
+    processed.push({
+      splitId: p.id,
+      eventId: p.event.id,
+      fullAmountCad: p.event.fullAmountCad.toString(),
+      conversionDate: p.event.conversionDate,
+      hadAttendance,
+    });
 
+    // Teacher splits: flip status only. cutCad was already correct at import
+    // time (teachers always keep their cut per product rule; FORFEITED is a
+    // label for the rate-gate + no-attendance windows).
     if (hadAttendance) {
-      // Pass A: sync rows not slated for recovery (non-PENDING AND
-      // non-(FORFEITED+no-att)). Null-safe OR avoids SQL NULL collapse.
-      const synced = await prisma.commission.updateMany({
+      const recovered = await prisma.commissionSplit.updateMany({
         where: {
-          affiliateId,
-          rewardfulCommissionId: row.rewardfulCommissionId,
-          teacherId: { not: null },
-          status: { not: "PENDING" },
-          OR: [
-            { status: { not: "FORFEITED" } },
-            { forfeitureReason: { not: noAttendanceReason } },
-            { forfeitureReason: null },
-          ],
-        },
-        data: baseTeacherData,
-      });
-      // Pass B: recover FORFEITED+no-att OR legacy PENDING → EARNED.
-      const recovered = await prisma.commission.updateMany({
-        where: {
-          affiliateId,
-          rewardfulCommissionId: row.rewardfulCommissionId,
-          teacherId: { not: null },
+          eventId: p.event.id,
+          role: "TEACHER",
           OR: [
             { status: "FORFEITED", forfeitureReason: noAttendanceReason },
             { status: "PENDING" },
           ],
         },
         data: {
-          ...baseTeacherData,
           status: "EARNED",
           forfeitureReason: null,
           forfeitedToCeo: false,
         },
       });
-      teacherRowsAffected += synced.count + recovered.count;
+      teacherRowsAffected += recovered.count;
     } else {
-      // Pass A: sync non-PENDING teacher rows (just refresh duplicate fields).
-      const synced = await prisma.commission.updateMany({
+      const flipped = await prisma.commissionSplit.updateMany({
         where: {
-          affiliateId,
-          rewardfulCommissionId: row.rewardfulCommissionId,
-          teacherId: { not: null },
-          status: { not: "PENDING" },
-        },
-        data: baseTeacherData,
-      });
-      // Pass B: flip legacy PENDING teacher rows → FORFEITED.
-      const flipped = await prisma.commission.updateMany({
-        where: {
-          affiliateId,
-          rewardfulCommissionId: row.rewardfulCommissionId,
-          teacherId: { not: null },
+          eventId: p.event.id,
+          role: "TEACHER",
           status: "PENDING",
         },
         data: {
-          ...baseTeacherData,
           status: "FORFEITED",
           forfeitureReason: noAttendanceReason,
           forfeitedToCeo: false,
         },
       });
-      teacherRowsAffected += synced.count + flipped.count;
+      teacherRowsAffected += flipped.count;
     }
   }
 
-  // 6. Audit + cache invalidation when rows were updated.
   if (affiliateRowsUpdated > 0) {
     await prisma.commissionRateAudit.create({
       data: {
@@ -307,11 +249,7 @@ export async function runRecalcPending(
     });
   }
 
-  // 7. Rate drift compensation.
-  // Without a transaction, a concurrent PATCH could change the rate after we
-  // read it but before we finish. Re-read the rate; if it changed, re-price the
-  // rows we just committed so they reflect the current rate rather than the
-  // stale one. This keeps the rows correct without needing a DB transaction.
+  // Rate drift compensation: re-read rate; if changed, re-price processed rows.
   const verifiedUser = await prisma.user.findUnique({
     where: { id: affiliateId },
     select: { commissionPercent: true },
@@ -322,45 +260,29 @@ export async function runRecalcPending(
       `[recalc] rate drifted mid-recalc for affiliate ${affiliateId}: ` +
         `${currentRate.toFixed(2)}% → ${verifiedRate.toFixed(2)}%. Re-pricing ${processed.length} rows.`
     );
-    for (const p of processed) {
-      const fullAmount = new Decimal(p.fullAmountCad);
+    for (const pr of processed) {
+      const fullAmount = new Decimal(pr.fullAmountCad);
       const teacherCutTotal =
-        teacherCutsByCommission.get(p.rewardfulCommissionId) ?? new Decimal(0);
+        teacherCutsByEvent.get(pr.eventId) ?? new Decimal(0);
       const correctedCut = fullAmount.mul(verifiedRate).div(100);
-      const correctedCeoCut = p.hadAttendance
+      const correctedCeoCut = pr.hadAttendance
         ? fullAmount.sub(correctedCut).sub(teacherCutTotal)
         : fullAmount.sub(teacherCutTotal);
 
-      const correctedAffiliateData = {
-        affiliateCutPercent: verifiedRate.toDecimalPlaces(2).toNumber(),
-        affiliateCutCad: p.hadAttendance
-          ? correctedCut.toDecimalPlaces(2).toNumber()
-          : 0,
-        ceoCutCad: correctedCeoCut.toDecimalPlaces(2).toNumber(),
-      };
-
-      // Re-price affiliate row by its exact ID — collision-safe regardless of
-      // rate, status, or any other row sharing the same rewardfulCommissionId.
-      await prisma.commission.update({
-        where: { id: p.id },
-        data: correctedAffiliateData,
-      });
-
-      // Re-price teacher rows.
-      // affiliateCutPercent: currentRate scopes to only rows this recalc
-      // touched (step 5b wrote currentRate to every teacher row it synced),
-      // preventing re-pricing of rows from other code paths.
-      await prisma.commission.updateMany({
-        where: {
-          affiliateId,
-          rewardfulCommissionId: p.rewardfulCommissionId,
-          teacherId: { not: null },
-          affiliateCutPercent: currentRate.toDecimalPlaces(2).toNumber(),
+      await prisma.commissionSplit.update({
+        where: { id: pr.splitId },
+        data: {
+          cutPercent: verifiedRate.toDecimalPlaces(2).toNumber(),
+          cutCad: pr.hadAttendance
+            ? correctedCut.toDecimalPlaces(2).toNumber()
+            : 0,
         },
-        data: correctedAffiliateData,
+      });
+      await prisma.commissionEvent.update({
+        where: { id: pr.eventId },
+        data: { ceoCutCad: correctedCeoCut.toDecimalPlaces(2).toNumber() },
       });
     }
-    // Return the corrected rate so the caller shows the right value.
     return {
       kind: "ok" as const,
       updated: affiliateRowsUpdated,
