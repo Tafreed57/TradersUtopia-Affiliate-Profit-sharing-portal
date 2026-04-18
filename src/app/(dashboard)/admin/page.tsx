@@ -45,6 +45,8 @@ interface Affiliate {
   commissionPercent: number;
   canProposeRates: boolean;
   rewardfulAffiliateId: string | null;
+  linkError: string | null;
+  backfillError: string | null;
   createdAt: string;
   commissionsCount: number;
   studentsCount: number;
@@ -380,6 +382,16 @@ export default function AdminPage() {
                             <p className="text-xs text-muted-foreground">
                               {affiliate.email}
                             </p>
+                            {(affiliate.linkError || affiliate.backfillError) && (
+                              <p
+                                className="mt-0.5 line-clamp-1 max-w-[260px] text-xs text-error"
+                                title={affiliate.linkError ?? affiliate.backfillError ?? ""}
+                              >
+                                {affiliate.linkError
+                                  ? `Link error: ${affiliate.linkError}`
+                                  : `Backfill error: ${affiliate.backfillError}`}
+                              </p>
+                            )}
                           </div>
                         </div>
                       </TableCell>

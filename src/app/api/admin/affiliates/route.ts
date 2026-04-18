@@ -45,6 +45,8 @@ export async function GET(req: NextRequest) {
         commissionPercent: true,
         canProposeRates: true,
         rewardfulAffiliateId: true,
+        linkError: true,
+        backfillError: true,
         createdAt: true,
         _count: {
           select: {

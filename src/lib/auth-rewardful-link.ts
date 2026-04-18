@@ -54,6 +54,7 @@ export async function linkRewardfulAffiliate(args: {
           rewardfulAffiliateId: existing.id,
           rewardfulEmail: normalizedEmail,
           backfillStatus: "NOT_STARTED",
+          linkError: null,
         },
       });
       console.log(
@@ -81,6 +82,7 @@ export async function linkRewardfulAffiliate(args: {
         rewardfulAffiliateId: created.id,
         rewardfulEmail: normalizedEmail,
         backfillStatus: "NOT_STARTED",
+        linkError: null,
       },
     });
 
@@ -89,10 +91,18 @@ export async function linkRewardfulAffiliate(args: {
     );
     await notifyAdminOfAutoCreate({ newUserId: userId, email: normalizedEmail });
   } catch (err) {
+    const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
     console.error(
-      `[linkRewardfulAffiliate] failed for ${normalizedEmail}; will retry next sign-in:`,
-      err
+      `[linkRewardfulAffiliate] failed for ${normalizedEmail}; will retry next sign-in: ${msg}`
     );
+    await prisma.user
+      .update({
+        where: { id: userId },
+        data: { linkError: msg.slice(0, 1000) },
+      })
+      .catch(() => {
+        // Swallow — never let link error bookkeeping fail the sign-in path.
+      });
   }
 }
 
