@@ -4,7 +4,7 @@ import { getServerSession } from "next-auth";
 import { Prisma } from "@prisma/client";
 
 import { authOptions } from "@/lib/auth-options";
-import { linkRewardfulAffiliate } from "@/lib/auth-rewardful-link";
+import { linkRewardfulAffiliateWithTimeout } from "@/lib/auth-rewardful-link";
 import { prisma } from "@/lib/prisma";
 import * as rewardful from "@/lib/rewardful";
 
@@ -141,7 +141,7 @@ export async function GET() {
         `[lifetime-stats] cleared stale affiliate for ${userId}, re-linking`
       );
       if (dbUser?.email) {
-        await linkRewardfulAffiliate({
+        await linkRewardfulAffiliateWithTimeout({
           userId,
           email: dbUser.email,
           name: dbUser.name,

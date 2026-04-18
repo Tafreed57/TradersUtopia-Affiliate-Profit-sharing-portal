@@ -2,7 +2,7 @@ import { after, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 
 import { authOptions } from "@/lib/auth-options";
-import { linkRewardfulAffiliate } from "@/lib/auth-rewardful-link";
+import { linkRewardfulAffiliateWithTimeout } from "@/lib/auth-rewardful-link";
 import { runBackfill } from "@/lib/backfill-service";
 import { prisma } from "@/lib/prisma";
 
@@ -38,7 +38,7 @@ export async function GET() {
   }
 
   if (!user.rewardfulAffiliateId) {
-    await linkRewardfulAffiliate({
+    await linkRewardfulAffiliateWithTimeout({
       userId: session.user.id,
       email: user.email,
       name: user.name,

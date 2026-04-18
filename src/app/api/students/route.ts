@@ -188,10 +188,21 @@ export async function GET() {
   type BuiltStudent = ReturnType<typeof buildStudent>;
 
   const subStudentsByParent = new Map<string, BuiltStudent[]>();
+  const orphanedSubStudents: BuiltStudent[] = [];
   for (const rel of depth2Rels) {
     const parent = parentByDepth2.get(rel.studentId);
-    if (!parent) continue;
     const built = buildStudent(rel);
+    if (!parent) {
+      // depth-2 relationship without an active depth-1 parent link —
+      // should be rare (cascade bug or manual DB edit). Count in totals
+      // + log so the miss shows up in observability instead of silently
+      // vanishing from the teacher's view.
+      console.warn(
+        `[api/students] orphaned depth-2 relationship: teacher=${teacherId} student=${rel.studentId} — no active depth-1 parent found in teacher's tree`
+      );
+      orphanedSubStudents.push(built);
+      continue;
+    }
     const existing = subStudentsByParent.get(parent) ?? [];
     existing.push(built);
     subStudentsByParent.set(parent, existing);
@@ -206,18 +217,20 @@ export async function GET() {
     (sum, s) => sum + s.teacherUnpaidCad,
     0
   );
-  const indirectUnpaidCad = directStudents.reduce(
-    (sum, s) =>
-      sum + s.subStudents.reduce((sub, st) => sub + st.teacherUnpaidCad, 0),
-    0
-  );
-  const totalPaidCad = directStudents.reduce(
-    (sum, s) =>
-      sum +
-      s.teacherPaidCad +
-      s.subStudents.reduce((sub, st) => sub + st.teacherPaidCad, 0),
-    0
-  );
+  const indirectUnpaidCad =
+    directStudents.reduce(
+      (sum, s) =>
+        sum + s.subStudents.reduce((sub, st) => sub + st.teacherUnpaidCad, 0),
+      0
+    ) + orphanedSubStudents.reduce((sum, st) => sum + st.teacherUnpaidCad, 0);
+  const totalPaidCad =
+    directStudents.reduce(
+      (sum, s) =>
+        sum +
+        s.teacherPaidCad +
+        s.subStudents.reduce((sub, st) => sub + st.teacherPaidCad, 0),
+      0
+    ) + orphanedSubStudents.reduce((sum, st) => sum + st.teacherPaidCad, 0);
 
   return NextResponse.json({
     isTeacher: true,
@@ -229,5 +242,6 @@ export async function GET() {
       totalPaidCad: Math.round(totalPaidCad * 100) / 100,
     },
     directStudents,
+    orphanedSubStudents,
   });
 }
