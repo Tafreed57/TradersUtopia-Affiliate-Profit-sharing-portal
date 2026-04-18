@@ -137,6 +137,7 @@ export interface RewardfulCampaign {
   commission_percent: number;
   commission_amount_cents: number | null;
   commission_amount_currency: string | null;
+  stripe_coupon_id: string | null;
   created_at: string;
 }
 

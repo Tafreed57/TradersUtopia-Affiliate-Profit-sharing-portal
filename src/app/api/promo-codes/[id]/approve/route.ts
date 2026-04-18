@@ -136,6 +136,16 @@ export async function POST(
         throw new Error("Specified commission plan not found");
       }
 
+      // Guard: a commission plan without a linked Stripe coupon cannot map
+      // promo codes to Stripe promotion codes. Approving against it silently
+      // no-ops at checkout (purchase goes through, no commission is tracked).
+      // Block here so the admin knows exactly what's missing.
+      if (!selectedCampaign.stripe_coupon_id) {
+        throw new Error(
+          `"${selectedCampaign.name}" is missing its Stripe coupon. Ask the owner to configure "Campaign coupon" for this plan before approving codes against it.`
+        );
+      }
+
       const coupon = await createCoupon({
         affiliate_id: request.requester.rewardfulAffiliateId,
         campaign_id: selectedCampaign.id,
