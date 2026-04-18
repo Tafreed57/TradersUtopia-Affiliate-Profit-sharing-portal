@@ -37,6 +37,19 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Gate: only users admin has granted teacher access can self-propose.
+    // Admin users override the flag (admin can do anything).
+    const proposer = await prisma.user.findUnique({
+      where: { id: teacherId },
+      select: { canBeTeacher: true },
+    });
+    if (!proposer?.canBeTeacher && !session.user.isAdmin) {
+      return NextResponse.json(
+        { error: "You do not have permission to propose students" },
+        { status: 403 }
+      );
+    }
+
     // Verify the proposed student exists
     const student = await prisma.user.findUnique({
       where: { id: studentId },

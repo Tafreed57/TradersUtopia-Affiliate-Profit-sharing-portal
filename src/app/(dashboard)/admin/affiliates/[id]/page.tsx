@@ -4,11 +4,15 @@ import {
   AlertTriangle,
   ArrowLeft,
   History,
+  Link2Off,
   Percent,
+  Plus,
   RefreshCw,
   Save,
+  Send,
   Shield,
   UserX,
+  Users,
 } from "lucide-react";
 import Link from "next/link";
 import { use, useState } from "react";
@@ -51,6 +55,7 @@ interface AffiliateDetail {
   status: string;
   commissionPercent: number;
   canProposeRates: boolean;
+  canBeTeacher: boolean;
   rewardfulAffiliateId: string | null;
   preferredCurrency: string;
   createdAt: string;
@@ -61,12 +66,14 @@ interface AffiliateDetail {
     depth: number;
   }[];
   students: {
+    relationshipId: string;
     id: string;
     name: string | null;
     email: string;
     status: string;
     depth: number;
     teacherCut: number;
+    createdVia: "SELF_PROPOSAL" | "ADMIN_PAIR";
   }[];
   recentCommissions: {
     id: string;
@@ -387,6 +394,24 @@ export default function AffiliateDetailPage({
 
             <div className="flex items-center justify-between">
               <div>
+                <p className="font-medium">Teacher Access</p>
+                <p className="text-xs text-muted-foreground">
+                  When on, this affiliate can propose their own students. Admin
+                  can always pair directly regardless.
+                </p>
+              </div>
+              <Switch
+                checked={data.canBeTeacher}
+                onCheckedChange={(checked) =>
+                  updateMutation.mutate({ canBeTeacher: checked })
+                }
+              />
+            </div>
+
+            <Separator />
+
+            <div className="flex items-center justify-between">
+              <div>
                 <p className="font-medium">Total Earned</p>
                 <p className="text-xs text-muted-foreground">
                   {data.totalConversions} commissions
@@ -572,5 +597,371 @@ export default function AffiliateDetailPage({
         </Card>
       )}
     </div>
+  );
+}
+
+interface StudentRow {
+  relationshipId: string;
+  id: string;
+  name: string | null;
+  email: string;
+  status: string;
+  depth: number;
+  teacherCut: number;
+  createdVia: "SELF_PROPOSAL" | "ADMIN_PAIR";
+}
+
+interface UserSearchResult {
+  id: string;
+  name: string | null;
+  email: string;
+  image: string | null;
+}
+
+function StudentsUnderTeacher({
+  teacherId,
+  teacherName,
+  students,
+  onChange,
+}: {
+  teacherId: string;
+  teacherName: string;
+  students: StudentRow[];
+  onChange: () => void;
+}) {
+  const [addOpen, setAddOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState<UserSearchResult | null>(null);
+  const [cut, setCut] = useState("0");
+  const [unpairTarget, setUnpairTarget] = useState<StudentRow | null>(null);
+
+  const { data: searchResults, isFetching: searching } = useQuery<{
+    data: UserSearchResult[];
+  }>({
+    queryKey: ["admin-pair-search", search],
+    queryFn: async () => {
+      const res = await fetch(
+        `/api/users/search?q=${encodeURIComponent(search)}`
+      );
+      if (!res.ok) throw new Error("Search failed");
+      return res.json();
+    },
+    enabled: search.length >= 2,
+  });
+
+  const pairMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`/api/admin/teacher-student`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          teacherId,
+          studentId: selected!.id,
+          teacherCut: Number(cut),
+        }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error ?? "Failed to pair");
+      return payload as { allocationWarning: boolean; totalAllocated: number };
+    },
+    onSuccess: (result) => {
+      if (result.allocationWarning) {
+        toast.warning(
+          `Paired, but total allocation is now ${result.totalAllocated.toFixed(1)}%.`
+        );
+      } else {
+        toast.success("Student paired.");
+      }
+      setAddOpen(false);
+      setSearch("");
+      setSelected(null);
+      setCut("0");
+      onChange();
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  const unpairMutation = useMutation({
+    mutationFn: async (relationshipId: string) => {
+      const res = await fetch(
+        `/api/admin/teacher-student/${relationshipId}`,
+        { method: "DELETE" }
+      );
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error ?? "Failed to unpair");
+      return payload as { cascaded: number };
+    },
+    onSuccess: (result) => {
+      toast.success(
+        result.cascaded > 0
+          ? `Unpaired. ${result.cascaded} depth-2 relationship${result.cascaded === 1 ? "" : "s"} also deactivated.`
+          : "Unpaired."
+      );
+      setUnpairTarget(null);
+      onChange();
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  const handlePair = () => {
+    if (!selected) return;
+    const n = Number(cut);
+    if (isNaN(n) || n < 0 || n > 100) {
+      toast.error("Cut must be 0-100");
+      return;
+    }
+    pairMutation.mutate();
+  };
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0">
+        <CardTitle className="flex items-center gap-2 text-lg">
+          <Users className="h-5 w-5 text-primary" />
+          Students Under This Teacher
+        </CardTitle>
+        <Button
+          size="sm"
+          className="gap-2"
+          onClick={() => setAddOpen(true)}
+        >
+          <Plus className="h-4 w-4" />
+          Add Student
+        </Button>
+      </CardHeader>
+      <CardContent>
+        {students.length === 0 ? (
+          <p className="py-6 text-center text-sm text-muted-foreground">
+            No students paired with this teacher yet.
+          </p>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Student</TableHead>
+                <TableHead>Cut</TableHead>
+                <TableHead>Origin</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {students.map((s) => (
+                <TableRow key={s.relationshipId}>
+                  <TableCell>
+                    <p className="font-medium">{s.name ?? s.email}</p>
+                    {s.name && (
+                      <p className="text-xs text-muted-foreground">
+                        {s.email}
+                      </p>
+                    )}
+                  </TableCell>
+                  <TableCell>{s.teacherCut}%</TableCell>
+                  <TableCell>
+                    <Badge
+                      variant="default"
+                      className={
+                        s.createdVia === "ADMIN_PAIR"
+                          ? "bg-info/15 text-info border-info/30"
+                          : "bg-muted text-muted-foreground"
+                      }
+                    >
+                      {s.createdVia === "ADMIN_PAIR" ? "Admin" : "Self"}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="gap-1 text-error hover:bg-error/10"
+                      onClick={() => setUnpairTarget(s)}
+                    >
+                      <Link2Off className="h-3 w-3" />
+                      Unpair
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+
+      {/* Pair dialog */}
+      <Dialog
+        open={addOpen}
+        onOpenChange={(v) => {
+          setAddOpen(v);
+          if (!v) {
+            setSearch("");
+            setSelected(null);
+            setCut("0");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add Student to {teacherName}</DialogTitle>
+            <DialogDescription>
+              Directly pair this teacher with a student. Takes effect
+              immediately — no proposal review step.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            {!selected ? (
+              <div className="space-y-2">
+                <Label>Search by name or email</Label>
+                <Input
+                  placeholder="Type at least 2 characters…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  autoFocus
+                />
+                {search.length >= 2 && (
+                  <div className="max-h-48 overflow-y-auto rounded-md border border-border">
+                    {searching ? (
+                      <div className="p-3 text-sm text-muted-foreground">
+                        Searching…
+                      </div>
+                    ) : !searchResults?.data.length ? (
+                      <div className="p-3 text-sm text-muted-foreground">
+                        No users found
+                      </div>
+                    ) : (
+                      searchResults.data.map((u) => (
+                        <button
+                          key={u.id}
+                          onClick={() => setSelected(u)}
+                          disabled={u.id === teacherId}
+                          className="flex w-full items-center gap-3 px-3 py-2 text-left transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          <Avatar className="h-7 w-7">
+                            <AvatarImage src={u.image ?? undefined} />
+                            <AvatarFallback className="text-xs">
+                              {(u.name ?? u.email)[0].toUpperCase()}
+                            </AvatarFallback>
+                          </Avatar>
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium">
+                              {u.name ?? u.email}
+                            </p>
+                            {u.name && (
+                              <p className="truncate text-xs text-muted-foreground">
+                                {u.email}
+                              </p>
+                            )}
+                            {u.id === teacherId && (
+                              <p className="text-xs text-warning">
+                                Same as teacher
+                              </p>
+                            )}
+                          </div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex items-center gap-3 rounded-lg border border-border p-3">
+                  <Avatar className="h-9 w-9">
+                    <AvatarImage src={selected.image ?? undefined} />
+                    <AvatarFallback className="text-sm">
+                      {(selected.name ?? selected.email)[0].toUpperCase()}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">
+                      {selected.name ?? selected.email}
+                    </p>
+                    {selected.name && (
+                      <p className="truncate text-xs text-muted-foreground">
+                        {selected.email}
+                      </p>
+                    )}
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setSelected(null)}
+                    className="text-xs"
+                  >
+                    Change
+                  </Button>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="admin-pair-cut">
+                    Teacher&apos;s cut (%)
+                  </Label>
+                  <Input
+                    id="admin-pair-cut"
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={0.5}
+                    value={cut}
+                    onChange={(e) => setCut(e.target.value)}
+                    autoFocus
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Applies to all new conversions. Past conversions get
+                    retroactive teacher splits at this rate.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAddOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handlePair}
+              disabled={!selected || pairMutation.isPending}
+              className="gap-2"
+            >
+              <Send className="h-4 w-4" />
+              {pairMutation.isPending ? "Pairing…" : "Pair"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Unpair confirmation dialog */}
+      <Dialog
+        open={!!unpairTarget}
+        onOpenChange={(v) => {
+          if (!v) setUnpairTarget(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Unpair student?</DialogTitle>
+            <DialogDescription>
+              Deactivate the relationship between {teacherName} and{" "}
+              {unpairTarget?.name ?? unpairTarget?.email}. New commissions stop
+              flowing to this teacher from this student. Past commissions are
+              preserved. Depth-2 relationships lose their basis unless another
+              active path survives.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setUnpairTarget(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="default"
+              className="bg-error text-white hover:bg-error/90"
+              onClick={() =>
+                unpairTarget && unpairMutation.mutate(unpairTarget.relationshipId)
+              }
+              disabled={unpairMutation.isPending}
+            >
+              {unpairMutation.isPending ? "Unpairing…" : "Unpair"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Card>
   );
 }

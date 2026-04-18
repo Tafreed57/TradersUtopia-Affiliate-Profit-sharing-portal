@@ -55,6 +55,7 @@ model User {
   status               UserStatus            @default(ACTIVE)
   commissionPercent    Decimal               @default(0) @db.Decimal(5, 2)
   canProposeRates      Boolean               @default(true)
+  canBeTeacher         Boolean               @default(false)
   rewardfulAffiliateId String?               @unique
   rewardfulEmail       String?
   backfillStatus       RewardfulBackfillStatus @default(NOT_STARTED)
@@ -99,6 +100,7 @@ model TeacherStudent {
   depth        Int                  @default(1)
   teacherCut   Decimal              @default(0) @db.Decimal(5, 2)
   status       TeacherStudentStatus @default(ACTIVE)
+  createdVia   RelationshipOrigin   @default(SELF_PROPOSAL)
   reviewedAt   DateTime?
   reviewedById String?
   createdAt    DateTime             @default(now())
@@ -332,6 +334,11 @@ enum CommissionStatus {
 enum CommissionRole {
   AFFILIATE
   TEACHER
+}
+
+enum RelationshipOrigin {
+  SELF_PROPOSAL
+  ADMIN_PAIR
 }
 
 enum NotificationType {

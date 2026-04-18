@@ -86,6 +86,7 @@ interface StudentsResponse {
   orphanedSubStudents?: Student[];
   grandTotals: GrandTotals;
   isTeacher: boolean;
+  canBeTeacher: boolean;
 }
 
 interface UserResult {
@@ -533,6 +534,7 @@ export default function StudentsPage() {
   const queryClient = useQueryClient();
   const { data: session } = useSession();
   const userId = session?.user?.id;
+  const isAdmin = session?.user?.isAdmin === true;
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
 
   const { data, isLoading, isFetching, refetch } = useQuery<StudentsResponse>({
@@ -583,14 +585,18 @@ export default function StudentsPage() {
           <p className="text-muted-foreground">
             {data?.isTeacher
               ? `${directStudents.length} direct student${directStudents.length !== 1 ? "s" : ""}${indirectCount > 0 ? `, ${indirectCount} indirect` : ""}`
-              : "Propose students for admin approval"}
+              : data?.canBeTeacher || isAdmin
+              ? "Propose students for admin approval"
+              : ""}
           </p>
         </div>
-        <AddStudentDialog
-          onSuccess={() =>
-            queryClient.invalidateQueries({ queryKey: ["students"] })
-          }
-        />
+        {(data?.canBeTeacher || isAdmin) && (
+          <AddStudentDialog
+            onSuccess={() =>
+              queryClient.invalidateQueries({ queryKey: ["students"] })
+            }
+          />
+        )}
       </div>
 
       {data?.isTeacher && grandTotals && (
@@ -608,8 +614,9 @@ export default function StudentsPage() {
           <CardContent className="py-12 text-center">
             <Users className="mx-auto mb-3 h-10 w-10 text-muted-foreground/40" />
             <p className="text-muted-foreground">
-              No active students yet. Use &quot;Add Student&quot; to submit a
-              proposal.
+              {data?.canBeTeacher || isAdmin
+                ? 'No active students yet. Use "Add Student" to submit a proposal.'
+                : "You don't have any students."}
             </p>
           </CardContent>
         </Card>

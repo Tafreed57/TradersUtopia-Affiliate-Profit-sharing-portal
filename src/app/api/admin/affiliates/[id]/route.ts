@@ -36,6 +36,7 @@ export async function GET(
       status: true,
       commissionPercent: true,
       canProposeRates: true,
+      canBeTeacher: true,
       rewardfulAffiliateId: true,
       preferredCurrency: true,
       createdAt: true,
@@ -133,12 +134,14 @@ export async function GET(
     commissionPercent: affiliatePercent,
     teachers: teacherCuts,
     students: students.map((s) => ({
+      relationshipId: s.id,
       id: s.student.id,
       name: s.student.name,
       email: s.student.email,
       status: s.student.status,
       depth: s.depth,
       teacherCut: s.teacherCut.toNumber(),
+      createdVia: s.createdVia,
     })),
     recentCommissions: recentCommissions.map((s) => ({
       id: s.id,
@@ -168,6 +171,7 @@ export async function GET(
 const updateSchema = z.object({
   commissionPercent: z.number().min(0).max(100).optional(),
   canProposeRates: z.boolean().optional(),
+  canBeTeacher: z.boolean().optional(),
   status: z.enum(["ACTIVE", "DEACTIVATED"]).optional(),
   reason: z.string().optional(),
 });
@@ -193,7 +197,7 @@ export async function PATCH(
 
   try {
     const body = await req.json();
-    const { commissionPercent, canProposeRates, status, reason } =
+    const { commissionPercent, canProposeRates, canBeTeacher, status, reason } =
       updateSchema.parse(body);
 
     const currentUser = await prisma.user.findUnique({
@@ -232,6 +236,13 @@ export async function PATCH(
 
     if (canProposeRates !== undefined) {
       updateData.canProposeRates = canProposeRates;
+    }
+
+    if (canBeTeacher !== undefined) {
+      // Silent admin change — no notification per the silent-admin-changes dogma.
+      // Flipping false leaves existing TeacherStudent relationships intact; admin
+      // deactivates individual pairings via DELETE /api/admin/teacher-student/:id.
+      updateData.canBeTeacher = canBeTeacher;
     }
 
     if (status !== undefined) {

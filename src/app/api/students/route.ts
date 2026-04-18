@@ -29,6 +29,11 @@ export async function GET() {
 
   const teacherId = session.user.id;
 
+  const me = await prisma.user.findUnique({
+    where: { id: teacherId },
+    select: { canBeTeacher: true },
+  });
+
   const myRels = await prisma.teacherStudent.findMany({
     where: { teacherId, status: "ACTIVE" },
     include: {
@@ -49,6 +54,7 @@ export async function GET() {
   if (myRels.length === 0) {
     return NextResponse.json({
       isTeacher: false,
+      canBeTeacher: me?.canBeTeacher ?? false,
       grandTotals: {
         totalUnpaidCad: 0,
         directUnpaidCad: 0,
@@ -244,6 +250,7 @@ export async function GET() {
 
   return NextResponse.json({
     isTeacher: true,
+    canBeTeacher: me?.canBeTeacher ?? false,
     grandTotals: {
       totalUnpaidCad:
         Math.round((directUnpaidCad + indirectUnpaidCad) * 100) / 100,
