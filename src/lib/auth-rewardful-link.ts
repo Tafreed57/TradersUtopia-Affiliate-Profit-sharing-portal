@@ -4,6 +4,27 @@ import { prisma } from "@/lib/prisma";
 import * as rewardful from "@/lib/rewardful";
 
 /**
+ * Time-bounded wrapper for `linkRewardfulAffiliate`. If the call does not
+ * complete within `timeoutMs`, returns immediately — the underlying work
+ * keeps running in the background (next sign-in will retry if it failed).
+ * Prevents slow Rewardful upstream from stalling NextAuth sign-in.
+ */
+export async function linkRewardfulAffiliateWithTimeout(
+  args: { userId: string; email: string; name?: string | null },
+  timeoutMs = 5000
+) {
+  const timeout = new Promise<"timeout">((resolve) =>
+    setTimeout(() => resolve("timeout"), timeoutMs)
+  );
+  const result = await Promise.race([linkRewardfulAffiliate(args), timeout]);
+  if (result === "timeout") {
+    console.warn(
+      `[linkRewardfulAffiliate] timed out after ${timeoutMs}ms for ${args.email}; background work continues, next sign-in will retry if needed`
+    );
+  }
+}
+
+/**
  * Link a user's account to their commission-system affiliate by email.
  * If no matching affiliate exists, auto-create one on the default campaign.
  *

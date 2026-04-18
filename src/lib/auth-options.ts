@@ -4,7 +4,7 @@ import type { AuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import GoogleProvider from "next-auth/providers/google";
 
-import { linkRewardfulAffiliate } from "@/lib/auth-rewardful-link";
+import { linkRewardfulAffiliateWithTimeout } from "@/lib/auth-rewardful-link";
 import { ADMIN_EMAIL } from "@/lib/constants";
 import { prisma } from "@/lib/prisma";
 
@@ -65,7 +65,7 @@ export const authOptions: AuthOptions = {
   events: {
     async createUser({ user }) {
       if (!user.email || !user.id) return;
-      await linkRewardfulAffiliate({
+      await linkRewardfulAffiliateWithTimeout({
         userId: user.id,
         email: user.email,
         name: user.name,
@@ -80,7 +80,7 @@ export const authOptions: AuthOptions = {
       });
       if (dbUser?.status === "DEACTIVATED") return false;
       if (dbUser && !dbUser.rewardfulAffiliateId) {
-        await linkRewardfulAffiliate({
+        await linkRewardfulAffiliateWithTimeout({
           userId: dbUser.id,
           email: dbUser.email,
           name: dbUser.name,
