@@ -213,7 +213,7 @@ function StudentDetailSheet({
                             c.status === "EARNED" ? "text-success" : "text-muted-foreground"
                           }`}
                         >
-                          {format(c.affiliateCutCad)}
+                          {c.affiliateCutCad > 0 ? format(c.affiliateCutCad) : "—"}
                         </span>
                         <Badge
                           variant="default"
