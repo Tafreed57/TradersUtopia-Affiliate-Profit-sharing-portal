@@ -1,6 +1,6 @@
 "use client";
 
-import { CalendarCheck, Clock, Plus } from "lucide-react";
+import { AlertTriangle, CalendarCheck, Clock, Plus } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSession } from "next-auth/react";
@@ -31,6 +31,7 @@ interface AttendanceRecord {
 
 interface AttendanceResponse {
   data: AttendanceRecord[];
+  hasEverSubmitted: boolean;
   pagination: { page: number; limit: number; total: number; totalPages: number };
 }
 
@@ -163,6 +164,27 @@ export default function AttendancePage() {
           Submit your daily marketing activity to stay eligible for commissions
         </p>
       </div>
+
+      {data && !data.hasEverSubmitted && (
+        <Card className="border-warning/40 bg-warning/5">
+          <CardContent className="flex gap-3 pt-6">
+            <AlertTriangle className="mt-0.5 h-5 w-5 flex-shrink-0 text-warning" />
+            <div className="space-y-1">
+              <p className="font-semibold">Your eligibility hasn&rsquo;t started yet</p>
+              <p className="text-sm text-muted-foreground">
+                You haven&rsquo;t marked attendance yet. If you don&rsquo;t
+                submit attendance on a day a commission comes in,{" "}
+                <strong className="text-foreground">
+                  you forfeit that commission
+                </strong>{" "}
+                — it goes to the CEO instead of you. Submitting attendance
+                below starts your eligibility from now on. Mark attendance on
+                every day you do marketing.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Submit Today's Attendance */}
       <Card>

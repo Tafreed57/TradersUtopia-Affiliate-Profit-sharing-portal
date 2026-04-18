@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { authOptions } from "@/lib/auth-options";
 import { reevaluateCommission } from "@/lib/commission-engine";
+import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
 
 const submitSchema = z.object({
@@ -28,6 +29,14 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { date, timezone, note } = submitSchema.parse(body);
 
+    // Count existing attendance to detect the first-ever submission. Do this
+    // before the create so the post-create count is (existing + 1) — when
+    // existing === 0, this write is the first one.
+    const priorAttendanceCount = await prisma.attendance.count({
+      where: { userId: session.user.id },
+    });
+    const isFirstEver = priorAttendanceCount === 0;
+
     const attendance = await prisma.attendance.create({
       data: {
         userId: session.user.id,
@@ -36,6 +45,16 @@ export async function POST(req: NextRequest) {
         note: note ?? null,
       },
     });
+
+    if (isFirstEver) {
+      await createNotification({
+        userId: session.user.id,
+        type: "FIRST_ATTENDANCE_RECORDED",
+        title: "Attendance started",
+        body: "You've submitted your first attendance. Pending commissions on days you mark attendance will now flow through. Keep marking attendance on days you do marketing.",
+        data: { href: "/attendance" },
+      });
+    }
 
     // Re-evaluate any forfeited commissions for this date range
     // (the commission engine checks +/- 1 day for timezone handling)
@@ -109,7 +128,7 @@ export async function GET(req: NextRequest) {
     where.date = dateFilter;
   }
 
-  const [records, total] = await Promise.all([
+  const [records, total, allTimeCount] = await Promise.all([
     prisma.attendance.findMany({
       where,
       orderBy: { date: "desc" },
@@ -124,10 +143,12 @@ export async function GET(req: NextRequest) {
       },
     }),
     prisma.attendance.count({ where }),
+    prisma.attendance.count({ where: { userId: session.user.id } }),
   ]);
 
   return NextResponse.json({
     data: records,
+    hasEverSubmitted: allTimeCount > 0,
     pagination: {
       page,
       limit,
