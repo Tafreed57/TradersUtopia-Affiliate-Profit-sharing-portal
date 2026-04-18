@@ -95,10 +95,19 @@ export async function GET() {
       fetchedAt: stats.fetchedAt,
     };
 
+    const cacheRecord = {
+      ...payload,
+      unpaidCents: stats.unpaidCents,
+      paidCents: stats.paidCents,
+      dueCents: stats.dueCents,
+      totalCommissionCents: stats.totalCommissionCents,
+      cacheVersion: 3,
+    };
+
     await prisma.user.update({
       where: { id: userId },
       data: {
-        lifetimeStatsJson: payload as unknown as object,
+        lifetimeStatsJson: cacheRecord as unknown as object,
         lifetimeStatsCachedAt: new Date(),
       },
     });

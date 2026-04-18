@@ -3,12 +3,15 @@ import { getServerSession } from "next-auth";
 
 import { authOptions } from "@/lib/auth-options";
 import { prisma } from "@/lib/prisma";
+import { getStudentRewardfulStats } from "@/lib/rewardful-student-stats";
 
 /**
  * GET /api/students/:id/detail
  *
  * Returns the teacher's Commission rows for a student (what the teacher earns
- * per conversion) plus the student's Attendance records.
+ * per conversion) plus the student's Attendance records, plus a live
+ * teacherUnpaid computed from the student's current Rewardful unpaid × the
+ * teacher's cut percent on this relationship.
  *
  * Auth: caller must have an ACTIVE TeacherStudent relationship with the student.
  */
@@ -34,7 +37,7 @@ export async function GET(
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  const [student, commissions, attendance] = await Promise.all([
+  const [student, commissions, attendance, rewardfulStats] = await Promise.all([
     prisma.user.findUnique({
       where: { id: studentId },
       select: { id: true, name: true, email: true, image: true },
@@ -75,16 +78,32 @@ export async function GET(
         submittedAt: true,
       },
     }),
+
+    // Live Rewardful stats for the student (with cache + 10s timeout)
+    getStudentRewardfulStats(studentId),
   ]);
 
   if (!student) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
+  const teacherCutPercent = relationship.teacherCut.toNumber();
+  const teacherUnpaidCad = rewardfulStats
+    ? Math.round(rewardfulStats.unpaidCents * teacherCutPercent) / 10000
+    : 0;
+  const teacherPaidCad = commissions
+    .filter((c) => c.status === "PAID")
+    .reduce((sum, c) => sum + (c.teacherCutCad?.toNumber() ?? 0), 0);
+
   return NextResponse.json({
     student,
     depth: relationship.depth,
-    teacherCutPercent: relationship.teacherCut.toNumber(),
+    teacherCutPercent,
+    teacherUnpaidCad: Math.round(teacherUnpaidCad * 100) / 100,
+    teacherPaidCad: Math.round(teacherPaidCad * 100) / 100,
+    dataStale: rewardfulStats?.stale ?? false,
+    dataReason: rewardfulStats?.reason ?? "not-linked",
+    fetchedAt: rewardfulStats?.fetchedAt ?? null,
     commissions: commissions.map((c) => ({
       id: c.id,
       conversionDate: c.conversionDate,

@@ -70,9 +70,7 @@ async function fetchAndCache(
   commissionPercent: number
 ): Promise<rewardful.AffiliateLifetimeStats> {
   const stats = await withTimeout(
-    // AbortSignal threaded through if the underlying client supports it;
-    // the outer timeout rejection still fires either way.
-    (_signal) => rewardful.getAffiliateLifetimeStats(rewardfulAffiliateId),
+    (signal) => rewardful.getAffiliateLifetimeStats(rewardfulAffiliateId, signal),
     FETCH_TIMEOUT_MS
   );
 

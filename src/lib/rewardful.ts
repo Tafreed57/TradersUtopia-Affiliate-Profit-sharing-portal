@@ -355,13 +355,15 @@ export interface AffiliateLifetimeStats {
 }
 
 export async function getAffiliateLifetimeStats(
-  affiliateId: string
+  affiliateId: string,
+  signal?: AbortSignal
 ): Promise<AffiliateLifetimeStats> {
   const qs = new URLSearchParams();
   qs.append("expand[]", "commission_stats");
   qs.append("expand[]", "coupons");
   const affiliate = await request<RewardfulAffiliate>(
-    `/affiliates/${affiliateId}?${qs}`
+    `/affiliates/${affiliateId}?${qs}`,
+    signal ? { signal } : undefined
   );
   const visitors = affiliate.visitors ?? 0;
   const leads = affiliate.leads ?? 0;
