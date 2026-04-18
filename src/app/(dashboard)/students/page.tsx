@@ -590,6 +590,7 @@ export default function StudentsPage() {
       {data?.isTeacher && grandTotals && (
         <GrandTotalSummary
           totals={grandTotals}
+          indirectCount={indirectCount}
           format={format}
           onRefresh={() => refetch()}
           isRefreshing={isFetching}
@@ -633,11 +634,13 @@ export default function StudentsPage() {
 
 function GrandTotalSummary({
   totals,
+  indirectCount,
   format,
   onRefresh,
   isRefreshing,
 }: {
   totals: GrandTotals;
+  indirectCount: number;
   format: (amount: number, inputCurrency?: "CAD" | "USD") => string;
   onRefresh: () => void;
   isRefreshing: boolean;
@@ -645,6 +648,10 @@ function GrandTotalSummary({
   const denom = totals.totalUnpaidCad > 0 ? totals.totalUnpaidCad : 1;
   const directPct = Math.min(100, (totals.directUnpaidCad / denom) * 100);
   const indirectPct = Math.min(100, (totals.indirectUnpaidCad / denom) * 100);
+  // Hide the "your students' students" bar when there aren't any — showing
+  // an empty $0 bar implies the teacher is missing earnings that never
+  // existed.
+  const showIndirect = indirectCount > 0;
 
   return (
     <Card>
@@ -688,22 +695,24 @@ function GrandTotalSummary({
               />
             </div>
           </div>
-          <div>
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-muted-foreground">
-                Your students&apos; students
-              </span>
-              <span className="font-medium">
-                {format(totals.indirectUnpaidCad, "CAD")}
-              </span>
+          {showIndirect && (
+            <div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-muted-foreground">
+                  Your students&apos; students
+                </span>
+                <span className="font-medium">
+                  {format(totals.indirectUnpaidCad, "CAD")}
+                </span>
+              </div>
+              <div className="mt-1 h-2 overflow-hidden rounded-full bg-muted">
+                <div
+                  className="h-full bg-info transition-all"
+                  style={{ width: `${indirectPct}%` }}
+                />
+              </div>
             </div>
-            <div className="mt-1 h-2 overflow-hidden rounded-full bg-muted">
-              <div
-                className="h-full bg-info transition-all"
-                style={{ width: `${indirectPct}%` }}
-              />
-            </div>
-          </div>
+          )}
         </div>
       </CardContent>
     </Card>
