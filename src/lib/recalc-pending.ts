@@ -160,30 +160,79 @@ export async function runRecalcPending(
       finalCeoCut = fullAmount.sub(teacherCutTotal);
     }
 
-    // Predicate-guarded: concurrent recalc that already processed this split
-    // returns count=0 and we skip.
-    const affRes = await prisma.commissionSplit.updateMany({
-      where: {
-        id: p.id,
-        status: "PENDING",
-        forfeitureReason: "rate_not_set",
+    // Atomic per-event: AFFILIATE flip + event.ceoCutCad + TEACHER flips all
+    // commit together (array $transaction is a real DB txn — PgBouncer-safe).
+    //
+    // Concurrent-recalc safety: the event and teacher updates are gated on the
+    // AFFILIATE split having reached its post-state (status=finalStatus AND
+    // cutPercent=currentRate). If the AFFILIATE updateMany at [0] no-ops
+    // (because a concurrent recalc already flipped the split), the gating
+    // predicate at [1]/[2] also fails and the downstream writes no-op — so
+    // the event's ceoCutCad can't drift from the split's cutPercent.
+    const currentRateNum = currentRate.toDecimalPlaces(2).toNumber();
+    const postFlipGate = {
+      id: p.event.id,
+      splits: {
+        some: {
+          id: p.id,
+          status: finalStatus,
+          cutPercent: currentRateNum,
+        },
       },
-      data: {
-        status: finalStatus,
-        forfeitedToCeo,
-        forfeitureReason,
-        cutPercent: currentRate.toDecimalPlaces(2).toNumber(),
-        cutCad: finalAffiliateCut.toDecimalPlaces(2).toNumber(),
-      },
-    });
+    };
+
+    const baseTeacherWhere = {
+      eventId: p.event.id,
+      role: "TEACHER" as const,
+      // Only act when AFFILIATE split has reached its post-state.
+      event: { splits: { some: { id: p.id, status: finalStatus, cutPercent: currentRateNum } } },
+    };
+
+    const teacherUpdate = hadAttendance
+      ? prisma.commissionSplit.updateMany({
+          where: {
+            ...baseTeacherWhere,
+            OR: [
+              { status: "FORFEITED", forfeitureReason: noAttendanceReason },
+              { status: "PENDING" },
+            ],
+          },
+          data: { status: "EARNED", forfeitureReason: null, forfeitedToCeo: false },
+        })
+      : prisma.commissionSplit.updateMany({
+          where: { ...baseTeacherWhere, status: "PENDING" },
+          data: {
+            status: "FORFEITED",
+            forfeitureReason: noAttendanceReason,
+            forfeitedToCeo: false,
+          },
+        });
+
+    const [affRes, , teacherRes] = await prisma.$transaction([
+      prisma.commissionSplit.updateMany({
+        where: {
+          id: p.id,
+          status: "PENDING",
+          forfeitureReason: "rate_not_set",
+        },
+        data: {
+          status: finalStatus,
+          forfeitedToCeo,
+          forfeitureReason,
+          cutPercent: currentRateNum,
+          cutCad: finalAffiliateCut.toDecimalPlaces(2).toNumber(),
+        },
+      }),
+      prisma.commissionEvent.updateMany({
+        where: postFlipGate,
+        data: { ceoCutCad: finalCeoCut.toDecimalPlaces(2).toNumber() },
+      }),
+      teacherUpdate,
+    ]);
+
     if (affRes.count === 0) continue;
     affiliateRowsUpdated += 1;
-
-    // Per-event field — updated once per event.
-    await prisma.commissionEvent.update({
-      where: { id: p.event.id },
-      data: { ceoCutCad: finalCeoCut.toDecimalPlaces(2).toNumber() },
-    });
+    teacherRowsAffected += teacherRes.count;
 
     processed.push({
       splitId: p.id,
@@ -192,42 +241,6 @@ export async function runRecalcPending(
       conversionDate: p.event.conversionDate,
       hadAttendance,
     });
-
-    // Teacher splits: flip status only. cutCad was already correct at import
-    // time (teachers always keep their cut per product rule; FORFEITED is a
-    // label for the rate-gate + no-attendance windows).
-    if (hadAttendance) {
-      const recovered = await prisma.commissionSplit.updateMany({
-        where: {
-          eventId: p.event.id,
-          role: "TEACHER",
-          OR: [
-            { status: "FORFEITED", forfeitureReason: noAttendanceReason },
-            { status: "PENDING" },
-          ],
-        },
-        data: {
-          status: "EARNED",
-          forfeitureReason: null,
-          forfeitedToCeo: false,
-        },
-      });
-      teacherRowsAffected += recovered.count;
-    } else {
-      const flipped = await prisma.commissionSplit.updateMany({
-        where: {
-          eventId: p.event.id,
-          role: "TEACHER",
-          status: "PENDING",
-        },
-        data: {
-          status: "FORFEITED",
-          forfeitureReason: noAttendanceReason,
-          forfeitedToCeo: false,
-        },
-      });
-      teacherRowsAffected += flipped.count;
-    }
   }
 
   if (affiliateRowsUpdated > 0) {

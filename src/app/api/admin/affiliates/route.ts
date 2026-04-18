@@ -50,7 +50,7 @@ export async function GET(req: NextRequest) {
         createdAt: true,
         _count: {
           select: {
-            commissions: { where: { teacherId: null } },
+            recipientSplits: { where: { role: "AFFILIATE" } },
             studentRelations: { where: { status: "ACTIVE" } },
             teacherRelations: { where: { status: "ACTIVE" } },
           },
@@ -66,7 +66,7 @@ export async function GET(req: NextRequest) {
   const data = affiliates.map((a) => ({
     ...a,
     commissionPercent: a.commissionPercent.toNumber(),
-    commissionsCount: a._count.commissions,
+    commissionsCount: a._count.recipientSplits,
     studentsCount: a._count.studentRelations,
     teachersCount: a._count.teacherRelations,
     _count: undefined,

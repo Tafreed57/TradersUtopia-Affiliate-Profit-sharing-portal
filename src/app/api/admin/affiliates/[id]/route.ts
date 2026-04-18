@@ -72,19 +72,19 @@ export async function GET(
         },
       }),
 
-      // Recent commissions (last 10)
-      prisma.commission.findMany({
-        where: { affiliateId: id, teacherId: null },
-        orderBy: { conversionDate: "desc" },
+      // Recent commissions (last 10) — AFFILIATE splits for this user,
+      // joined to event for conversionDate + ceoCutCad.
+      prisma.commissionSplit.findMany({
+        where: { role: "AFFILIATE", recipientId: id },
+        orderBy: { event: { conversionDate: "desc" } },
         take: 10,
         select: {
           id: true,
-          affiliateCutPercent: true,
-          affiliateCutCad: true,
-          ceoCutCad: true,
+          cutPercent: true,
+          cutCad: true,
           status: true,
           forfeitedToCeo: true,
-          conversionDate: true,
+          event: { select: { conversionDate: true, ceoCutCad: true } },
         },
       }),
 
@@ -99,17 +99,17 @@ export async function GET(
       }),
 
       // Total earned
-      prisma.commission.aggregate({
-        where: { affiliateId: id, teacherId: null, status: "EARNED" },
-        _sum: { affiliateCutCad: true },
+      prisma.commissionSplit.aggregate({
+        where: { role: "AFFILIATE", recipientId: id, status: "EARNED" },
+        _sum: { cutCad: true },
         _count: true,
       }),
 
       // Pending commissions parked by the rate-gate (forfeitureReason='rate_not_set')
-      prisma.commission.count({
+      prisma.commissionSplit.count({
         where: {
-          affiliateId: id,
-          teacherId: null,
+          role: "AFFILIATE",
+          recipientId: id,
           status: "PENDING",
           forfeitureReason: "rate_not_set",
         },
@@ -140,11 +140,14 @@ export async function GET(
       depth: s.depth,
       teacherCut: s.teacherCut.toNumber(),
     })),
-    recentCommissions: recentCommissions.map((c) => ({
-      ...c,
-      affiliateCutPercent: c.affiliateCutPercent.toNumber(),
-      affiliateCutCad: c.affiliateCutCad.toNumber(),
-      ceoCutCad: c.ceoCutCad.toNumber(),
+    recentCommissions: recentCommissions.map((s) => ({
+      id: s.id,
+      affiliateCutPercent: s.cutPercent.toNumber(),
+      affiliateCutCad: s.cutCad.toNumber(),
+      ceoCutCad: s.event.ceoCutCad.toNumber(),
+      status: s.status,
+      forfeitedToCeo: s.forfeitedToCeo,
+      conversionDate: s.event.conversionDate,
     })),
     rateHistory: rateHistory.map((r) => ({
       id: r.id,
@@ -154,7 +157,7 @@ export async function GET(
       changedBy: r.changedBy.name ?? r.changedBy.email,
       createdAt: r.createdAt,
     })),
-    totalEarnedCad: totalEarned._sum.affiliateCutCad?.toNumber() ?? 0,
+    totalEarnedCad: totalEarned._sum.cutCad?.toNumber() ?? 0,
     totalConversions: totalEarned._count,
     totalAllocated,
     allocationWarning: totalAllocated > TEACHER_CUT_WARN_THRESHOLD,

@@ -7,7 +7,9 @@ import { prisma } from "@/lib/prisma";
 /**
  * GET /api/commissions
  *
- * Returns paginated commissions for the authenticated user.
+ * Returns paginated commission history for the authenticated user — each row
+ * is an AFFILIATE CommissionSplit (what the user earned per conversion).
+ *
  * Query params: page, limit, status, from, to
  */
 export async function GET(req: NextRequest) {
@@ -27,8 +29,8 @@ export async function GET(req: NextRequest) {
   const to = url.searchParams.get("to");
 
   const where: Record<string, unknown> = {
-    affiliateId: session.user.id,
-    teacherId: null, // Only the affiliate's own commission entries
+    role: "AFFILIATE",
+    recipientId: session.user.id,
   };
 
   if (status && ["EARNED", "FORFEITED", "PENDING", "PAID", "VOIDED"].includes(status)) {
@@ -39,31 +41,42 @@ export async function GET(req: NextRequest) {
     const dateFilter: Record<string, Date> = {};
     if (from) dateFilter.gte = new Date(from);
     if (to) dateFilter.lte = new Date(to);
-    where.conversionDate = dateFilter;
+    where.event = { conversionDate: dateFilter };
   }
 
-  const [commissions, total] = await Promise.all([
-    prisma.commission.findMany({
+  const [splits, total] = await Promise.all([
+    prisma.commissionSplit.findMany({
       where,
-      orderBy: { conversionDate: "desc" },
+      orderBy: { event: { conversionDate: "desc" } },
       skip: (page - 1) * limit,
       take: limit,
       select: {
         id: true,
-        affiliateCutPercent: true,
-        affiliateCutCad: true,
+        cutPercent: true,
+        cutCad: true,
         status: true,
         forfeitedToCeo: true,
         forfeitureReason: true,
-        conversionDate: true,
-        processedAt: true,
+        createdAt: true,
+        event: { select: { conversionDate: true } },
       },
     }),
-    prisma.commission.count({ where }),
+    prisma.commissionSplit.count({ where }),
   ]);
 
+  const data = splits.map((s) => ({
+    id: s.id,
+    affiliateCutPercent: s.cutPercent,
+    affiliateCutCad: s.cutCad,
+    status: s.status,
+    forfeitedToCeo: s.forfeitedToCeo,
+    forfeitureReason: s.forfeitureReason,
+    conversionDate: s.event.conversionDate,
+    processedAt: s.createdAt,
+  }));
+
   return NextResponse.json({
-    data: commissions,
+    data,
     pagination: {
       page,
       limit,

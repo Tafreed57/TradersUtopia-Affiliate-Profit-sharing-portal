@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
+import Decimal from "decimal.js";
 
 import { authOptions } from "@/lib/auth-options";
 import { prisma } from "@/lib/prisma";
@@ -64,8 +65,6 @@ export async function GET() {
   const depth2StudentIds = depth2Rels.map((r) => r.studentId);
   const allStudentIds = [...directStudentIds, ...depth2StudentIds];
 
-  // Map each depth-2 student back to whichever direct student is their
-  // immediate teacher — used to nest them under the right card in the UI.
   const parentByDepth2 = new Map<string, string>();
   if (depth2StudentIds.length > 0 && directStudentIds.length > 0) {
     const parentLinks = await prisma.teacherStudent.findMany({
@@ -88,44 +87,56 @@ export async function GET() {
   const monthStartStr = monthStart.toISOString().slice(0, 10);
   const monthEndStr = monthEnd.toISOString().slice(0, 10);
 
-  const baseCommissionWhere = {
-    affiliateId: { in: allStudentIds },
-    teacherId,
-  };
+  // Teacher splits where I'm the recipient, grouped by event.affiliateId.
+  // Prisma's groupBy can't traverse relations, so pull splits + event.affiliateId
+  // and aggregate in-memory — at our scale (hundreds of splits at most per
+  // teacher) the round-trip overhead of a single findMany is negligible.
+  const teacherSplits = await prisma.commissionSplit.findMany({
+    where: {
+      role: "TEACHER",
+      recipientId: teacherId,
+      event: { affiliateId: { in: allStudentIds } },
+    },
+    select: {
+      cutCad: true,
+      status: true,
+      event: { select: { affiliateId: true } },
+    },
+  });
 
-  const [paidSummaries, earnedSummaries, attendanceSummaries, rewardfulStats] =
-    await Promise.all([
-      prisma.commission.groupBy({
-        by: ["affiliateId"],
-        where: { ...baseCommissionWhere, status: "PAID" },
-        _sum: { teacherCutCad: true },
-        _count: true,
-      }),
-      prisma.commission.groupBy({
-        by: ["affiliateId"],
-        where: { ...baseCommissionWhere, status: "EARNED" },
-        _count: true,
-      }),
-      prisma.attendance.groupBy({
-        by: ["userId"],
-        where: {
-          userId: { in: allStudentIds },
-          date: { gte: monthStartStr, lte: monthEndStr },
-        },
-        _count: true,
-      }),
-      getStudentRewardfulStatsBatch(allStudentIds),
-    ]);
+  // Decimal arithmetic for `paid` sum — JS float addition on per-row toNumber()
+  // can drift (0.1 + 0.2 = 0.30000000000000004). Accumulate in Decimal, emit
+  // rounded 2dp at the end — matches DB-side `_sum` precision of the legacy path.
+  type Summary = { paid: Decimal; paidCount: number; earnedCount: number };
+  const summaryByStudent = new Map<string, Summary>();
+  for (const s of teacherSplits) {
+    const sid = s.event.affiliateId;
+    const prev = summaryByStudent.get(sid) ?? {
+      paid: new Decimal(0),
+      paidCount: 0,
+      earnedCount: 0,
+    };
+    if (s.status === "PAID") {
+      prev.paid = prev.paid.add(new Decimal(s.cutCad.toString()));
+      prev.paidCount += 1;
+    } else if (s.status === "EARNED") {
+      prev.earnedCount += 1;
+    }
+    summaryByStudent.set(sid, prev);
+  }
 
-  const paidMap = new Map(
-    paidSummaries.map((s) => [
-      s.affiliateId,
-      { paid: s._sum.teacherCutCad?.toNumber() ?? 0, count: s._count },
-    ])
-  );
-  const earnedMap = new Map(
-    earnedSummaries.map((s) => [s.affiliateId, { count: s._count }])
-  );
+  const [attendanceSummaries, rewardfulStats] = await Promise.all([
+    prisma.attendance.groupBy({
+      by: ["userId"],
+      where: {
+        userId: { in: allStudentIds },
+        date: { gte: monthStartStr, lte: monthEndStr },
+      },
+      _count: true,
+    }),
+    getStudentRewardfulStatsBatch(allStudentIds),
+  ]);
+
   const attendanceMap = new Map(
     attendanceSummaries.map((s) => [s.userId, s._count])
   );
@@ -147,7 +158,6 @@ export async function GET() {
         fetchedAt: null,
       };
     }
-    // unpaidCents × percent / 100 = scaled cents; / 100 again → dollars (2dp)
     const teacherUnpaidCad =
       Math.round(stats.unpaidCents * teacherCutPercent) / 10000;
     return {
@@ -164,8 +174,12 @@ export async function GET() {
     const teacherCutPercent = rel.teacherCut.toNumber();
     const stats = rewardfulStats.get(rel.studentId);
     const liveData = computeTeacherUnpaid(teacherCutPercent, stats);
-    const paid = paidMap.get(rel.studentId) ?? { paid: 0, count: 0 };
-    const earned = earnedMap.get(rel.studentId) ?? { count: 0 };
+    const summary =
+      summaryByStudent.get(rel.studentId) ?? {
+        paid: new Decimal(0),
+        paidCount: 0,
+        earnedCount: 0,
+      };
     return {
       id: rel.student.id,
       name: rel.student.name,
@@ -176,8 +190,8 @@ export async function GET() {
       depth: rel.depth,
       teacherCutPercent,
       teacherUnpaidCad: liveData.teacherUnpaidCad,
-      teacherPaidCad: paid.paid,
-      conversionCount: paid.count + earned.count,
+      teacherPaidCad: summary.paid.toDecimalPlaces(2).toNumber(),
+      conversionCount: summary.paidCount + summary.earnedCount,
       attendanceDaysThisMonth: attendanceMap.get(rel.studentId) ?? 0,
       dataStale: liveData.dataStale,
       dataReason: liveData.dataReason,
@@ -193,10 +207,6 @@ export async function GET() {
     const parent = parentByDepth2.get(rel.studentId);
     const built = buildStudent(rel);
     if (!parent) {
-      // depth-2 relationship without an active depth-1 parent link —
-      // should be rare (cascade bug or manual DB edit). Count in totals
-      // + log so the miss shows up in observability instead of silently
-      // vanishing from the teacher's view.
       console.warn(
         `[api/students] orphaned depth-2 relationship: teacher=${teacherId} student=${rel.studentId} — no active depth-1 parent found in teacher's tree`
       );

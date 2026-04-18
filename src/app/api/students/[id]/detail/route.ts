@@ -8,10 +8,10 @@ import { getStudentRewardfulStats } from "@/lib/rewardful-student-stats";
 /**
  * GET /api/students/:id/detail
  *
- * Returns the teacher's Commission rows for a student (what the teacher earns
- * per conversion) plus the student's Attendance records, plus a live
- * teacherUnpaid computed from the student's current Rewardful unpaid × the
- * teacher's cut percent on this relationship.
+ * Returns the teacher's TEACHER CommissionSplit rows for a student (what the
+ * teacher earns per conversion) plus the student's Attendance records, plus
+ * a live teacherUnpaid computed from the student's current Rewardful unpaid ×
+ * the teacher's cut percent on this relationship.
  *
  * Auth: caller must have an ACTIVE TeacherStudent relationship with the student.
  */
@@ -27,7 +27,6 @@ export async function GET(
   const { id: studentId } = await params;
   const teacherId = session.user.id;
 
-  // Verify active relationship (any depth)
   const relationship = await prisma.teacherStudent.findFirst({
     where: { teacherId, studentId, status: "ACTIVE" },
     select: { depth: true, teacherCut: true },
@@ -39,14 +38,17 @@ export async function GET(
 
   const COMMISSION_LIMIT = 200;
   const ATTENDANCE_LIMIT = 200;
-  const commissionWhere = {
-    affiliateId: studentId,
-    teacherId,
+
+  const splitWhere = {
+    role: "TEACHER" as const,
+    recipientId: teacherId,
+    event: { affiliateId: studentId },
     status: { not: "PENDING" as const },
   };
+
   const [
     student,
-    commissions,
+    splits,
     attendance,
     rewardfulStats,
     commissionTotal,
@@ -57,25 +59,22 @@ export async function GET(
       select: { id: true, name: true, email: true, image: true },
     }),
 
-    // Teacher's cut rows for this student — what the teacher earns per conversion
-    prisma.commission.findMany({
-      where: commissionWhere,
-      orderBy: { conversionDate: "desc" },
+    prisma.commissionSplit.findMany({
+      where: splitWhere,
+      orderBy: { event: { conversionDate: "desc" } },
       take: COMMISSION_LIMIT,
       select: {
         id: true,
-        conversionDate: true,
-        fullAmountCad: true,
-        teacherCutPercent: true,
-        teacherCutCad: true,
+        cutPercent: true,
+        cutCad: true,
         status: true,
         forfeitedToCeo: true,
         forfeitureReason: true,
         paidAt: true,
+        event: { select: { conversionDate: true, fullAmountCad: true } },
       },
     }),
 
-    // Student's attendance records
     prisma.attendance.findMany({
       where: { userId: studentId },
       orderBy: { date: "desc" },
@@ -89,10 +88,9 @@ export async function GET(
       },
     }),
 
-    // Live Rewardful stats for the student (with cache + 10s timeout)
     getStudentRewardfulStats(studentId),
 
-    prisma.commission.count({ where: commissionWhere }),
+    prisma.commissionSplit.count({ where: splitWhere }),
     prisma.attendance.count({ where: { userId: studentId } }),
   ]);
 
@@ -104,9 +102,9 @@ export async function GET(
   const teacherUnpaidCad = rewardfulStats
     ? Math.round(rewardfulStats.unpaidCents * teacherCutPercent) / 10000
     : 0;
-  const teacherPaidCad = commissions
-    .filter((c) => c.status === "PAID")
-    .reduce((sum, c) => sum + (c.teacherCutCad?.toNumber() ?? 0), 0);
+  const teacherPaidCad = splits
+    .filter((s) => s.status === "PAID")
+    .reduce((sum, s) => sum + s.cutCad.toNumber(), 0);
 
   return NextResponse.json({
     student,
@@ -119,18 +117,18 @@ export async function GET(
     fetchedAt: rewardfulStats?.fetchedAt ?? null,
     commissionTotal,
     attendanceTotal,
-    commissionHasMore: commissionTotal > commissions.length,
+    commissionHasMore: commissionTotal > splits.length,
     attendanceHasMore: attendanceTotal > attendance.length,
-    commissions: commissions.map((c) => ({
-      id: c.id,
-      conversionDate: c.conversionDate,
-      fullAmountCad: c.fullAmountCad.toNumber(),
-      teacherCutPercent: c.teacherCutPercent?.toNumber() ?? 0,
-      teacherCutCad: c.teacherCutCad?.toNumber() ?? 0,
-      status: c.status,
-      forfeitedToCeo: c.forfeitedToCeo,
-      forfeitureReason: c.forfeitureReason,
-      paidAt: c.paidAt,
+    commissions: splits.map((s) => ({
+      id: s.id,
+      conversionDate: s.event.conversionDate,
+      fullAmountCad: s.event.fullAmountCad.toNumber(),
+      teacherCutPercent: s.cutPercent.toNumber(),
+      teacherCutCad: s.cutCad.toNumber(),
+      status: s.status,
+      forfeitedToCeo: s.forfeitedToCeo,
+      forfeitureReason: s.forfeitureReason,
+      paidAt: s.paidAt,
     })),
     attendance,
   });

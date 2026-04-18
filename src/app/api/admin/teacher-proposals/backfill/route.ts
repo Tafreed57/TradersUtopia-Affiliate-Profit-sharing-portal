@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 
@@ -72,37 +73,51 @@ export async function POST() {
 
     if (toProcess.length === 0) continue;
 
-    await prisma.$transaction([
-      prisma.commissionSplit.createMany({
-        data: toProcess.map(({ event, teacherCutCad }) => ({
-          eventId: event.id,
-          recipientId: rel.teacherId,
-          role: "TEACHER" as const,
-          depth: rel.depth,
-          cutPercent: rel.teacherCut,
-          cutCad: teacherCutCad,
-          status: "EARNED" as const,
-          forfeitedToCeo: false,
-          forfeitureReason: null,
-          idempotencyKey: event.rewardfulCommissionId
-            ? `${event.rewardfulCommissionId}:teacher:${rel.teacherId}`
-            : `evt:${event.id}:teacher:${rel.teacherId}`,
-        })),
-        skipDuplicates: true,
-      }),
-      ...toProcess.map(({ event, teacherCutCad }) =>
-        prisma.commissionEvent.update({
-          where: { id: event.id },
-          data: {
-            ceoCutCad: Number(
-              (event.ceoCutCad.toNumber() - teacherCutCad).toFixed(2)
-            ),
-          },
-        })
-      ),
-    ]);
-
-    totalCreated += toProcess.length;
+    // Per-event atomic write: `create` + event.ceoCutCad decrement in one tx,
+    // then catch P2002 on the split's (eventId, recipientId) unique so a
+    // concurrent backfill can't double-decrement ceoCutCad. skipDuplicates
+    // on createMany wouldn't help here because the event update doesn't know
+    // which inserts were skipped.
+    for (const { event, teacherCutCad } of toProcess) {
+      try {
+        await prisma.$transaction([
+          prisma.commissionSplit.create({
+            data: {
+              eventId: event.id,
+              recipientId: rel.teacherId,
+              role: "TEACHER",
+              depth: rel.depth,
+              cutPercent: rel.teacherCut,
+              cutCad: teacherCutCad,
+              status: "EARNED",
+              forfeitedToCeo: false,
+              forfeitureReason: null,
+              idempotencyKey: event.rewardfulCommissionId
+                ? `${event.rewardfulCommissionId}:teacher:${rel.teacherId}`
+                : `evt:${event.id}:teacher:${rel.teacherId}`,
+            },
+          }),
+          prisma.commissionEvent.update({
+            where: { id: event.id },
+            data: {
+              ceoCutCad: Number(
+                (event.ceoCutCad.toNumber() - teacherCutCad).toFixed(2)
+              ),
+            },
+          }),
+        ]);
+        totalCreated += 1;
+      } catch (err) {
+        if (
+          err instanceof Prisma.PrismaClientKnownRequestError &&
+          err.code === "P2002"
+        ) {
+          // Concurrent backfill beat us; its tx decremented ceoCutCad.
+          continue;
+        }
+        throw err;
+      }
+    }
   }
 
   return NextResponse.json({

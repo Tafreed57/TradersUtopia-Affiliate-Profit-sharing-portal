@@ -17,12 +17,13 @@ export async function GET() {
 
   const userId = session.user.id;
 
-  // Current month boundaries
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
   const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
   const monthStartStr = monthStart.toISOString().slice(0, 10);
   const monthEndStr = monthEnd.toISOString().slice(0, 10);
+
+  const affiliateSplitWhere = { role: "AFFILIATE" as const, recipientId: userId };
 
   const [
     lifetimeStatsUser,
@@ -30,40 +31,30 @@ export async function GET() {
     thisMonthEarned,
     commissionCount,
     attendanceThisMonth,
-    recentCommissions,
+    recentSplits,
   ] = await Promise.all([
-    // Total earned — prefer Rewardful-based cache (same source as /commissions page)
     prisma.user.findUnique({
       where: { id: userId },
       select: { lifetimeStatsJson: true },
     }),
 
-    // Fallback for when Rewardful cache is cold (new user / post-rate-change)
-    prisma.commission.aggregate({
-      where: { affiliateId: userId, teacherId: null, status: "EARNED" },
-      _sum: { affiliateCutCad: true },
+    // Fallback when Rewardful cache is cold.
+    prisma.commissionSplit.aggregate({
+      where: { ...affiliateSplitWhere, status: "EARNED" },
+      _sum: { cutCad: true },
     }),
 
-    // This month earned
-    prisma.commission.aggregate({
+    prisma.commissionSplit.aggregate({
       where: {
-        affiliateId: userId,
-        teacherId: null,
+        ...affiliateSplitWhere,
         status: "EARNED",
-        conversionDate: { gte: monthStart, lte: monthEnd },
+        event: { conversionDate: { gte: monthStart, lte: monthEnd } },
       },
-      _sum: { affiliateCutCad: true },
+      _sum: { cutCad: true },
     }),
 
-    // Total commission count (all statuses)
-    prisma.commission.count({
-      where: {
-        affiliateId: userId,
-        teacherId: null,
-      },
-    }),
+    prisma.commissionSplit.count({ where: affiliateSplitWhere }),
 
-    // Attendance days this month
     prisma.attendance.groupBy({
       by: ["date"],
       where: {
@@ -72,21 +63,19 @@ export async function GET() {
       },
     }),
 
-    // 5 most recent commissions — secondary sort by createdAt desc for deterministic ordering
-    // when duplicate rows share the same conversionDate
-    prisma.commission.findMany({
-      where: {
-        affiliateId: userId,
-        teacherId: null,
-      },
-      orderBy: [{ conversionDate: "desc" }, { processedAt: "desc" }],
+    prisma.commissionSplit.findMany({
+      where: affiliateSplitWhere,
+      orderBy: [
+        { event: { conversionDate: "desc" } },
+        { createdAt: "desc" },
+      ],
       take: 5,
       select: {
         id: true,
-        affiliateCutCad: true,
+        cutCad: true,
         status: true,
         forfeitedToCeo: true,
-        conversionDate: true,
+        event: { select: { conversionDate: true } },
       },
     }),
   ]);
@@ -95,19 +84,24 @@ export async function GET() {
     | { grossEarnedCad?: number }
     | null
     | undefined;
-  const localFallback = totalEarnedFallback._sum.affiliateCutCad?.toNumber() ?? 0;
+  const localFallback = totalEarnedFallback._sum.cutCad?.toNumber() ?? 0;
 
   // When Rewardful cache is warm, totalEarned is in CAD (from commission_stats).
-  // When cold, it falls back to DB sum of affiliateCutCad which is actually USD.
+  // When cold, falls back to DB sum of cutCad (stored currency).
   const hasRewardfulCache = lifetimeStats?.grossEarnedCad != null;
 
   return NextResponse.json({
     totalEarned: lifetimeStats?.grossEarnedCad ?? localFallback,
     totalEarnedCurrency: hasRewardfulCache ? "CAD" : "USD",
-    thisMonthEarned:
-      thisMonthEarned._sum.affiliateCutCad?.toNumber() ?? 0,
+    thisMonthEarned: thisMonthEarned._sum.cutCad?.toNumber() ?? 0,
     commissionCount,
     attendanceDaysThisMonth: attendanceThisMonth.length,
-    recentCommissions,
+    recentCommissions: recentSplits.map((s) => ({
+      id: s.id,
+      affiliateCutCad: s.cutCad,
+      status: s.status,
+      forfeitedToCeo: s.forfeitedToCeo,
+      conversionDate: s.event.conversionDate,
+    })),
   });
 }
