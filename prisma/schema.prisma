@@ -70,8 +70,10 @@ model User {
   updatedAt            DateTime              @default(now()) @updatedAt
   accounts             Account[]
   attendanceRecords    Attendance[]
-  commissions          Commission[]          @relation("AffiliateCommissions")
-  teacherCommissions   Commission[]          @relation("TeacherCommissions")
+  commissions          Commission[]          @relation("AffiliateCommissions") @ignore
+  teacherCommissions   Commission[]          @relation("TeacherCommissions") @ignore
+  affiliateEvents      CommissionEvent[]     @relation("affiliateEvents")
+  recipientSplits      CommissionSplit[]     @relation("recipientSplits")
   rateChanges          CommissionRateAudit[] @relation("AffiliateRateChanges")
   rateChangesBy        CommissionRateAudit[] @relation("ChangedByUser")
   deviceTokens         DeviceToken[]
@@ -142,6 +144,51 @@ model Commission {
   @@index([status])
   @@index([paidAt])
   @@index([rewardfulCommissionId])
+  @@ignore
+}
+
+model CommissionEvent {
+  id                    String            @id @default(cuid())
+  rewardfulCommissionId String?           @unique
+  rewardfulReferralId   String?
+  affiliateId           String
+  affiliate             User              @relation("affiliateEvents", fields: [affiliateId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  conversionDate        DateTime
+  currency              String            @default("USD")
+  fullAmountCad         Decimal           @db.Decimal(12, 2)
+  ceoCutCad             Decimal           @db.Decimal(12, 2)
+  rewardfulData         Json?
+  splits                CommissionSplit[]
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  @@index([affiliateId])
+  @@index([conversionDate])
+}
+
+model CommissionSplit {
+  id               String           @id @default(cuid())
+  eventId          String
+  event            CommissionEvent  @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  recipientId      String
+  recipient        User             @relation("recipientSplits", fields: [recipientId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  role             CommissionRole
+  depth            Int?
+  cutPercent       Decimal          @db.Decimal(5, 2)
+  cutCad           Decimal          @db.Decimal(12, 2)
+  status           CommissionStatus @default(PENDING)
+  forfeitedToCeo   Boolean          @default(false)
+  forfeitureReason String?
+  paidAt           DateTime?
+  voidedAt         DateTime?
+  idempotencyKey   String           @unique
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@unique([eventId, recipientId])
+  @@index([recipientId])
+  @@index([status])
+  @@index([paidAt])
 }
 
 model CommissionRateAudit {
@@ -280,6 +327,11 @@ enum CommissionStatus {
   PENDING
   PAID
   VOIDED
+}
+
+enum CommissionRole {
+  AFFILIATE
+  TEACHER
 }
 
 enum NotificationType {
