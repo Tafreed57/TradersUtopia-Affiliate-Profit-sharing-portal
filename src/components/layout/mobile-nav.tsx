@@ -28,6 +28,12 @@ const navItems = [
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
+const adminItems = [
+  { href: "/admin", label: "Admin Panel", icon: Shield, exact: true },
+  { href: "/admin/proposals", label: "Proposals", icon: ClipboardList, exact: false },
+  { href: "/admin/promo-codes", label: "Promo Codes", icon: Tag, exact: false },
+];
+
 export function MobileNav() {
   const pathname = usePathname();
   const isAdmin = useAdmin();
@@ -70,42 +76,24 @@ export function MobileNav() {
         {isAdmin && (
           <>
             <div className="my-4 border-t border-border/50" />
-            <Link
-              href="/admin"
-              className={cn(
-                "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
-                pathname === "/admin"
-                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-              )}
-            >
-              <Shield className="h-4 w-4" />
-              Admin Panel
-            </Link>
-            <Link
-              href="/admin/proposals"
-              className={cn(
-                "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
-                pathname.startsWith("/admin/proposals")
-                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-              )}
-            >
-              <ClipboardList className="h-4 w-4" />
-              Proposals
-            </Link>
-            <Link
-              href="/admin/promo-codes"
-              className={cn(
-                "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
-                pathname.startsWith("/admin/promo-codes")
-                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-              )}
-            >
-              <Tag className="h-4 w-4" />
-              Promo Codes
-            </Link>
+            {adminItems.map((item) => {
+              const active = item.exact ? pathname === item.href : pathname.startsWith(item.href);
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={cn(
+                    "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
+                    active
+                      ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                      : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                  )}
+                >
+                  <item.icon className="h-4 w-4" />
+                  {item.label}
+                </Link>
+              );
+            })}
           </>
         )}
       </nav>

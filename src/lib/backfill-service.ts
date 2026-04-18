@@ -11,9 +11,10 @@ import type { RewardfulCommission } from "@/lib/rewardful";
  * `skipAttendanceCheck: true` — historical dates have no attendance records,
  * and per product decision all historical rows are treated as earned.
  *
- * Idempotent via the `rewardfulCommissionId @unique` constraint inside
- * `processConversion`: already-imported commissions return `{ skipped: true }`
- * and do not create duplicate rows.
+ * Idempotent via the `idempotencyKey @unique` constraint inside
+ * `processConversion` (keyed as `{rewardfulCommissionId}:aff:{id}` and
+ * `{rewardfulCommissionId}:teacher:{id}`): already-imported commissions
+ * return `{ skipped: true }` and do not create duplicate rows.
  */
 export async function runBackfill(userId: string): Promise<{
   imported: number;

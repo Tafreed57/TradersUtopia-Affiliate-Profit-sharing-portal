@@ -21,6 +21,7 @@ client_secret_*.json
 .mcp.json
 .playwright-mcp/
 tsconfig.tsbuildinfo
+next-env.d.ts
 .env.local
 .env.development.local
 .env.test.local
