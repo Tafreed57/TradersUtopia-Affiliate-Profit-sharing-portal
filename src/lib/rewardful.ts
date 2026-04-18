@@ -131,8 +131,12 @@ export interface RewardfulCampaign {
   name: string;
   url: string;
   commission_type: string;
-  reward_type: string;
+  reward_type: "percent" | "amount";
   private: boolean;
+  default: boolean;
+  commission_percent: number;
+  commission_amount_cents: number | null;
+  commission_amount_currency: string | null;
   created_at: string;
 }
 

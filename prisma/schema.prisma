@@ -198,6 +198,8 @@ model PromoCodeRequest {
   proposedCode      String
   status            PromoCodeRequestStatus @default(PENDING_TEACHER)
   rewardfulCouponId String?
+  campaignId        String?
+  campaignName      String?
   rejectionReason   String?
   errorMessage      String?
   createdAt         DateTime               @default(now())

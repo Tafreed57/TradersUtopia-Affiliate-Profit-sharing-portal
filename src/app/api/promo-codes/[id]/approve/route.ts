@@ -10,6 +10,7 @@ import { createCoupon, listCampaigns } from "@/lib/rewardful";
 const approveSchema = z.object({
   action: z.enum(["approve", "reject"]),
   reason: z.string().optional(),
+  campaign_id: z.string().optional(),
 });
 
 /**
@@ -31,7 +32,7 @@ export async function POST(
 
   try {
     const body = await req.json();
-    const { action, reason } = approveSchema.parse(body);
+    const { action, reason, campaign_id } = approveSchema.parse(body);
 
     // Get the promo code request
     const request = await prisma.promoCodeRequest.findUnique({
@@ -54,7 +55,14 @@ export async function POST(
       );
     }
 
-    if (request.status !== "PENDING_TEACHER") {
+    const isAdmin = session.user.isAdmin;
+
+    // Admins can retry FAILED codes; teachers can only act on PENDING_TEACHER
+    const allowedStatuses = isAdmin
+      ? ["PENDING_TEACHER", "FAILED"]
+      : ["PENDING_TEACHER"];
+
+    if (!allowedStatuses.includes(request.status)) {
       return NextResponse.json(
         { error: "Request has already been reviewed" },
         { status: 409 }
@@ -69,9 +77,6 @@ export async function POST(
         status: "ACTIVE",
       },
     });
-
-    // Also allow admin to approve
-    const isAdmin = session.user.isAdmin;
 
     if (!isTeacher && !isAdmin) {
       return NextResponse.json(
@@ -117,15 +122,23 @@ export async function POST(
     }
 
     try {
-      // Get the first campaign to associate the coupon with
-      const campaigns = await listCampaigns({ limit: 1 });
+      // Resolve campaign: use provided campaign_id or fall back to default
+      const campaigns = await listCampaigns({ limit: 100 });
       if (!campaigns.data.length) {
-        throw new Error("No campaigns found");
+        throw new Error("No commission plans found");
+      }
+
+      let selectedCampaign = campaign_id
+        ? campaigns.data.find((c) => c.id === campaign_id)
+        : campaigns.data.find((c) => c.default) ?? campaigns.data[0];
+
+      if (!selectedCampaign) {
+        throw new Error("Specified commission plan not found");
       }
 
       const coupon = await createCoupon({
         affiliate_id: request.requester.rewardfulAffiliateId,
-        campaign_id: campaigns.data[0].id,
+        campaign_id: selectedCampaign.id,
         code: request.proposedCode,
       });
 
@@ -136,6 +149,8 @@ export async function POST(
           reviewerId: session.user.id,
           reviewedAt: new Date(),
           rewardfulCouponId: coupon.id,
+          campaignId: selectedCampaign.id,
+          campaignName: selectedCampaign.name,
         },
       });
 
@@ -152,7 +167,7 @@ export async function POST(
       const errorMessage =
         apiError instanceof Error ? apiError.message : "Unknown error";
 
-      const updated = await prisma.promoCodeRequest.update({
+      await prisma.promoCodeRequest.update({
         where: { id },
         data: {
           status: "FAILED",
@@ -162,7 +177,10 @@ export async function POST(
         },
       });
 
-      return NextResponse.json(updated);
+      return NextResponse.json(
+        { error: `Failed to create code: ${errorMessage}` },
+        { status: 422 }
+      );
     }
   } catch (error) {
     if (error instanceof z.ZodError) {

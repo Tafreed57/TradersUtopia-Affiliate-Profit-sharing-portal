@@ -94,6 +94,18 @@ export function MobileNav() {
               <ClipboardList className="h-4 w-4" />
               Proposals
             </Link>
+            <Link
+              href="/admin/promo-codes"
+              className={cn(
+                "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
+                pathname.startsWith("/admin/promo-codes")
+                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+              )}
+            >
+              <Tag className="h-4 w-4" />
+              Promo Codes
+            </Link>
           </>
         )}
       </nav>

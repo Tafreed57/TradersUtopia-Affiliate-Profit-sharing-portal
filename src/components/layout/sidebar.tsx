@@ -31,6 +31,7 @@ const navItems = [
 const adminItems = [
   { href: "/admin", label: "Admin Panel", icon: Shield, exact: true },
   { href: "/admin/proposals", label: "Proposals", icon: ClipboardList, exact: false },
+  { href: "/admin/promo-codes", label: "Promo Codes", icon: Tag, exact: false },
 ];
 
 export function Sidebar() {
