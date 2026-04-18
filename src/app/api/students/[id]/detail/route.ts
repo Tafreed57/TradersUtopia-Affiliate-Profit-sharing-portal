@@ -37,7 +37,21 @@ export async function GET(
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  const [student, commissions, attendance, rewardfulStats] = await Promise.all([
+  const COMMISSION_LIMIT = 200;
+  const ATTENDANCE_LIMIT = 200;
+  const commissionWhere = {
+    affiliateId: studentId,
+    teacherId,
+    status: { not: "PENDING" as const },
+  };
+  const [
+    student,
+    commissions,
+    attendance,
+    rewardfulStats,
+    commissionTotal,
+    attendanceTotal,
+  ] = await Promise.all([
     prisma.user.findUnique({
       where: { id: studentId },
       select: { id: true, name: true, email: true, image: true },
@@ -45,13 +59,9 @@ export async function GET(
 
     // Teacher's cut rows for this student — what the teacher earns per conversion
     prisma.commission.findMany({
-      where: {
-        affiliateId: studentId,
-        teacherId,
-        status: { not: "PENDING" },
-      },
+      where: commissionWhere,
       orderBy: { conversionDate: "desc" },
-      take: 200,
+      take: COMMISSION_LIMIT,
       select: {
         id: true,
         conversionDate: true,
@@ -69,7 +79,7 @@ export async function GET(
     prisma.attendance.findMany({
       where: { userId: studentId },
       orderBy: { date: "desc" },
-      take: 200,
+      take: ATTENDANCE_LIMIT,
       select: {
         id: true,
         date: true,
@@ -81,6 +91,9 @@ export async function GET(
 
     // Live Rewardful stats for the student (with cache + 10s timeout)
     getStudentRewardfulStats(studentId),
+
+    prisma.commission.count({ where: commissionWhere }),
+    prisma.attendance.count({ where: { userId: studentId } }),
   ]);
 
   if (!student) {
@@ -104,6 +117,10 @@ export async function GET(
     dataStale: rewardfulStats?.stale ?? false,
     dataReason: rewardfulStats?.reason ?? "not-linked",
     fetchedAt: rewardfulStats?.fetchedAt ?? null,
+    commissionTotal,
+    attendanceTotal,
+    commissionHasMore: commissionTotal > commissions.length,
+    attendanceHasMore: attendanceTotal > attendance.length,
     commissions: commissions.map((c) => ({
       id: c.id,
       conversionDate: c.conversionDate,

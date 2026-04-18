@@ -125,6 +125,10 @@ interface StudentDetailResponse {
   fetchedAt: string | null;
   commissions: DetailCommission[];
   attendance: DetailAttendance[];
+  commissionTotal: number;
+  attendanceTotal: number;
+  commissionHasMore: boolean;
+  attendanceHasMore: boolean;
 }
 
 function StudentDetailSheet({
@@ -179,11 +183,11 @@ function StudentDetailSheet({
                 <p className="text-xs text-muted-foreground">Paid</p>
               </div>
               <div>
-                <p className="font-semibold">{data.commissions.length}</p>
+                <p className="font-semibold">{data.commissionTotal}</p>
                 <p className="text-xs text-muted-foreground">Conversions</p>
               </div>
               <div>
-                <p className="font-semibold">{data.attendance.length}</p>
+                <p className="font-semibold">{data.attendanceTotal}</p>
                 <p className="text-xs text-muted-foreground">Attendance</p>
               </div>
               <div>
@@ -204,10 +208,10 @@ function StudentDetailSheet({
           <Tabs defaultValue="commissions" className="flex flex-1 flex-col overflow-hidden">
             <TabsList variant="line" className="w-full justify-start px-4 pt-2">
               <TabsTrigger value="commissions">
-                Commissions ({data?.commissions.length ?? 0})
+                Commissions ({data?.commissionTotal ?? 0})
               </TabsTrigger>
               <TabsTrigger value="attendance">
-                Attendance ({data?.attendance.length ?? 0})
+                Attendance ({data?.attendanceTotal ?? 0})
               </TabsTrigger>
             </TabsList>
 
@@ -267,6 +271,11 @@ function StudentDetailSheet({
                   </div>
                 ))
               )}
+              {data?.commissionHasMore && (
+                <p className="pt-2 text-center text-xs text-muted-foreground">
+                  Showing most recent {data.commissions.length} of {data.commissionTotal}
+                </p>
+              )}
             </TabsContent>
 
             <TabsContent value="attendance" className="flex-1 space-y-2 overflow-y-auto px-4 py-3">
@@ -291,6 +300,11 @@ function StudentDetailSheet({
                     )}
                   </div>
                 ))
+              )}
+              {data?.attendanceHasMore && (
+                <p className="pt-2 text-center text-xs text-muted-foreground">
+                  Showing most recent {data.attendance.length} of {data.attendanceTotal}
+                </p>
               )}
             </TabsContent>
           </Tabs>
