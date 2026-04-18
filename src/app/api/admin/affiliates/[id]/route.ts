@@ -217,7 +217,8 @@ export async function PATCH(
       updateData.lifetimeStatsCachedAt = null;
       updateData.lifetimeStatsJson = Prisma.JsonNull;
 
-      // Create audit log
+      // Create audit log (internal record only — affiliates are NOT notified
+      // of rate changes by design; admin adjusts rates silently).
       await prisma.commissionRateAudit.create({
         data: {
           affiliateId: id,
@@ -225,18 +226,6 @@ export async function PATCH(
           previousPercent: currentUser.commissionPercent,
           newPercent: commissionPercent,
           reason: reason ?? null,
-        },
-      });
-
-      // Notify affiliate
-      await createNotification({
-        userId: id,
-        type: "COMMISSION_RATE_CHANGED",
-        title: "Commission Rate Updated",
-        body: `Your commission rate has been changed from ${currentUser.commissionPercent.toNumber()}% to ${commissionPercent}%.`,
-        data: {
-          previousPercent: currentUser.commissionPercent.toNumber(),
-          newPercent: commissionPercent,
         },
       });
     }
