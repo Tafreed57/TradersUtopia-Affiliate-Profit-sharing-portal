@@ -1,8 +1,9 @@
+import { Prisma } from "@prisma/client";
+import Decimal from "decimal.js";
 import { NextRequest, NextResponse } from "next/server";
 
 import { processConversion } from "@/lib/commission-engine";
 import { prisma } from "@/lib/prisma";
-import { runRecalcPending } from "@/lib/recalc-pending";
 import * as rewardful from "@/lib/rewardful";
 import { handleCommissionPaid, handleCommissionVoided } from "@/lib/payment-service";
 
@@ -120,63 +121,167 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Nightly classification repair. Recomputes `isRecurring` for every event
-  // based on chronological order within its referralId. Catches the out-of-
-  // order webhook race where a newer conversion arrived first and was
-  // tagged initial incorrectly. Each event whose flag flips triggers a
-  // re-price for that affiliate so split cutCad + event ceoCutCad track
-  // the corrected classification. Idempotent — `isRecurring = (rn > 1)`
-  // no-ops when already correct.
+  // Nightly classification repair. Catches the out-of-order webhook race
+  // where a newer conversion arrived first and was tagged "initial"
+  // incorrectly. Correct classification = earliest conversionDate per
+  // referralId is initial, rest are recurring.
   //
-  // Events with any PAID or VOIDED split are EXCLUDED from the flip:
-  // re-pricing would skip those splits (PAID is immutable) and leave cutCad
-  // inconsistent with the corrected classification. Freezing classification
-  // on terminal splits matches the "paid is frozen" dogma — the affiliate
-  // was paid what they were paid. Residual cosmetic mismatch only.
+  // Per-event atomic flip + reprice. Each event is updated via an array
+  // $transaction that:
+  //   (a) updates the AFFILIATE split's cutPercent + cutCad — but ONLY if
+  //       the split is still EARNED or PENDING (TOCTOU guard). If the split
+  //       went PAID or VOIDED between snapshot and tx, updateMany no-ops.
+  //   (b) updates the event.isRecurring + ceoCutCad — gated via nested
+  //       predicate on the affiliate split being at the post-state
+  //       (matching cutPercent + status in EARNED/PENDING). If (a) no-op'd,
+  //       (b) also no-ops, so classification stays untouched when the
+  //       affiliate split is PAID/VOIDED. "Paid is frozen" — both cutCad
+  //       and classification lock at payout.
+  //
+  // Teacher splits are NOT touched here. Their cutCad is rate-independent
+  // (teacherCut% × fullAmount, not a slice of the affiliate cut), so
+  // classification changes don't affect them.
   let classificationFlipped = 0;
   let classificationRepriced = 0;
   try {
-    const affected = await prisma.$queryRaw<
-      Array<{ id: string; affiliateId: string }>
-    >`
-      WITH ranked AS (
-        SELECT id,
-          ROW_NUMBER() OVER (
-            PARTITION BY "rewardfulReferralId"
-            ORDER BY "conversionDate" ASC, "createdAt" ASC, id ASC
-          ) AS rn
-        FROM "CommissionEvent"
-        WHERE "rewardfulReferralId" IS NOT NULL
-      )
-      UPDATE "CommissionEvent" e
-      SET "isRecurring" = (r.rn > 1)
-      FROM ranked r
-      WHERE e.id = r.id
-        AND e."isRecurring" <> (r.rn > 1)
-        AND NOT EXISTS (
-          SELECT 1 FROM "CommissionSplit" cs
-          WHERE cs."eventId" = e.id
-            AND cs.status IN ('PAID', 'VOIDED')
-        )
-      RETURNING e.id, e."affiliateId"
-    `;
-    classificationFlipped = affected.length;
+    const referralEvents = await prisma.commissionEvent.findMany({
+      where: { rewardfulReferralId: { not: null } },
+      select: {
+        id: true,
+        affiliateId: true,
+        rewardfulReferralId: true,
+        conversionDate: true,
+        createdAt: true,
+        isRecurring: true,
+        fullAmountCad: true,
+      },
+      orderBy: [
+        { rewardfulReferralId: "asc" },
+        { conversionDate: "asc" },
+        { createdAt: "asc" },
+        { id: "asc" },
+      ],
+    });
 
-    const affectedAffiliateIds = [...new Set(affected.map((a) => a.affiliateId))];
-    for (const affId of affectedAffiliateIds) {
-      try {
-        const result = await runRecalcPending(affId, "cron");
-        if (result.kind === "ok") classificationRepriced += result.updated;
-      } catch (repriceErr) {
-        const msg =
-          repriceErr instanceof Error ? repriceErr.message : String(repriceErr);
-        console.error(`[reconcile-classify] re-price failed ${affId}: ${msg}`);
+    // Group by referral + identify events whose flag should flip.
+    type ReferralEvent = (typeof referralEvents)[number];
+    const toFlip: Array<{ event: ReferralEvent; newIsRecurring: boolean }> = [];
+    let currentReferralId: string | null = null;
+    let indexInReferral = 0;
+    for (const e of referralEvents) {
+      if (e.rewardfulReferralId !== currentReferralId) {
+        currentReferralId = e.rewardfulReferralId;
+        indexInReferral = 0;
+      }
+      const shouldBeRecurring = indexInReferral > 0;
+      if (e.isRecurring !== shouldBeRecurring) {
+        toFlip.push({ event: e, newIsRecurring: shouldBeRecurring });
+      }
+      indexInReferral += 1;
+    }
+
+    if (toFlip.length > 0) {
+      // Preload per-affiliate rates + per-event teacher cut sums so each
+      // per-event tx stays small.
+      const affiliateIds = [...new Set(toFlip.map((t) => t.event.affiliateId))];
+      const users = await prisma.user.findMany({
+        where: { id: { in: affiliateIds } },
+        select: {
+          id: true,
+          initialCommissionPercent: true,
+          recurringCommissionPercent: true,
+        },
+      });
+      const userMap = new Map(users.map((u) => [u.id, u]));
+
+      const eventIds = toFlip.map((t) => t.event.id);
+      const teacherSplits = await prisma.commissionSplit.findMany({
+        where: { eventId: { in: eventIds }, role: "TEACHER" },
+        select: { eventId: true, cutCad: true },
+      });
+      const teacherSumByEvent = new Map<string, Decimal>();
+      for (const t of teacherSplits) {
+        const prev = teacherSumByEvent.get(t.eventId) ?? new Decimal(0);
+        teacherSumByEvent.set(
+          t.eventId,
+          prev.add(new Decimal(t.cutCad.toString()))
+        );
+      }
+
+      for (const { event, newIsRecurring } of toFlip) {
+        const user = userMap.get(event.affiliateId);
+        if (!user) continue;
+
+        const rate = newIsRecurring
+          ? new Decimal(user.recurringCommissionPercent.toString())
+          : new Decimal(user.initialCommissionPercent.toString());
+        const rateNum = rate.toDecimalPlaces(2).toNumber();
+        const fullAmount = new Decimal(event.fullAmountCad.toString());
+        const teacherTotal =
+          teacherSumByEvent.get(event.id) ?? new Decimal(0);
+        const newAffiliateCut = fullAmount.mul(rate).div(100);
+        const newCeoCut = fullAmount.sub(newAffiliateCut).sub(teacherTotal);
+
+        try {
+          const [splitRes] = await prisma.$transaction([
+            prisma.commissionSplit.updateMany({
+              where: {
+                eventId: event.id,
+                role: "AFFILIATE",
+                status: { in: ["EARNED", "PENDING"] },
+              },
+              data: {
+                cutPercent: rateNum,
+                cutCad: newAffiliateCut.toDecimalPlaces(2).toNumber(),
+              },
+            }),
+            prisma.commissionEvent.updateMany({
+              where: {
+                id: event.id,
+                splits: {
+                  some: {
+                    role: "AFFILIATE",
+                    status: { in: ["EARNED", "PENDING"] },
+                    cutPercent: rateNum,
+                  },
+                },
+              },
+              data: {
+                isRecurring: newIsRecurring,
+                ceoCutCad: newCeoCut.toDecimalPlaces(2).toNumber(),
+              },
+            }),
+          ]);
+          if (splitRes.count > 0) {
+            classificationFlipped += 1;
+            classificationRepriced += splitRes.count;
+          }
+        } catch (txErr) {
+          const msg = txErr instanceof Error ? txErr.message : String(txErr);
+          console.error(
+            `[reconcile-classify] per-event tx failed ${event.id}: ${msg}`
+          );
+        }
+      }
+
+      // Bust lifetime-stats cache for any affiliate whose events flipped.
+      if (classificationFlipped > 0) {
+        const flippedAffiliates = [
+          ...new Set(toFlip.map((t) => t.event.affiliateId)),
+        ];
+        await prisma.user.updateMany({
+          where: { id: { in: flippedAffiliates } },
+          data: {
+            lifetimeStatsCachedAt: null,
+            lifetimeStatsJson: Prisma.JsonNull,
+          },
+        });
       }
     }
   } catch (classifyErr) {
     const msg =
       classifyErr instanceof Error ? classifyErr.message : String(classifyErr);
-    console.error(`[reconcile-classify] SQL failed: ${msg}`);
+    console.error(`[reconcile-classify] failed: ${msg}`);
     errors++;
   }
 
