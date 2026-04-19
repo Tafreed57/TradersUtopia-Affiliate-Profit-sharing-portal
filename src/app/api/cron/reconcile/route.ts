@@ -182,8 +182,12 @@ export async function GET(req: NextRequest) {
     }
 
     if (toFlip.length > 0) {
-      // Preload per-affiliate rates + per-event teacher cut sums so each
-      // per-event tx stays small.
+      // Preload per-affiliate rates + lock state + per-event teacher cut
+      // sums so each per-event tx stays small. Locked affiliates are
+      // SKIPPED — the nightly classification repair would otherwise
+      // re-price their EARNED history at the current rate, violating the
+      // "locked history is frozen" guarantee. A future tool can offer
+      // "unlock + repair + relock" if needed.
       const affiliateIds = [...new Set(toFlip.map((t) => t.event.affiliateId))];
       const users = await prisma.user.findMany({
         where: { id: { in: affiliateIds } },
@@ -191,6 +195,7 @@ export async function GET(req: NextRequest) {
           id: true,
           initialCommissionPercent: true,
           recurringCommissionPercent: true,
+          ratesLocked: true,
         },
       });
       const userMap = new Map(users.map((u) => [u.id, u]));
@@ -224,89 +229,105 @@ export async function GET(req: NextRequest) {
         const newCeoCut = fullAmount.sub(newAffiliateCut).sub(teacherTotal);
 
         try {
-          // Two parallel update paths, atomic within one array $transaction:
-          //
-          // Path A (EARNED/PENDING): full re-price. New cutAmount reflects
-          // the corrected classification × current rate. Event's ceoCut
-          // recomputed to balance.
-          //
-          // Path B (FORFEITED + attendance reason): flag-only. Affiliate
-          // earned 0, CEO absorbed. But the stored cutPercent is what
-          // reevaluateCommission will use later if the affiliate submits
-          // attendance — so if classification is wrong, the eventual recovery
-          // pays the wrong rate. Update cutPercent to track the corrected
-          // classification; leave cutAmount at 0 and event.ceoCut unchanged
-          // (FORFEITED's CEO absorb is rate-independent).
-          //
-          // Event update (path C) gates on EITHER path having landed. The
-          // nested-predicate requires an AFFILIATE split with the new
-          // cutPercent AND in an eligible status (EARNED/PENDING/recoverable
-          // FORFEITED). If both paths no-op (e.g. affiliate split is PAID),
-          // event update no-ops too — classification locks with the frozen cutAmount.
-          const [earnedRes, forfeitedRes] = await prisma.$transaction([
-            prisma.commissionSplit.updateMany({
-              where: {
-                eventId: event.id,
-                role: "AFFILIATE",
-                status: { in: ["EARNED", "PENDING"] },
-              },
-              data: {
-                cutPercent: rateNum,
-                cutAmount: newAffiliateCut.toDecimalPlaces(2).toNumber(),
-              },
-            }),
-            prisma.commissionSplit.updateMany({
-              where: {
-                eventId: event.id,
-                role: "AFFILIATE",
-                status: "FORFEITED",
-                forfeitureReason: "No attendance submitted for conversion date",
-              },
-              data: {
-                cutPercent: rateNum,
-              },
-            }),
-            // Two event-update paths; only one can fire because an AFFILIATE
-            // split is in exactly ONE status at tx-snapshot. The gates
-            // ensure the corresponding split-update actually landed before
-            // flipping the flag.
-            prisma.commissionEvent.updateMany({
-              where: {
-                id: event.id,
-                splits: {
-                  some: {
-                    role: "AFFILIATE",
-                    status: { in: ["EARNED", "PENDING"] },
-                    cutPercent: rateNum,
-                  },
-                },
-              },
-              data: {
-                isRecurring: newIsRecurring,
-                ceoCut: newCeoCut.toDecimalPlaces(2).toNumber(),
-              },
-            }),
-            prisma.commissionEvent.updateMany({
-              where: {
-                id: event.id,
-                splits: {
-                  some: {
-                    role: "AFFILIATE",
-                    status: "FORFEITED",
-                    forfeitureReason:
-                      "No attendance submitted for conversion date",
-                    cutPercent: rateNum,
-                  },
-                },
-              },
-              data: { isRecurring: newIsRecurring },
-            }),
-          ]);
+          let totalFlipped: number;
+          let earnedRepriced = 0;
 
-          const totalFlipped = earnedRes.count + forfeitedRes.count;
+          if (user.ratesLocked) {
+            // Locked path: flip event.isRecurring for classification
+            // accuracy, but do NOT touch any split. Rewriting FORFEITED
+            // cutPercent here would leak post-lock rates into future
+            // attendance-recovery (reevaluateCommission reads the stored
+            // cutPercent). Pre-lock rate is preserved on all existing
+            // splits. EARNED money is also frozen as intended.
+            await prisma.commissionEvent.update({
+              where: { id: event.id },
+              data: { isRecurring: newIsRecurring },
+            });
+            totalFlipped = 1; // event flip itself counts
+          } else {
+            // Unlocked path: full classification repair + re-price.
+            //
+            // Path A (EARNED/PENDING): full re-price. New cutAmount reflects
+            // the corrected classification × current rate. Event's ceoCut
+            // recomputed to balance.
+            //
+            // Path B (FORFEITED + attendance reason): flag-only. Affiliate
+            // earned 0, CEO absorbed. But the stored cutPercent is what
+            // reevaluateCommission will use later if the affiliate submits
+            // attendance — so if classification is wrong, the eventual
+            // recovery pays the wrong rate. Update cutPercent to track the
+            // corrected classification; leave cutAmount at 0 and
+            // event.ceoCut unchanged (FORFEITED's CEO absorb is rate-
+            // independent).
+            //
+            // Event update (path C) gates on EITHER path having landed.
+            // The nested-predicate requires an AFFILIATE split with the
+            // new cutPercent AND in an eligible status. If both paths
+            // no-op (e.g. affiliate split is PAID), event update no-ops
+            // too — classification locks with the frozen cutAmount.
+            const [earnedRes, forfeitedRes] = await prisma.$transaction([
+              prisma.commissionSplit.updateMany({
+                where: {
+                  eventId: event.id,
+                  role: "AFFILIATE",
+                  status: { in: ["EARNED", "PENDING"] },
+                },
+                data: {
+                  cutPercent: rateNum,
+                  cutAmount: newAffiliateCut.toDecimalPlaces(2).toNumber(),
+                },
+              }),
+              prisma.commissionSplit.updateMany({
+                where: {
+                  eventId: event.id,
+                  role: "AFFILIATE",
+                  status: "FORFEITED",
+                  forfeitureReason:
+                    "No attendance submitted for conversion date",
+                },
+                data: {
+                  cutPercent: rateNum,
+                },
+              }),
+              prisma.commissionEvent.updateMany({
+                where: {
+                  id: event.id,
+                  splits: {
+                    some: {
+                      role: "AFFILIATE",
+                      status: { in: ["EARNED", "PENDING"] },
+                      cutPercent: rateNum,
+                    },
+                  },
+                },
+                data: {
+                  isRecurring: newIsRecurring,
+                  ceoCut: newCeoCut.toDecimalPlaces(2).toNumber(),
+                },
+              }),
+              prisma.commissionEvent.updateMany({
+                where: {
+                  id: event.id,
+                  splits: {
+                    some: {
+                      role: "AFFILIATE",
+                      status: "FORFEITED",
+                      forfeitureReason:
+                        "No attendance submitted for conversion date",
+                      cutPercent: rateNum,
+                    },
+                  },
+                },
+                data: { isRecurring: newIsRecurring },
+              }),
+            ]);
+            totalFlipped = earnedRes.count + forfeitedRes.count;
+            earnedRepriced = earnedRes.count;
+          }
+
           if (totalFlipped > 0) {
             classificationFlipped += 1;
-            classificationRepriced += earnedRes.count;
+            classificationRepriced += earnedRepriced;
           }
         } catch (txErr) {
           const msg = txErr instanceof Error ? txErr.message : String(txErr);

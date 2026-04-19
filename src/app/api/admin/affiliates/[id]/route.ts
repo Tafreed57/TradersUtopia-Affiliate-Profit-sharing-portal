@@ -46,6 +46,7 @@ export async function GET(
       recurringCommissionPercent: true,
       canProposeRates: true,
       canBeTeacher: true,
+      ratesLocked: true,
       rewardfulAffiliateId: true,
       preferredCurrency: true,
       createdAt: true,
@@ -195,6 +196,7 @@ export async function GET(
       previousPercent: r.previousPercent.toNumber(),
       newPercent: r.newPercent.toNumber(),
       field: r.field,
+      appliedMode: r.appliedMode,
       reason: r.reason,
       changedBy: r.changedBy.name ?? r.changedBy.email,
       createdAt: r.createdAt,
@@ -254,12 +256,19 @@ export async function PATCH(
         status: true,
         backfillStatus: true,
         rewardfulAffiliateId: true,
+        ratesLocked: true,
       },
     });
 
     if (!currentUser) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
+
+    // Rate changes behave differently based on the lock state:
+    //   ratesLocked=false (onboarding): re-price all unpaid splits retroactively.
+    //   ratesLocked=true  (locked):     only future webhooks use the new rate;
+    //                                   existing splits frozen. Audit captures mode.
+    const auditMode = currentUser.ratesLocked ? "FORWARD_ONLY" : "RETROACTIVE";
 
     const updateData: Record<string, unknown> = {};
     let rateChanged = false;
@@ -278,6 +287,7 @@ export async function PATCH(
           previousPercent: currentUser.initialCommissionPercent,
           newPercent: initialCommissionPercent,
           field: "INITIAL",
+          appliedMode: auditMode,
           reason: reason ?? null,
         },
       });
@@ -297,6 +307,7 @@ export async function PATCH(
           previousPercent: currentUser.recurringCommissionPercent,
           newPercent: recurringCommissionPercent,
           field: "RECURRING",
+          appliedMode: auditMode,
           reason: reason ?? null,
         },
       });
@@ -361,15 +372,21 @@ export async function PATCH(
       },
     });
 
-    // Auto re-price on ANY rate change. Re-prices all EARNED + PENDING
-    // AFFILIATE splits using each event's isRecurring + the updated rates.
-    // PAID + VOIDED + FORFEITED untouched. Isolated try/catch: a re-price
-    // failure must NOT 500 a successful rate save — admin can invoke the
-    // manual POST /recalc-pending endpoint to retry.
+    // Auto re-price on rate change. Two modes:
+    //   ratesLocked=false (onboarding): re-price EARNED + promote PENDING
+    //     at the updated rates. PAID/VOIDED/FORFEITED always frozen.
+    //   ratesLocked=true (locked): PENDING still promotes (those rows
+    //     have no price to preserve — leaving them stuck is never the
+    //     intent), but EARNED rows stay frozen at their original rate.
+    //     Achieved via runRecalcPending(pendingOnly: true).
+    // Isolated try/catch: a re-price failure must NOT 500 a successful
+    // rate save — admin can invoke POST /recalc-pending to retry.
     let autoRecalc: { updated: number; teacherRowsAffected: number } | null = null;
     if (rateChanged) {
       try {
-        const recalcResult = await runRecalcPending(id, session.user.id);
+        const recalcResult = await runRecalcPending(id, session.user.id, {
+          pendingOnly: currentUser.ratesLocked,
+        });
         if (recalcResult.kind === "ok" && recalcResult.updated > 0) {
           autoRecalc = {
             updated: recalcResult.updated,

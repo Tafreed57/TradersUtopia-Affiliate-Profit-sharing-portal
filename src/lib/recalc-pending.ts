@@ -40,7 +40,8 @@ export type RecalcResult =
  */
 export async function runRecalcPending(
   affiliateId: string,
-  _adminId: string
+  _adminId: string,
+  opts: { pendingOnly?: boolean } = {}
 ): Promise<RecalcResult> {
   const affiliate = await prisma.user.findUnique({
     where: { id: affiliateId },
@@ -57,11 +58,20 @@ export async function runRecalcPending(
     affiliate.recurringCommissionPercent.toString()
   );
 
+  // pendingOnly: used when the affiliate is rate-locked — EARNED splits are
+  // frozen (do not re-price them), but PENDING(rate_not_set) splits still
+  // need to be priced since they have no cut yet. Default behavior (both
+  // statuses) matches the onboarding/unlocked path where every unpaid
+  // split re-prices on rate change.
+  const statusFilter = opts.pendingOnly
+    ? (["PENDING"] as const)
+    : (["EARNED", "PENDING"] as const);
+
   const splits = await prisma.commissionSplit.findMany({
     where: {
       role: "AFFILIATE",
       recipientId: affiliateId,
-      status: { in: ["EARNED", "PENDING"] },
+      status: { in: [...statusFilter] },
     },
     select: {
       id: true,

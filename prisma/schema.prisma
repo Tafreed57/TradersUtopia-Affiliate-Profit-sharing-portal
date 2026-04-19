@@ -58,6 +58,13 @@ model User {
   recurringCommissionPercent Decimal         @default(0) @db.Decimal(5, 2)
   canProposeRates      Boolean               @default(true)
   canBeTeacher         Boolean               @default(false)
+  // When false (default): rate changes re-price all EARNED+PENDING splits
+  // retroactively (onboarding mode — admin iterates until numbers look right).
+  // When true (locked post-onboarding): rate changes only affect future
+  // commissions arriving via webhook; existing splits are frozen.
+  // PENDING(rate_not_set) splits always re-price regardless — they have no
+  // price to preserve. Admin toggles via PATCH /api/admin/affiliates/:id/lock.
+  ratesLocked          Boolean               @default(false)
   rewardfulAffiliateId String?               @unique
   rewardfulEmail       String?
   backfillStatus       RewardfulBackfillStatus @default(NOT_STARTED)
@@ -204,6 +211,11 @@ model CommissionRateAudit {
   previousPercent Decimal  @db.Decimal(5, 2)
   newPercent      Decimal  @db.Decimal(5, 2)
   field           RateField @default(LEGACY)
+  // RETROACTIVE: change re-priced existing unpaid splits (onboarding mode).
+  // FORWARD_ONLY: change applied only to future webhooks (locked mode).
+  // LOCK / UNLOCK: the lock toggle itself — previousPercent/newPercent
+  // carry 0/1 so the audit table still renders in order.
+  appliedMode     RateChangeMode @default(RETROACTIVE)
   reason          String?
   createdAt       DateTime @default(now())
   affiliate       User     @relation("AffiliateRateChanges", fields: [affiliateId], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -213,10 +225,18 @@ model CommissionRateAudit {
   @@index([createdAt])
 }
 
+enum RateChangeMode {
+  RETROACTIVE
+  FORWARD_ONLY
+  LOCK
+  UNLOCK
+}
+
 enum RateField {
   LEGACY
   INITIAL
   RECURRING
+  LOCK
 }
 
 model RateProposal {

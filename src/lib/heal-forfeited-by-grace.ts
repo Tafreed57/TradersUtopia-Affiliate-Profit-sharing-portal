@@ -70,6 +70,7 @@ export async function healForfeitedByGrace(): Promise<HealResult> {
       id: true,
       initialCommissionPercent: true,
       recurringCommissionPercent: true,
+      ratesLocked: true,
     },
   });
   const userMap = new Map(users.map((u) => [u.id, u]));
@@ -105,6 +106,12 @@ export async function healForfeitedByGrace(): Promise<HealResult> {
   for (const c of candidates) {
     const user = userMap.get(c.recipientId);
     if (!user) continue;
+
+    // Skip locked affiliates — healing would re-price the split using
+    // the affiliate's CURRENT rates, which could leak post-lock rates
+    // into frozen history. Admin can explicitly unlock, heal, re-lock
+    // if they want to recover pre-lock forfeitures.
+    if (user.ratesLocked) continue;
 
     const convDateStr = c.event.conversionDate.toISOString().slice(0, 10);
     const earliest = earliestByUser.get(c.recipientId);

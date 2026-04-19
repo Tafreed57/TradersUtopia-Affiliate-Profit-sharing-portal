@@ -5,6 +5,8 @@ import {
   ArrowLeft,
   History,
   Link2Off,
+  Lock,
+  LockOpen,
   Percent,
   Plus,
   RefreshCw,
@@ -58,6 +60,7 @@ interface AffiliateDetail {
   recurringCommissionPercent: number;
   canProposeRates: boolean;
   canBeTeacher: boolean;
+  ratesLocked: boolean;
   rewardfulAffiliateId: string | null;
   preferredCurrency: string;
   createdAt: string;
@@ -91,7 +94,8 @@ interface AffiliateDetail {
     id: string;
     previousPercent: number;
     newPercent: number;
-    field: "LEGACY" | "INITIAL" | "RECURRING";
+    field: "LEGACY" | "INITIAL" | "RECURRING" | "LOCK";
+    appliedMode: "RETROACTIVE" | "FORWARD_ONLY" | "LOCK" | "UNLOCK";
     reason: string | null;
     changedBy: string;
     createdAt: string;
@@ -116,6 +120,7 @@ export default function AffiliateDetailPage({
   const [newRecurringRate, setNewRecurringRate] = useState("");
   const [rateReason, setRateReason] = useState("");
   const [deactivateDialogOpen, setDeactivateDialogOpen] = useState(false);
+  const [unlockDialogOpen, setUnlockDialogOpen] = useState(false);
 
   const { data, isLoading } = useQuery<AffiliateDetail>({
     queryKey: ["admin-affiliate", id],
@@ -192,6 +197,31 @@ export default function AffiliateDetailPage({
       queryClient.invalidateQueries({ queryKey: ["admin-affiliates"] });
       toast.success(
         `Synced ${result.fetched} paid record${result.fetched === 1 ? "" : "s"} — ${result.updated} split${result.updated === 1 ? "" : "s"} flipped to PAID.`
+      );
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const lockMutation = useMutation({
+    mutationFn: async (locked: boolean) => {
+      const res = await fetch(`/api/admin/affiliates/${id}/lock`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ locked }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(payload.error ?? "Failed to update lock state");
+      }
+      return payload as { ratesLocked: boolean };
+    },
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ["admin-affiliate", id] });
+      queryClient.invalidateQueries({ queryKey: ["admin-affiliates"] });
+      toast.success(
+        result.ratesLocked
+          ? "History locked. Future rate changes will only affect new commissions."
+          : "History unlocked. Rate changes will re-price unpaid commissions."
       );
     },
     onError: (error: Error) => toast.error(error.message),
@@ -299,6 +329,97 @@ export default function AffiliateDetailPage({
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
+            {/* Lock state banner — onboarding vs locked. Shows the
+                current mode + the button to toggle. Unlocking is gated
+                behind a confirmation dialog since it lets rate changes
+                retroactively re-price history. */}
+            {data.ratesLocked ? (
+              <div className="flex items-start justify-between gap-3 rounded-lg border border-primary/30 bg-primary/5 p-3">
+                <div className="flex items-start gap-2">
+                  <Lock className="h-4 w-4 mt-0.5 text-primary flex-shrink-0" />
+                  <div className="text-sm">
+                    <p className="font-medium">History locked</p>
+                    <p className="text-xs text-muted-foreground">
+                      Rate changes apply to new commissions only. Existing
+                      earned / paid commissions are frozen.
+                    </p>
+                  </div>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-2 flex-shrink-0"
+                  onClick={() => setUnlockDialogOpen(true)}
+                >
+                  <LockOpen className="h-3 w-3" />
+                  Unlock
+                </Button>
+                <Dialog
+                  open={unlockDialogOpen}
+                  onOpenChange={setUnlockDialogOpen}
+                >
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Unlock rate history?</DialogTitle>
+                      <DialogDescription>
+                        Unlocking returns this affiliate to onboarding mode.
+                        The next rate change will <strong>re-price all
+                        unpaid earned commissions retroactively</strong> — the
+                        affiliate&apos;s history numbers will change. Paid
+                        commissions are always frozen regardless.
+                        <br /><br />
+                        Only unlock if you intentionally want to retroactively
+                        adjust unpaid commissions (e.g., correcting an
+                        onboarding mistake).
+                      </DialogDescription>
+                    </DialogHeader>
+                    <DialogFooter>
+                      <Button
+                        variant="outline"
+                        onClick={() => setUnlockDialogOpen(false)}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        disabled={lockMutation.isPending}
+                        onClick={() => {
+                          lockMutation.mutate(false);
+                          setUnlockDialogOpen(false);
+                        }}
+                      >
+                        Unlock history
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+              </div>
+            ) : (
+              <div className="flex items-start justify-between gap-3 rounded-lg border border-warning/30 bg-warning/10 p-3">
+                <div className="flex items-start gap-2">
+                  <LockOpen className="h-4 w-4 mt-0.5 text-warning flex-shrink-0" />
+                  <div className="text-sm">
+                    <p className="font-medium">Onboarding mode</p>
+                    <p className="text-xs text-muted-foreground">
+                      Rate changes re-price all unpaid commissions. Lock
+                      history once you&apos;re happy with the numbers — after
+                      that, rate changes only apply to new commissions.
+                    </p>
+                  </div>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-2 flex-shrink-0"
+                  disabled={lockMutation.isPending}
+                  onClick={() => lockMutation.mutate(true)}
+                >
+                  <Lock className="h-3 w-3" />
+                  Lock history
+                </Button>
+              </div>
+            )}
+
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <p className="text-xs text-muted-foreground">
@@ -356,9 +477,9 @@ export default function AffiliateDetailPage({
                 />
               </div>
               <p className="text-xs text-muted-foreground">
-                Saving re-prices all unpaid commissions for this affiliate
-                using the event&apos;s initial/recurring classification.
-                Paid commissions are never changed.
+                {data.ratesLocked
+                  ? "Saving applies to new commissions only. Existing earned and paid commissions are frozen at their current rate."
+                  : "Saving re-prices all unpaid commissions for this affiliate using the event's initial/recurring classification. Paid commissions are never changed."}
               </p>
               <Button
                 onClick={handleRateChange}
@@ -612,50 +733,80 @@ export default function AffiliateDetailPage({
                   <TableHead>Rate</TableHead>
                   <TableHead>Previous</TableHead>
                   <TableHead>New</TableHead>
+                  <TableHead>Mode</TableHead>
                   <TableHead>Changed By</TableHead>
                   <TableHead>Reason</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data.rateHistory.map((entry) => (
-                  <TableRow key={entry.id}>
-                    <TableCell className="text-muted-foreground">
-                      {new Date(entry.createdAt).toLocaleDateString("en-US", {
-                        month: "short",
-                        day: "numeric",
-                        year: "numeric",
-                      })}
-                    </TableCell>
-                    <TableCell>
-                      <Badge
-                        variant="default"
-                        className={
-                          entry.field === "INITIAL"
-                            ? "bg-primary/15 text-primary border-primary/30"
+                {data.rateHistory.map((entry) => {
+                  const isLockEvent = entry.field === "LOCK";
+                  return (
+                    <TableRow key={entry.id}>
+                      <TableCell className="text-muted-foreground">
+                        {new Date(entry.createdAt).toLocaleDateString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                          year: "numeric",
+                        })}
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant="default"
+                          className={
+                            entry.field === "INITIAL"
+                              ? "bg-primary/15 text-primary border-primary/30"
+                              : entry.field === "RECURRING"
+                              ? "bg-info/15 text-info border-info/30"
+                              : entry.field === "LOCK"
+                              ? "bg-muted/30 text-muted-foreground border-muted/40"
+                              : "bg-muted text-muted-foreground"
+                          }
+                        >
+                          {entry.field === "INITIAL"
+                            ? "Initial"
                             : entry.field === "RECURRING"
-                            ? "bg-info/15 text-info border-info/30"
-                            : "bg-muted text-muted-foreground"
-                        }
-                      >
-                        {entry.field === "INITIAL"
-                          ? "Initial"
-                          : entry.field === "RECURRING"
-                          ? "Recurring"
-                          : "Legacy"}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>{entry.previousPercent}%</TableCell>
-                    <TableCell className="font-medium">
-                      {entry.newPercent}%
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {entry.changedBy}
-                    </TableCell>
-                    <TableCell className="max-w-[200px] truncate text-muted-foreground">
-                      {entry.reason ?? "—"}
-                    </TableCell>
-                  </TableRow>
-                ))}
+                            ? "Recurring"
+                            : entry.field === "LOCK"
+                            ? "Lock"
+                            : "Legacy"}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        {isLockEvent ? "—" : `${entry.previousPercent}%`}
+                      </TableCell>
+                      <TableCell className="font-medium">
+                        {isLockEvent ? "—" : `${entry.newPercent}%`}
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant="default"
+                          className={
+                            entry.appliedMode === "RETROACTIVE"
+                              ? "bg-warning/15 text-warning border-warning/30"
+                              : entry.appliedMode === "FORWARD_ONLY"
+                              ? "bg-success/15 text-success border-success/30"
+                              : "bg-muted text-muted-foreground"
+                          }
+                        >
+                          {entry.appliedMode === "RETROACTIVE"
+                            ? "Retroactive"
+                            : entry.appliedMode === "FORWARD_ONLY"
+                            ? "Forward only"
+                            : entry.appliedMode === "LOCK"
+                            ? "Locked"
+                            : "Unlocked"}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {entry.changedBy}
+                      </TableCell>
+                      <TableCell className="max-w-[200px] truncate text-muted-foreground">
+                        {entry.reason ?? "—"}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           </CardContent>
