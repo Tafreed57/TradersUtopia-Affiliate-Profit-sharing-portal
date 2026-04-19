@@ -4,10 +4,6 @@ import Decimal from "decimal.js";
 
 import { authOptions } from "@/lib/auth-options";
 import { prisma } from "@/lib/prisma";
-import {
-  getStudentRewardfulStatsBatch,
-  type StudentRewardfulStats,
-} from "@/lib/rewardful-student-stats";
 
 /**
  * GET /api/students
@@ -112,79 +108,58 @@ export async function GET() {
     },
   });
 
-  // Decimal arithmetic for `paid` sum — JS float addition on per-row toNumber()
+  // Decimal arithmetic for sums — JS float addition on per-row toNumber()
   // can drift (0.1 + 0.2 = 0.30000000000000004). Accumulate in Decimal, emit
   // rounded 2dp at the end — matches DB-side `_sum` precision of the legacy path.
-  type Summary = { paid: Decimal; paidCount: number; earnedCount: number };
+  type Summary = {
+    paid: Decimal;
+    unpaid: Decimal;
+    paidCount: number;
+    earnedCount: number;
+  };
   const summaryByStudent = new Map<string, Summary>();
   for (const s of teacherSplits) {
     const sid = s.event.affiliateId;
     const prev = summaryByStudent.get(sid) ?? {
       paid: new Decimal(0),
+      unpaid: new Decimal(0),
       paidCount: 0,
       earnedCount: 0,
     };
+    const amount = new Decimal(s.cutCad.toString());
     if (s.status === "PAID") {
-      prev.paid = prev.paid.add(new Decimal(s.cutCad.toString()));
+      prev.paid = prev.paid.add(amount);
       prev.paidCount += 1;
     } else if (s.status === "EARNED") {
+      prev.unpaid = prev.unpaid.add(amount);
       prev.earnedCount += 1;
     }
     summaryByStudent.set(sid, prev);
   }
 
-  const [attendanceSummaries, rewardfulStats] = await Promise.all([
-    prisma.attendance.groupBy({
-      by: ["userId"],
-      where: {
-        userId: { in: allStudentIds },
-        date: { gte: monthStartStr, lte: monthEndStr },
-      },
-      _count: true,
-    }),
-    getStudentRewardfulStatsBatch(allStudentIds),
-  ]);
+  const attendanceSummaries = await prisma.attendance.groupBy({
+    by: ["userId"],
+    where: {
+      userId: { in: allStudentIds },
+      date: { gte: monthStartStr, lte: monthEndStr },
+    },
+    _count: true,
+  });
 
   const attendanceMap = new Map(
     attendanceSummaries.map((s) => [s.userId, s._count])
   );
 
-  function computeTeacherUnpaid(
-    teacherCutPercent: number,
-    stats: StudentRewardfulStats | null | undefined
-  ): {
-    teacherUnpaidCad: number;
-    dataStale: boolean;
-    dataReason: StudentRewardfulStats["reason"] | "not-linked";
-    fetchedAt: string | null;
-  } {
-    if (!stats) {
-      return {
-        teacherUnpaidCad: 0,
-        dataStale: false,
-        dataReason: "not-linked",
-        fetchedAt: null,
-      };
-    }
-    const teacherUnpaidCad =
-      Math.round(stats.unpaidCents * teacherCutPercent) / 10000;
-    return {
-      teacherUnpaidCad: Math.round(teacherUnpaidCad * 100) / 100,
-      dataStale: stats.stale,
-      dataReason: stats.reason,
-      fetchedAt: stats.fetchedAt,
-    };
-  }
+  const fetchedAt = new Date().toISOString();
 
   type RelWithStudent = (typeof myRels)[number];
 
   function buildStudent(rel: RelWithStudent) {
     const teacherCutPercent = rel.teacherCut.toNumber();
-    const stats = rewardfulStats.get(rel.studentId);
-    const liveData = computeTeacherUnpaid(teacherCutPercent, stats);
     const summary =
       summaryByStudent.get(rel.studentId) ?? {
         paid: new Decimal(0),
+        unpaid: new Decimal(0),
         paidCount: 0,
         earnedCount: 0,
       };
@@ -199,13 +174,13 @@ export async function GET() {
       status: rel.student.status,
       depth: rel.depth,
       teacherCutPercent,
-      teacherUnpaidCad: liveData.teacherUnpaidCad,
+      teacherUnpaidCad: summary.unpaid.toDecimalPlaces(2).toNumber(),
       teacherPaidCad: summary.paid.toDecimalPlaces(2).toNumber(),
       conversionCount: summary.paidCount + summary.earnedCount,
       attendanceDaysThisMonth: attendanceMap.get(rel.studentId) ?? 0,
-      dataStale: liveData.dataStale,
-      dataReason: liveData.dataReason,
-      fetchedAt: liveData.fetchedAt,
+      dataStale: false,
+      dataReason: "ok" as const,
+      fetchedAt,
     };
   }
 

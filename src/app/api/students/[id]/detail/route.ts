@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth";
 
 import { authOptions } from "@/lib/auth-options";
 import { prisma } from "@/lib/prisma";
-import { getStudentRewardfulStats } from "@/lib/rewardful-student-stats";
+import { getTeacherStudentSplitStatsOne } from "@/lib/rewardful-student-stats";
 
 /**
  * GET /api/students/:id/detail
@@ -50,7 +50,7 @@ export async function GET(
     student,
     splits,
     attendance,
-    rewardfulStats,
+    teacherSplitStats,
     commissionTotal,
     attendanceTotal,
   ] = await Promise.all([
@@ -88,7 +88,7 @@ export async function GET(
       },
     }),
 
-    getStudentRewardfulStats(studentId),
+    getTeacherStudentSplitStatsOne(teacherId, studentId),
 
     prisma.commissionSplit.count({ where: splitWhere }),
     prisma.attendance.count({ where: { userId: studentId } }),
@@ -99,22 +99,16 @@ export async function GET(
   }
 
   const teacherCutPercent = relationship.teacherCut.toNumber();
-  const teacherUnpaidCad = rewardfulStats
-    ? Math.round(rewardfulStats.unpaidCents * teacherCutPercent) / 10000
-    : 0;
-  const teacherPaidCad = splits
-    .filter((s) => s.status === "PAID")
-    .reduce((sum, s) => sum + s.cutCad.toNumber(), 0);
 
   return NextResponse.json({
     student,
     depth: relationship.depth,
     teacherCutPercent,
-    teacherUnpaidCad: Math.round(teacherUnpaidCad * 100) / 100,
-    teacherPaidCad: Math.round(teacherPaidCad * 100) / 100,
-    dataStale: rewardfulStats?.stale ?? false,
-    dataReason: rewardfulStats?.reason ?? "not-linked",
-    fetchedAt: rewardfulStats?.fetchedAt ?? null,
+    teacherUnpaidCad: teacherSplitStats.teacherUnpaidCad,
+    teacherPaidCad: teacherSplitStats.teacherPaidCad,
+    dataStale: teacherSplitStats.stale,
+    dataReason: teacherSplitStats.reason,
+    fetchedAt: teacherSplitStats.fetchedAt,
     commissionTotal,
     attendanceTotal,
     commissionHasMore: commissionTotal > splits.length,
