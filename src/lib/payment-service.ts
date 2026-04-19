@@ -38,6 +38,7 @@ export async function handleCommissionPaid(
     select: {
       id: true,
       affiliateId: true,
+      currency: true,
       splits: {
         where: { status: "EARNED" },
         select: { id: true, recipientId: true, role: true, cutAmount: true },
@@ -62,6 +63,8 @@ export async function handleCommissionPaid(
     });
   }
 
+  const sym = event.currency.toUpperCase() === "CAD" ? "CA$" : "US$";
+
   for (const { teacherId, cut } of byTeacher.values()) {
     const recent = await prisma.notification.findFirst({
       where: {
@@ -83,7 +86,7 @@ export async function handleCommissionPaid(
       userId: teacherId,
       type: "STUDENT_PAYMENT_RECEIVED",
       title: "Student Payment Processed",
-      body: `${label} received a payment — your cut of US$${cut.toFixed(2)} has been marked as paid.`,
+      body: `${label} received a payment — your cut of ${sym}${cut.toFixed(2)} has been marked as paid.`,
       data: { studentId: event.affiliateId },
     });
   }
@@ -121,7 +124,7 @@ export async function handleCommissionVoided(
   // Notify the affiliate (not teachers — keep it simple).
   const affiliateSplit = event.splits.find((s) => s.role === "AFFILIATE");
   if (affiliateSplit) {
-    const sym = event.currency === "CAD" ? "CA$" : "US$";
+    const sym = event.currency.toUpperCase() === "CAD" ? "CA$" : "US$";
     await createNotification({
       userId: event.affiliateId,
       type: "COMMISSION_VOIDED",
