@@ -176,6 +176,27 @@ export default function AffiliateDetailPage({
     onError: (error: Error) => toast.error(error.message),
   });
 
+  const syncPaidMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`/api/admin/affiliates/${id}/sync-paid`, {
+        method: "POST",
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(payload.error ?? "Failed to sync paid state");
+      }
+      return payload as { fetched: number; updated: number };
+    },
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ["admin-affiliate", id] });
+      queryClient.invalidateQueries({ queryKey: ["admin-affiliates"] });
+      toast.success(
+        `Synced ${result.fetched} paid record${result.fetched === 1 ? "" : "s"} — ${result.updated} split${result.updated === 1 ? "" : "s"} flipped to PAID.`
+      );
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
   if (isLoading) {
     return (
       <div className="space-y-6">
@@ -385,6 +406,24 @@ export default function AffiliateDetailPage({
                 </div>
               </>
             )}
+
+            {/* Sync Paid is always available — a paid commission at
+                Rewardful can flip EARNED→PAID regardless of the rate-gate
+                pending-count. Outside the warning block so it renders for
+                all affiliates, not only those with rate-gated imports. */}
+            <Separator />
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2 w-full"
+              disabled={syncPaidMutation.isPending}
+              onClick={() => syncPaidMutation.mutate()}
+            >
+              <RefreshCw
+                className={`h-3 w-3 ${syncPaidMutation.isPending ? "animate-spin" : ""}`}
+              />
+              {syncPaidMutation.isPending ? "Syncing…" : "Sync paid state from Rewardful"}
+            </Button>
 
             <Separator />
 

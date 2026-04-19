@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { z } from "zod";
@@ -238,5 +239,96 @@ export async function POST(req: NextRequest) {
     },
     splits: Object.fromEntries(splitCounts.map((s) => [s.status, s._count])),
     steps,
+  });
+}
+
+/**
+ * DELETE /api/admin/test-setup?email=...
+ *
+ * Reset a test affiliate's commission history without dropping the User
+ * row or their Rewardful link. Wipes CommissionSplit + CommissionEvent +
+ * Attendance + CommissionRateAudit, clears backfill status, zeroes rates.
+ * After this runs, calling POST again re-imports from Rewardful clean.
+ *
+ * Admin-only. Destructive. Prints a self-protection guard so accidental
+ * runs against the admin's own account fail loudly instead of silently
+ * wiping their data.
+ */
+export async function DELETE(req: NextRequest) {
+  const session = await getServerSession(authOptions);
+  if (!session?.user?.isAdmin) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  const emailParam = new URL(req.url).searchParams.get("email");
+  if (!emailParam) {
+    return NextResponse.json(
+      { error: "Missing ?email= query param" },
+      { status: 400 }
+    );
+  }
+  const normalizedEmail = emailParam.trim().toLowerCase();
+
+  // Guard: never wipe the caller's own account.
+  if (normalizedEmail === session.user.email?.toLowerCase()) {
+    return NextResponse.json(
+      {
+        error:
+          "Refusing to reset your own account. Use a separate test email.",
+      },
+      { status: 409 }
+    );
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { email: normalizedEmail },
+    select: { id: true, email: true },
+  });
+  if (!user) {
+    return NextResponse.json({ error: "User not found" }, { status: 404 });
+  }
+
+  // Count splits that'll be cascade-deleted via event deletion (AFFILIATE
+  // role on events where this user is the affiliate). We do NOT touch
+  // splits where this user is a TEACHER on someone else's event —
+  // those belong to the other affiliate's record and would orphan their
+  // event's teacher cut.
+  const splitsBefore = await prisma.commissionSplit.count({
+    where: { event: { affiliateId: user.id } },
+  });
+
+  // Deleting events cascades splits on those events (onDelete: Cascade on
+  // CommissionSplit.event). This scopes destruction to this user's own
+  // commissions without touching teacher splits on other affiliates' events.
+  const [eventsDel, attendanceDel, auditDel] = await prisma.$transaction([
+    prisma.commissionEvent.deleteMany({ where: { affiliateId: user.id } }),
+    prisma.attendance.deleteMany({ where: { userId: user.id } }),
+    prisma.commissionRateAudit.deleteMany({ where: { affiliateId: user.id } }),
+    prisma.user.update({
+      where: { id: user.id },
+      data: {
+        backfillStatus: "NOT_STARTED",
+        backfillStartedAt: null,
+        backfillCompletedAt: null,
+        backfillError: null,
+        initialCommissionPercent: 0,
+        recurringCommissionPercent: 0,
+        commissionPercent: 0,
+        lifetimeStatsJson: Prisma.JsonNull,
+        lifetimeStatsCachedAt: null,
+      },
+    }),
+  ]);
+
+  return NextResponse.json({
+    ok: true,
+    email: user.email,
+    deleted: {
+      events: eventsDel.count,
+      splitsCascaded: splitsBefore, // splits on the deleted events
+      attendance: attendanceDel.count,
+      rateAudit: auditDel.count,
+    },
+    note: "User row + rewardfulAffiliateId preserved. Teacher splits on other affiliates' events left intact. Call POST to re-onboard.",
   });
 }
