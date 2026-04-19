@@ -1,5 +1,10 @@
 import { getApp, getApps, initializeApp } from "firebase/app";
-import { getMessaging, getToken, onMessage } from "firebase/messaging";
+import {
+  getMessaging,
+  getToken,
+  isSupported,
+  onMessage,
+} from "firebase/messaging";
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -12,10 +17,13 @@ const firebaseConfig = {
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
 /**
- * Get the Firebase Messaging instance. Only works in browser.
+ * Get the Firebase Messaging instance. Returns null in SSR and on browsers
+ * that lack the required APIs (Safari < 16.4, in-app webviews, etc.) so
+ * callers can silently skip push setup instead of throwing FirebaseError.
  */
-export function getFirebaseMessaging() {
+export async function getFirebaseMessaging() {
   if (typeof window === "undefined") return null;
+  if (!(await isSupported())) return null;
   return getMessaging(app);
 }
 
@@ -27,8 +35,10 @@ export async function requestNotificationPermission(): Promise<string | null> {
   if (typeof window === "undefined") return null;
   if (!("Notification" in window)) return null;
 
-  const permission = await Notification.requestPermission();
-  if (permission !== "granted") return null;
+  // Feature-detect FCM support BEFORE prompting — otherwise Safari < 16.4
+  // and in-app webviews get a pointless permission dialog.
+  const messaging = await getFirebaseMessaging();
+  if (!messaging) return null;
 
   const vapidKey = process.env.NEXT_PUBLIC_FIREBASE_VAPID_KEY;
   if (!vapidKey) {
@@ -36,13 +46,12 @@ export async function requestNotificationPermission(): Promise<string | null> {
     return null;
   }
 
+  const permission = await Notification.requestPermission();
+  if (permission !== "granted") return null;
+
   try {
-    // Register service worker and wait until it's active
     await navigator.serviceWorker.register("/firebase-messaging-sw.js");
     const registration = await navigator.serviceWorker.ready;
-
-    const messaging = getFirebaseMessaging();
-    if (!messaging) return null;
 
     const token = await getToken(messaging, {
       vapidKey,
@@ -62,13 +71,22 @@ export async function requestNotificationPermission(): Promise<string | null> {
 export function onForegroundMessage(
   callback: (payload: { title?: string; body?: string }) => void
 ) {
-  const messaging = getFirebaseMessaging();
-  if (!messaging) return () => {};
+  let unsubscribe: (() => void) | null = null;
+  let cancelled = false;
 
-  return onMessage(messaging, (payload) => {
-    callback({
-      title: payload.notification?.title,
-      body: payload.notification?.body,
+  (async () => {
+    const messaging = await getFirebaseMessaging();
+    if (!messaging || cancelled) return;
+    unsubscribe = onMessage(messaging, (payload) => {
+      callback({
+        title: payload.notification?.title,
+        body: payload.notification?.body,
+      });
     });
-  });
+  })();
+
+  return () => {
+    cancelled = true;
+    unsubscribe?.();
+  };
 }
