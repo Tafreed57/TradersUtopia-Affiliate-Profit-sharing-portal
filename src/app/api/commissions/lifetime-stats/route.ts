@@ -27,6 +27,13 @@ interface LifetimeStatsPayload {
 
 interface CacheRecord extends LifetimeStatsPayload {
   cacheVersion: number;
+  // Preserved for lib/rewardful-student-stats which reads cents fields off
+  // the shared `lifetimeStatsJson` blob. Drop when that module migrates
+  // to CommissionSplit (file 5 of this sweep).
+  unpaidCents?: number;
+  paidCents?: number;
+  dueCents?: number;
+  totalCommissionCents?: number;
 }
 
 /**
@@ -111,6 +118,10 @@ export async function GET() {
     const cacheRecord: CacheRecord = {
       ...payload,
       cacheVersion: CACHE_VERSION,
+      unpaidCents: stats.unpaidCents,
+      paidCents: stats.paidCents,
+      dueCents: stats.dueCents,
+      totalCommissionCents: stats.totalCommissionCents,
     };
 
     await prisma.user.update({

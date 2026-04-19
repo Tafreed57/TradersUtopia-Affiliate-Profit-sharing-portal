@@ -29,7 +29,7 @@ export function RateNotSetBanner() {
   });
 
   if (!data) return null;
-  if (data.initialCommissionPercent > 0 || data.recurringCommissionPercent > 0) return null;
+  if (data.initialCommissionPercent > 0 && data.recurringCommissionPercent > 0) return null;
   // Defer to BackfillBanner while import is in flight — one banner at a time.
   if (data.status === "IN_PROGRESS") return null;
 
