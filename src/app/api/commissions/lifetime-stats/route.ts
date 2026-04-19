@@ -17,7 +17,7 @@ interface LifetimeStatsPayload {
   leads: number;
   conversions: number;
   conversionRate: number;
-  /** Sum of own AFFILIATE CommissionSplit.cutCad where status in (EARNED, PAID). */
+  /** Sum of own AFFILIATE CommissionSplit.cutAmount where status in (EARNED, PAID), normalized to CAD. */
   grossEarnedCad: number;
   paidCad: number;
   unpaidCad: number;
@@ -90,19 +90,19 @@ export async function GET() {
         rewardful.getAffiliateLifetimeStats(user.rewardfulAffiliateId),
         prisma.commissionSplit.aggregate({
           where: { ...affiliateSplitWhere, status: "EARNED", event: { currency: "USD" } },
-          _sum: { cutCad: true },
+          _sum: { cutAmount: true },
         }),
         prisma.commissionSplit.aggregate({
           where: { ...affiliateSplitWhere, status: "EARNED", event: { currency: "CAD" } },
-          _sum: { cutCad: true },
+          _sum: { cutAmount: true },
         }),
         prisma.commissionSplit.aggregate({
           where: { ...affiliateSplitWhere, status: "PAID", event: { currency: "USD" } },
-          _sum: { cutCad: true },
+          _sum: { cutAmount: true },
         }),
         prisma.commissionSplit.aggregate({
           where: { ...affiliateSplitWhere, status: "PAID", event: { currency: "CAD" } },
-          _sum: { cutCad: true },
+          _sum: { cutAmount: true },
         }),
         getCadToUsdRate(),
       ]);
@@ -112,12 +112,12 @@ export async function GET() {
     const toCad = (usd: number) => Math.round((usd / cadToUsd) * 100) / 100;
 
     const unpaidCad = Math.round(
-      ((earnedCadAgg._sum.cutCad?.toNumber() ?? 0) +
-        toCad(earnedUsdAgg._sum.cutCad?.toNumber() ?? 0)) * 100
+      ((earnedCadAgg._sum.cutAmount?.toNumber() ?? 0) +
+        toCad(earnedUsdAgg._sum.cutAmount?.toNumber() ?? 0)) * 100
     ) / 100;
     const paidCad = Math.round(
-      ((paidCadAgg._sum.cutCad?.toNumber() ?? 0) +
-        toCad(paidUsdAgg._sum.cutCad?.toNumber() ?? 0)) * 100
+      ((paidCadAgg._sum.cutAmount?.toNumber() ?? 0) +
+        toCad(paidUsdAgg._sum.cutAmount?.toNumber() ?? 0)) * 100
     ) / 100;
     const grossEarnedCad = Math.round((unpaidCad + paidCad) * 100) / 100;
 

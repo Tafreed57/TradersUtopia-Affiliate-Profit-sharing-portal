@@ -128,17 +128,18 @@ export async function GET(req: NextRequest) {
   //
   // Per-event atomic flip + reprice. Each event is updated via an array
   // $transaction that:
-  //   (a) updates the AFFILIATE split's cutPercent + cutCad — but ONLY if
-  //       the split is still EARNED or PENDING (TOCTOU guard). If the split
-  //       went PAID or VOIDED between snapshot and tx, updateMany no-ops.
-  //   (b) updates the event.isRecurring + ceoCutCad — gated via nested
+  //   (a) updates the AFFILIATE split's cutPercent + cutAmount — but ONLY
+  //       if the split is still EARNED or PENDING (TOCTOU guard). If the
+  //       split went PAID or VOIDED between snapshot and tx, updateMany
+  //       no-ops.
+  //   (b) updates the event.isRecurring + ceoCut — gated via nested
   //       predicate on the affiliate split being at the post-state
   //       (matching cutPercent + status in EARNED/PENDING). If (a) no-op'd,
   //       (b) also no-ops, so classification stays untouched when the
-  //       affiliate split is PAID/VOIDED. "Paid is frozen" — both cutCad
+  //       affiliate split is PAID/VOIDED. "Paid is frozen" — both cutAmount
   //       and classification lock at payout.
   //
-  // Teacher splits are NOT touched here. Their cutCad is rate-independent
+  // Teacher splits are NOT touched here. Their cutAmount is rate-independent
   // (teacherCut% × fullAmount, not a slice of the affiliate cut), so
   // classification changes don't affect them.
   let classificationFlipped = 0;
@@ -153,7 +154,7 @@ export async function GET(req: NextRequest) {
         conversionDate: true,
         createdAt: true,
         isRecurring: true,
-        fullAmountCad: true,
+        fullAmount: true,
       },
       orderBy: [
         { rewardfulReferralId: "asc" },
@@ -197,14 +198,14 @@ export async function GET(req: NextRequest) {
       const eventIds = toFlip.map((t) => t.event.id);
       const teacherSplits = await prisma.commissionSplit.findMany({
         where: { eventId: { in: eventIds }, role: "TEACHER" },
-        select: { eventId: true, cutCad: true },
+        select: { eventId: true, cutAmount: true },
       });
       const teacherSumByEvent = new Map<string, Decimal>();
       for (const t of teacherSplits) {
         const prev = teacherSumByEvent.get(t.eventId) ?? new Decimal(0);
         teacherSumByEvent.set(
           t.eventId,
-          prev.add(new Decimal(t.cutCad.toString()))
+          prev.add(new Decimal(t.cutAmount.toString()))
         );
       }
 
@@ -216,7 +217,7 @@ export async function GET(req: NextRequest) {
           ? new Decimal(user.recurringCommissionPercent.toString())
           : new Decimal(user.initialCommissionPercent.toString());
         const rateNum = rate.toDecimalPlaces(2).toNumber();
-        const fullAmount = new Decimal(event.fullAmountCad.toString());
+        const fullAmount = new Decimal(event.fullAmount.toString());
         const teacherTotal =
           teacherSumByEvent.get(event.id) ?? new Decimal(0);
         const newAffiliateCut = fullAmount.mul(rate).div(100);
@@ -225,8 +226,8 @@ export async function GET(req: NextRequest) {
         try {
           // Two parallel update paths, atomic within one array $transaction:
           //
-          // Path A (EARNED/PENDING): full re-price. New cutCad reflects the
-          // corrected classification × current rate. Event's ceoCutCad
+          // Path A (EARNED/PENDING): full re-price. New cutAmount reflects
+          // the corrected classification × current rate. Event's ceoCut
           // recomputed to balance.
           //
           // Path B (FORFEITED + attendance reason): flag-only. Affiliate
@@ -234,14 +235,14 @@ export async function GET(req: NextRequest) {
           // reevaluateCommission will use later if the affiliate submits
           // attendance — so if classification is wrong, the eventual recovery
           // pays the wrong rate. Update cutPercent to track the corrected
-          // classification; leave cutCad at 0 and event.ceoCutCad unchanged
+          // classification; leave cutAmount at 0 and event.ceoCut unchanged
           // (FORFEITED's CEO absorb is rate-independent).
           //
           // Event update (path C) gates on EITHER path having landed. The
           // nested-predicate requires an AFFILIATE split with the new
           // cutPercent AND in an eligible status (EARNED/PENDING/recoverable
           // FORFEITED). If both paths no-op (e.g. affiliate split is PAID),
-          // event update no-ops too — classification locks with the frozen cutCad.
+          // event update no-ops too — classification locks with the frozen cutAmount.
           const [earnedRes, forfeitedRes] = await prisma.$transaction([
             prisma.commissionSplit.updateMany({
               where: {
@@ -251,7 +252,7 @@ export async function GET(req: NextRequest) {
               },
               data: {
                 cutPercent: rateNum,
-                cutCad: newAffiliateCut.toDecimalPlaces(2).toNumber(),
+                cutAmount: newAffiliateCut.toDecimalPlaces(2).toNumber(),
               },
             }),
             prisma.commissionSplit.updateMany({
@@ -282,7 +283,7 @@ export async function GET(req: NextRequest) {
               },
               data: {
                 isRecurring: newIsRecurring,
-                ceoCutCad: newCeoCut.toDecimalPlaces(2).toNumber(),
+                ceoCut: newCeoCut.toDecimalPlaces(2).toNumber(),
               },
             }),
             prisma.commissionEvent.updateMany({

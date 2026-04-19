@@ -53,12 +53,12 @@ export async function GET(req: NextRequest) {
       select: {
         id: true,
         cutPercent: true,
-        cutCad: true,
+        cutAmount: true,
         status: true,
         forfeitedToCeo: true,
         forfeitureReason: true,
         createdAt: true,
-        event: { select: { conversionDate: true } },
+        event: { select: { conversionDate: true, currency: true } },
       },
     }),
     prisma.commissionSplit.count({ where }),
@@ -67,7 +67,10 @@ export async function GET(req: NextRequest) {
   const data = splits.map((s) => ({
     id: s.id,
     affiliateCutPercent: s.cutPercent,
-    affiliateCutCad: s.cutCad,
+    affiliateCut: s.cutAmount,
+    // Upper-case defensive read: any legacy row with lowercase
+    // "usd"/"cad" gets normalized before the FE formatter sees it.
+    currency: s.event.currency.toUpperCase() as "USD" | "CAD",
     status: s.status,
     forfeitedToCeo: s.forfeitedToCeo,
     forfeitureReason: s.forfeitureReason,

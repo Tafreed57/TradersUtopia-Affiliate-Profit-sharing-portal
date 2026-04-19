@@ -96,7 +96,7 @@ export async function GET() {
   // Prisma's groupBy can't traverse relations, so pull splits + event.affiliateId
   // and aggregate in-memory — at our scale (hundreds of splits at most per
   // teacher) the round-trip overhead of a single findMany is negligible.
-  // `cutCad` stores native event currency; normalize USD→CAD using the cached
+  // `cutAmount` stores native event currency; normalize USD→CAD using the cached
   // exchange rate so the downstream per-student totals are canonical CAD.
   // See anti-patterns/column-name-as-contract.
   const [teacherSplits, rate] = await Promise.all([
@@ -107,7 +107,7 @@ export async function GET() {
         event: { affiliateId: { in: allStudentIds } },
       },
       select: {
-        cutCad: true,
+        cutAmount: true,
         status: true,
         event: { select: { affiliateId: true, currency: true } },
       },
@@ -135,7 +135,7 @@ export async function GET() {
       paidCount: 0,
       earnedCount: 0,
     };
-    const native = new Decimal(s.cutCad.toString());
+    const native = new Decimal(s.cutAmount.toString());
     const cad = s.event.currency === "CAD" ? native : native.div(cadToUsd);
     if (s.status === "PAID") {
       prev.paid = prev.paid.add(cad);

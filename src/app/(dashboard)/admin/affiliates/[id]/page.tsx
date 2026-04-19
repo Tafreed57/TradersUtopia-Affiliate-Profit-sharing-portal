@@ -80,8 +80,9 @@ interface AffiliateDetail {
   recentCommissions: {
     id: string;
     affiliateCutPercent: number;
-    affiliateCutCad: number;
-    ceoCutCad: number;
+    affiliateCut: number;
+    ceoCut: number;
+    currency: "USD" | "CAD";
     status: string;
     forfeitedToCeo: boolean;
     conversionDate: string;
@@ -647,8 +648,8 @@ export default function AffiliateDetailPage({
                         day: "numeric",
                       })}
                     </TableCell>
-                    <TableCell>{format(c.affiliateCutCad)}</TableCell>
-                    <TableCell>{format(c.ceoCutCad)}</TableCell>
+                    <TableCell>{format(c.affiliateCut, c.currency)}</TableCell>
+                    <TableCell>{format(c.ceoCut, c.currency)}</TableCell>
                     <TableCell>
                       <Badge
                         variant="default"

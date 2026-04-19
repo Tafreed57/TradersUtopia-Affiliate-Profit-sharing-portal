@@ -34,7 +34,8 @@ import { useCurrency } from "@/providers/currency-provider";
 interface Commission {
   id: string;
   affiliateCutPercent: string;
-  affiliateCutCad: string;
+  affiliateCut: string;
+  currency: "USD" | "CAD";
   status: "EARNED" | "FORFEITED" | "PENDING" | "PAID" | "VOIDED";
   forfeitedToCeo: boolean;
   forfeitureReason: string | null;
@@ -103,7 +104,7 @@ const STATUS_CONFIG = {
 export default function CommissionsPage() {
   const { data: session } = useSession();
   const userId = session?.user?.id;
-  const { currency, toggle, format, stale } = useCurrency();
+  const { currency, toggle, format, convert, stale } = useCurrency();
   const [page, setPage] = useState(1);
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [fromDate, setFromDate] = useState("");
@@ -126,10 +127,16 @@ export default function CommissionsPage() {
     },
   });
 
+  // "On this page" total — normalize each row by its own currency via
+  // CurrencyProvider.convert, then sum. Prevents mixed-currency rows from
+  // being summed as if they were the same unit.
   const totalEarned =
     data?.data
       .filter((c) => c.status === "EARNED")
-      .reduce((sum, c) => sum + Number(c.affiliateCutCad), 0) ?? 0;
+      .reduce(
+        (sum, c) => sum + convert(Number(c.affiliateCut), c.currency),
+        0
+      ) ?? 0;
 
   return (
     <div className="space-y-6">
@@ -235,7 +242,7 @@ export default function CommissionsPage() {
             <div className="flex items-center gap-1.5 text-sm">
               <DollarSign className="h-4 w-4 text-success" />
               <span className="font-semibold text-success">
-                {format(totalEarned)}
+                {format(totalEarned, currency)}
               </span>
               <span className="text-muted-foreground">on this page</span>
             </div>
@@ -285,7 +292,7 @@ export default function CommissionsPage() {
                                 : "font-semibold"
                             }
                           >
-                            {format(Number(commission.affiliateCutCad))}
+                            {format(Number(commission.affiliateCut), commission.currency)}
                           </span>
                         </TableCell>
                         <TableCell className="text-muted-foreground">

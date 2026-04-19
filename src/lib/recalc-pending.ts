@@ -19,14 +19,14 @@ export type RecalcResult =
  *  - PAID + VOIDED: frozen.
  *
  * Side effects per re-priced split:
- *  - Affiliate split: new cutPercent + cutCad.
+ *  - Affiliate split: new cutPercent + cutAmount.
  *    PENDING → EARNED when rate > 0 AND attendance passes the grace/±1-day
  *    rule; PENDING → FORFEITED when rate > 0 but attendance failed; PENDING
  *    stays PENDING when rate is still 0; EARNED stays EARNED.
- *  - Event.ceoCutCad recomputed so fullAmount = affiliate + teachers + CEO.
+ *  - Event.ceoCut recomputed so fullAmount = affiliate + teachers + CEO.
  *  - Teacher splits for the same event flip PENDING → EARNED only when the
  *    affiliate split was promoted to EARNED (rate-independent teacher
- *    cutCad already right; status just catches up).
+ *    cutAmount already right; status just catches up).
  *
  * Atomicity: per-event array $transaction. TOCTOU-guarded: the AFFILIATE
  * split updateMany's `where` predicates the current status so a concurrently
@@ -70,8 +70,8 @@ export async function runRecalcPending(
       event: {
         select: {
           id: true,
-          fullAmountCad: true,
-          ceoCutCad: true,
+          fullAmount: true,
+          ceoCut: true,
           isRecurring: true,
           conversionDate: true,
         },
@@ -87,14 +87,14 @@ export async function runRecalcPending(
   const eventIds = splits.map((s) => s.event.id);
   const teacherSplits = await prisma.commissionSplit.findMany({
     where: { eventId: { in: eventIds }, role: "TEACHER" },
-    select: { eventId: true, cutCad: true },
+    select: { eventId: true, cutAmount: true },
   });
   const teacherCutsByEvent = new Map<string, Decimal>();
   for (const t of teacherSplits) {
     const prev = teacherCutsByEvent.get(t.eventId) ?? new Decimal(0);
     teacherCutsByEvent.set(
       t.eventId,
-      prev.add(new Decimal(t.cutCad.toString()))
+      prev.add(new Decimal(t.cutAmount.toString()))
     );
   }
 
@@ -135,7 +135,7 @@ export async function runRecalcPending(
   for (const s of splits) {
     const applicableRate = s.event.isRecurring ? recurringRate : initialRate;
     const applicableRateNum = applicableRate.toDecimalPlaces(2).toNumber();
-    const fullAmount = new Decimal(s.event.fullAmountCad.toString());
+    const fullAmount = new Decimal(s.event.fullAmount.toString());
     const teacherCutTotal =
       teacherCutsByEvent.get(s.event.id) ?? new Decimal(0);
     const repricedAffiliateCut = fullAmount.mul(applicableRate).div(100);
@@ -173,7 +173,7 @@ export async function runRecalcPending(
       }
     } else {
       // EARNED → re-priced; keeps status. Or PENDING with rate still 0 →
-      // stays PENDING, cutCad updates to reflect "rate × full" which is 0.
+      // stays PENDING, cutAmount updates to reflect "rate × full" which is 0.
       newStatus = s.status;
       newForfeitureReason = s.forfeitureReason;
       newForfeitedToCeo = false;
@@ -192,7 +192,7 @@ export async function runRecalcPending(
         forfeitureReason: newForfeitureReason,
         forfeitedToCeo: newForfeitedToCeo,
         cutPercent: applicableRateNum,
-        cutCad: finalAffiliateCut.toDecimalPlaces(2).toNumber(),
+        cutAmount: finalAffiliateCut.toDecimalPlaces(2).toNumber(),
       },
     });
 
@@ -211,7 +211,7 @@ export async function runRecalcPending(
 
     const eventUpdate = prisma.commissionEvent.updateMany({
       where: postFlipGate,
-      data: { ceoCutCad: finalCeoCut.toDecimalPlaces(2).toNumber() },
+      data: { ceoCut: finalCeoCut.toDecimalPlaces(2).toNumber() },
     });
 
     const ops: Prisma.PrismaPromise<unknown>[] = [splitUpdate, eventUpdate];

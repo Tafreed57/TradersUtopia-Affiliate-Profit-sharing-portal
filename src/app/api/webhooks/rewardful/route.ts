@@ -151,10 +151,11 @@ function extractConversion(
   if (amountRaw == null) return null;
 
   const amount = amountRaw / 100;
-  const currency =
+  const currency = (
     getString(data, "currency") ??
     getString(payload, "currency") ??
-    "USD";
+    "USD"
+  ).toUpperCase();
 
   // Affiliate ID
   const affiliateId =

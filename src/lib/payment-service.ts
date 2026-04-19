@@ -40,7 +40,7 @@ export async function handleCommissionPaid(
       affiliateId: true,
       splits: {
         where: { status: "EARNED" },
-        select: { id: true, recipientId: true, role: true, cutCad: true },
+        select: { id: true, recipientId: true, role: true, cutAmount: true },
       },
     },
   });
@@ -58,7 +58,7 @@ export async function handleCommissionPaid(
     const prev = byTeacher.get(s.recipientId);
     byTeacher.set(s.recipientId, {
       teacherId: s.recipientId,
-      cut: (prev?.cut ?? 0) + s.cutCad.toNumber(),
+      cut: (prev?.cut ?? 0) + s.cutAmount.toNumber(),
     });
   }
 
@@ -107,7 +107,7 @@ export async function handleCommissionVoided(
       currency: true,
       splits: {
         where: { status: { in: ["EARNED", "PAID", "PENDING"] } },
-        select: { id: true, role: true, cutCad: true },
+        select: { id: true, role: true, cutAmount: true },
       },
     },
   });
@@ -126,7 +126,7 @@ export async function handleCommissionVoided(
       userId: event.affiliateId,
       type: "COMMISSION_VOIDED",
       title: "Commission Voided",
-      body: `A commission of ${sym}${affiliateSplit.cutCad.toNumber().toFixed(2)} was voided due to a refund or chargeback.`,
+      body: `A commission of ${sym}${affiliateSplit.cutAmount.toNumber().toFixed(2)} was voided due to a refund or chargeback.`,
       data: { rewardfulCommissionId },
     });
   }

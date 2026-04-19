@@ -10,10 +10,10 @@ import { prisma } from "@/lib/prisma";
  * student. CommissionSplit is the authoritative source for what the system
  * owes the teacher, updated by webhook + nightly reconcile + heal-forfeited.
  *
- * `CommissionSplit.cutCad` stores the event's native currency despite the
- * name (see anti-patterns/column-name-as-contract), so we normalize USD
- * rows to CAD server-side before returning. The returned *Cad fields are
- * therefore canonical CAD that the FE can display as-is.
+ * `CommissionSplit.cutAmount` stores the event's native currency (USD for
+ * webhook-sourced, CAD for Rewardful-backfilled). We normalize USD rows to
+ * CAD server-side before returning, so the returned teacher*Cad fields are
+ * canonical CAD the FE can display as-is.
  */
 export interface TeacherStudentSplitStats {
   teacherUnpaidCad: number;
@@ -45,7 +45,7 @@ export async function getTeacherStudentSplitStats(
       },
       select: {
         status: true,
-        cutCad: true,
+        cutAmount: true,
         event: { select: { affiliateId: true, currency: true } },
       },
     }),
@@ -68,7 +68,7 @@ export async function getTeacherStudentSplitStats(
   for (const row of rows) {
     const acc = result.get(row.event.affiliateId);
     if (!acc) continue;
-    const native = row.cutCad.toNumber();
+    const native = row.cutAmount.toNumber();
     const cad = row.event.currency === "CAD" ? native : native / cadToUsd;
     if (row.status === "PAID") acc.teacherPaidCad += cad;
     else acc.teacherUnpaidCad += cad;

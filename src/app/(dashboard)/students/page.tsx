@@ -99,7 +99,8 @@ interface UserResult {
 interface DetailCommission {
   id: string;
   conversionDate: string;
-  teacherCutCad: number;
+  teacherCut: number;
+  currency: "USD" | "CAD";
   status: string;
   forfeitureReason: string | null;
   paidAt: string | null;
@@ -259,7 +260,7 @@ function StudentDetailSheet({
                           c.status === "EARNED" ? "text-success" : "text-muted-foreground"
                         }`}
                       >
-                        {format(c.teacherCutCad)}
+                        {format(c.teacherCut, c.currency)}
                       </span>
                       <Badge
                         variant="default"

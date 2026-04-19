@@ -46,8 +46,8 @@ export async function POST() {
       select: {
         id: true,
         rewardfulCommissionId: true,
-        fullAmountCad: true,
-        ceoCutCad: true,
+        fullAmount: true,
+        ceoCut: true,
         splits: {
           where: { role: "TEACHER", recipientId: rel.teacherId },
           select: { id: true },
@@ -61,24 +61,24 @@ export async function POST() {
     const toProcess = historicalEvents
       .filter((e) => e.splits.length === 0)
       .map((e) => {
-        const full = e.fullAmountCad.toNumber();
-        const ceo = e.ceoCutCad.toNumber();
+        const full = e.fullAmount.toNumber();
+        const ceo = e.ceoCut.toNumber();
         const cut = Math.min(
           Number(((full * teacherCutPct) / 100).toFixed(2)),
           ceo
         );
-        return { event: e, teacherCutCad: cut };
+        return { event: e, teacherCutAmount: cut };
       })
-      .filter(({ teacherCutCad }) => teacherCutCad > 0);
+      .filter(({ teacherCutAmount }) => teacherCutAmount > 0);
 
     if (toProcess.length === 0) continue;
 
-    // Per-event atomic write: `create` + event.ceoCutCad decrement in one tx,
+    // Per-event atomic write: `create` + event.ceoCut decrement in one tx,
     // then catch P2002 on the split's (eventId, recipientId) unique so a
-    // concurrent backfill can't double-decrement ceoCutCad. skipDuplicates
+    // concurrent backfill can't double-decrement ceoCut. skipDuplicates
     // on createMany wouldn't help here because the event update doesn't know
     // which inserts were skipped.
-    for (const { event, teacherCutCad } of toProcess) {
+    for (const { event, teacherCutAmount } of toProcess) {
       try {
         await prisma.$transaction([
           prisma.commissionSplit.create({
@@ -88,7 +88,7 @@ export async function POST() {
               role: "TEACHER",
               depth: rel.depth,
               cutPercent: rel.teacherCut,
-              cutCad: teacherCutCad,
+              cutAmount: teacherCutAmount,
               status: "EARNED",
               forfeitedToCeo: false,
               forfeitureReason: null,
@@ -100,8 +100,8 @@ export async function POST() {
           prisma.commissionEvent.update({
             where: { id: event.id },
             data: {
-              ceoCutCad: Number(
-                (event.ceoCutCad.toNumber() - teacherCutCad).toFixed(2)
+              ceoCut: Number(
+                (event.ceoCut.toNumber() - teacherCutAmount).toFixed(2)
               ),
             },
           }),
@@ -112,7 +112,7 @@ export async function POST() {
           err instanceof Prisma.PrismaClientKnownRequestError &&
           err.code === "P2002"
         ) {
-          // Concurrent backfill beat us; its tx decremented ceoCutCad.
+          // Concurrent backfill beat us; its tx decremented ceoCut.
           continue;
         }
         throw err;

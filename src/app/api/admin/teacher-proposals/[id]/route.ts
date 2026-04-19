@@ -20,7 +20,7 @@ const schema = z.object({
  *   - status → ACTIVE (atomic: updateMany guards on PENDING)
  *   - Depth-2 TeacherStudent rows auto-created for the student's own active students
  *   - Retroactive TEACHER CommissionSplit rows created for the student's EARNED
- *     historical events (capped at each event's current ceoCutCad)
+ *     historical events (capped at each event's current ceoCut)
  *   - Teacher + student notified
  *
  * On reject:
@@ -139,7 +139,7 @@ export async function PATCH(
       // Retroactive TEACHER splits for the student's EARNED historical events.
       // These were processed before the relationship existed, so no teacher
       // split was created at the time. Teacher cut = fullAmount × % / 100,
-      // capped at each event's current ceoCutCad.
+      // capped at each event's current ceoCut.
       const historicalEvents = await prisma.commissionEvent.findMany({
         where: {
           affiliateId: proposal.studentId,
@@ -148,8 +148,8 @@ export async function PATCH(
         select: {
           id: true,
           rewardfulCommissionId: true,
-          fullAmountCad: true,
-          ceoCutCad: true,
+          fullAmount: true,
+          ceoCut: true,
           splits: {
             where: { role: "TEACHER", recipientId: proposal.teacherId },
             select: { id: true },
@@ -162,27 +162,27 @@ export async function PATCH(
         const toProcess = historicalEvents
           .filter((e) => e.splits.length === 0)
           .map((e) => {
-            const full = e.fullAmountCad.toNumber();
-            const ceo = e.ceoCutCad.toNumber();
+            const full = e.fullAmount.toNumber();
+            const ceo = e.ceoCut.toNumber();
             const cut = Math.min(
               Number(((full * teacherCutPct) / 100).toFixed(2)),
               ceo
             );
-            return { event: e, teacherCutCad: cut };
+            return { event: e, teacherCutAmount: cut };
           })
-          .filter(({ teacherCutCad }) => teacherCutCad > 0);
+          .filter(({ teacherCutAmount }) => teacherCutAmount > 0);
 
         if (toProcess.length > 0) {
           // Array-form $transaction: safe with PgBouncer (no interactive tx).
           await prisma.$transaction([
             prisma.commissionSplit.createMany({
-              data: toProcess.map(({ event, teacherCutCad }) => ({
+              data: toProcess.map(({ event, teacherCutAmount }) => ({
                 eventId: event.id,
                 recipientId: proposal.teacherId,
                 role: "TEACHER" as const,
                 depth: proposal.depth,
                 cutPercent: proposal.teacherCut,
-                cutCad: teacherCutCad,
+                cutAmount: teacherCutAmount,
                 status: "EARNED" as const,
                 forfeitedToCeo: false,
                 forfeitureReason: null,
@@ -192,12 +192,12 @@ export async function PATCH(
               })),
               skipDuplicates: true,
             }),
-            ...toProcess.map(({ event, teacherCutCad }) =>
+            ...toProcess.map(({ event, teacherCutAmount }) =>
               prisma.commissionEvent.update({
                 where: { id: event.id },
                 data: {
-                  ceoCutCad: Number(
-                    (event.ceoCutCad.toNumber() - teacherCutCad).toFixed(2)
+                  ceoCut: Number(
+                    (event.ceoCut.toNumber() - teacherCutAmount).toFixed(2)
                   ),
                 },
               })

@@ -86,7 +86,7 @@ export async function GET(
       }),
 
       // Recent commissions (last 10) — AFFILIATE splits for this user,
-      // joined to event for conversionDate + ceoCutCad.
+      // joined to event for conversionDate + ceoCut + currency.
       prisma.commissionSplit.findMany({
         where: { role: "AFFILIATE", recipientId: id },
         orderBy: { event: { conversionDate: "desc" } },
@@ -94,10 +94,10 @@ export async function GET(
         select: {
           id: true,
           cutPercent: true,
-          cutCad: true,
+          cutAmount: true,
           status: true,
           forfeitedToCeo: true,
-          event: { select: { conversionDate: true, ceoCutCad: true } },
+          event: { select: { conversionDate: true, ceoCut: true, currency: true } },
         },
       }),
 
@@ -112,14 +112,14 @@ export async function GET(
       }),
 
       // Total earned — per-currency so we can normalize USD→CAD server-side.
-      // cutCad stores native event currency; see anti-patterns/column-name-as-contract.
+      // cutAmount stores native event currency; see anti-patterns/column-name-as-contract.
       prisma.commissionSplit.aggregate({
         where: { ...earnedOrPaidWhere, event: { currency: "USD" } },
-        _sum: { cutCad: true },
+        _sum: { cutAmount: true },
       }),
       prisma.commissionSplit.aggregate({
         where: { ...earnedOrPaidWhere, event: { currency: "CAD" } },
-        _sum: { cutCad: true },
+        _sum: { cutAmount: true },
       }),
       prisma.commissionSplit.count({ where: earnedOrPaidWhere }),
 
@@ -137,8 +137,8 @@ export async function GET(
     ]);
 
   const cadToUsd = rate?.rate.toNumber() ?? 0.74;
-  const totalEarnedUsd = totalEarnedUsdAgg._sum.cutCad?.toNumber() ?? 0;
-  const totalEarnedCadNative = totalEarnedCadAgg._sum.cutCad?.toNumber() ?? 0;
+  const totalEarnedUsd = totalEarnedUsdAgg._sum.cutAmount?.toNumber() ?? 0;
+  const totalEarnedCadNative = totalEarnedCadAgg._sum.cutAmount?.toNumber() ?? 0;
   const totalEarnedCad =
     Math.round((totalEarnedCadNative + totalEarnedUsd / cadToUsd) * 100) / 100;
 
@@ -177,8 +177,9 @@ export async function GET(
     recentCommissions: recentCommissions.map((s) => ({
       id: s.id,
       affiliateCutPercent: s.cutPercent.toNumber(),
-      affiliateCutCad: s.cutCad.toNumber(),
-      ceoCutCad: s.event.ceoCutCad.toNumber(),
+      affiliateCut: s.cutAmount.toNumber(),
+      ceoCut: s.event.ceoCut.toNumber(),
+      currency: s.event.currency.toUpperCase() as "USD" | "CAD",
       status: s.status,
       forfeitedToCeo: s.forfeitedToCeo,
       conversionDate: s.event.conversionDate,

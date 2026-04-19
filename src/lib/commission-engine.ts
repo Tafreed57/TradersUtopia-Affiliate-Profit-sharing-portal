@@ -3,9 +3,14 @@
  *
  * Processes Rewardful webhook conversions into CommissionEvent + CommissionSplit rows.
  * One event per conversion; one split per recipient (affiliate + each teacher).
- * Per-event fields (fullAmountCad, ceoCutCad, currency, conversionDate) live on
- * the event; per-recipient fields (status, cutCad, paidAt, forfeitureReason) live
- * on the splits. CEO cut is implicit — no CEO split rows.
+ * Per-event fields (fullAmount, ceoCut, currency, conversionDate) live on the
+ * event; per-recipient fields (status, cutAmount, paidAt, forfeitureReason)
+ * live on the splits. CEO cut is implicit — no CEO split rows.
+ *
+ * Amounts are stored in the event's native `currency` (USD for US Stripe,
+ * CAD for Canadian). Callers that display money must either filter by
+ * currency or normalize via getCadToUsdRate() — see
+ * anti-patterns/column-name-as-contract.
  */
 
 import { CommissionStatus, NotificationType, Prisma } from "@prisma/client";
@@ -96,7 +101,8 @@ export async function processConversion(
   }
 
   const fullAmount = new Decimal(conversion.amount);
-  const currency = conversion.currency ?? "USD";
+  // Upper-case for canonical storage — Stripe/Rewardful may send "usd" or "cad".
+  const currency = (conversion.currency ?? "USD").toUpperCase();
   const conversionDate = new Date(conversion.conversionDate);
 
   // 2a. Classify initial vs recurring by conversionDate, not insertion order.
@@ -212,7 +218,7 @@ export async function processConversion(
     recipient: { connect: { id: affiliate.id } },
     role: "AFFILIATE",
     cutPercent: affiliatePercent.toDecimalPlaces(2).toNumber(),
-    cutCad: finalAffiliateCut.toDecimalPlaces(2).toNumber(),
+    cutAmount: finalAffiliateCut.toDecimalPlaces(2).toNumber(),
     status: affiliateStatus,
     forfeitedToCeo: affiliateForfeitedToCeo,
     forfeitureReason: affiliateReason,
@@ -225,7 +231,7 @@ export async function processConversion(
       role: "TEACHER",
       depth: tc.depth,
       cutPercent: tc.teacherCutPercent.toDecimalPlaces(2).toNumber(),
-      cutCad: tc.amount.toDecimalPlaces(2).toNumber(),
+      cutAmount: tc.amount.toDecimalPlaces(2).toNumber(),
       status: teacherStatus,
       forfeitedToCeo: false,
       forfeitureReason: teacherReason,
@@ -241,8 +247,8 @@ export async function processConversion(
         affiliateId: affiliate.id,
         conversionDate,
         currency,
-        fullAmountCad: fullAmount.toDecimalPlaces(2).toNumber(),
-        ceoCutCad: finalCeoCut.toDecimalPlaces(2).toNumber(),
+        fullAmount: fullAmount.toDecimalPlaces(2).toNumber(),
+        ceoCut: finalCeoCut.toDecimalPlaces(2).toNumber(),
         isRecurring,
         rewardfulData: conversion.rawPayload as Prisma.InputJsonValue,
         splits: { create: splitData },
@@ -374,7 +380,7 @@ async function checkAttendance(
  * Re-evaluate a previously-forfeited affiliate split (e.g., when attendance
  * is submitted after the conversion). If attendance now exists, flip the
  * AFFILIATE split + any attendance-forfeited TEACHER splits from FORFEITED
- * to EARNED, and reduce the event's ceoCutCad by the recovered affiliate cut.
+ * to EARNED, and reduce the event's ceoCut by the recovered affiliate cut.
  */
 export async function reevaluateCommission(
   rewardfulCommissionId: string
@@ -404,10 +410,10 @@ export async function reevaluateCommission(
   if (!hasAttendance) return { updated: false };
 
   // Restore affiliate cut, reduce CEO cut, flip attendance-forfeited teachers.
-  const fullAmount = new Decimal(event.fullAmountCad.toString());
+  const fullAmount = new Decimal(event.fullAmount.toString());
   const affiliatePercent = new Decimal(affiliateSplit.cutPercent.toString());
   const affiliateCut = fullAmount.mul(affiliatePercent).div(100);
-  const oldCeoCut = new Decimal(event.ceoCutCad.toString());
+  const oldCeoCut = new Decimal(event.ceoCut.toString());
   const newCeoCut = oldCeoCut.sub(affiliateCut);
   const noAttendanceReason = "No attendance submitted for conversion date";
 
@@ -418,7 +424,7 @@ export async function reevaluateCommission(
         status: "EARNED",
         forfeitedToCeo: false,
         forfeitureReason: null,
-        cutCad: affiliateCut.toDecimalPlaces(2).toNumber(),
+        cutAmount: affiliateCut.toDecimalPlaces(2).toNumber(),
       },
     }),
     prisma.commissionSplit.updateMany({
@@ -436,7 +442,7 @@ export async function reevaluateCommission(
     }),
     prisma.commissionEvent.update({
       where: { id: event.id },
-      data: { ceoCutCad: newCeoCut.toDecimalPlaces(2).toNumber() },
+      data: { ceoCut: newCeoCut.toDecimalPlaces(2).toNumber() },
     }),
   ]);
 

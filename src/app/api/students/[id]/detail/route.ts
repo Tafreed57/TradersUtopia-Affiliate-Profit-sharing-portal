@@ -66,12 +66,12 @@ export async function GET(
       select: {
         id: true,
         cutPercent: true,
-        cutCad: true,
+        cutAmount: true,
         status: true,
         forfeitedToCeo: true,
         forfeitureReason: true,
         paidAt: true,
-        event: { select: { conversionDate: true, fullAmountCad: true } },
+        event: { select: { conversionDate: true, fullAmount: true, currency: true } },
       },
     }),
 
@@ -116,9 +116,10 @@ export async function GET(
     commissions: splits.map((s) => ({
       id: s.id,
       conversionDate: s.event.conversionDate,
-      fullAmountCad: s.event.fullAmountCad.toNumber(),
+      fullAmount: s.event.fullAmount.toNumber(),
       teacherCutPercent: s.cutPercent.toNumber(),
-      teacherCutCad: s.cutCad.toNumber(),
+      teacherCut: s.cutAmount.toNumber(),
+      currency: s.event.currency.toUpperCase() as "USD" | "CAD",
       status: s.status,
       forfeitedToCeo: s.forfeitedToCeo,
       forfeitureReason: s.forfeitureReason,

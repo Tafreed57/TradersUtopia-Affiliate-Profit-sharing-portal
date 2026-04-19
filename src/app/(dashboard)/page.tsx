@@ -31,7 +31,8 @@ interface DashboardStats {
   attendanceDaysThisMonth: number;
   recentCommissions: {
     id: string;
-    affiliateCutCad: string;
+    affiliateCut: string;
+    currency: "USD" | "CAD";
     status: "EARNED" | "FORFEITED" | "PENDING" | "PAID" | "VOIDED";
     forfeitedToCeo: boolean;
     conversionDate: string;
@@ -235,7 +236,7 @@ export default function DashboardPage() {
                   >
                     <div>
                       <p className="text-sm font-medium">
-                        {format(Number(c.affiliateCutCad))}
+                        {format(Number(c.affiliateCut), c.currency)}
                       </p>
                       <p className="text-xs text-muted-foreground">
                         {formatShortDate(c.conversionDate)}

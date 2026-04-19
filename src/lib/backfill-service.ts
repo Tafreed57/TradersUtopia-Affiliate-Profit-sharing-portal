@@ -158,12 +158,14 @@ function mapCommissionToConversion(
 ) {
   // Require sale data — commission.amount is the affiliate payout, not the
   // full sale amount. Falling back to it would silently store a wrong
-  // fullAmountCad and produce incorrect commission splits.
+  // fullAmount and produce incorrect commission splits.
   if (!commission.sale) return null;
   const amountRaw = commission.sale.sale_amount_cents;
   if (typeof amountRaw !== "number") return null;
   const amount = amountRaw / 100;
-  const currency = commission.sale.currency ?? commission.currency ?? "USD";
+  const currency = (
+    commission.sale.currency ?? commission.currency ?? "USD"
+  ).toUpperCase();
 
   const conversionDate =
     commission.sale?.charged_at ??

@@ -21,9 +21,9 @@ export type HealResult = {
  * new candidates.
  *
  * Per healed event:
- *  - AFFILIATE split: FORFEITED → EARNED with rate-driven cutCad + cleared
+ *  - AFFILIATE split: FORFEITED → EARNED with rate-driven cutAmount + cleared
  *    forfeitureReason + forfeitedToCeo=false.
- *  - CommissionEvent.ceoCutCad recomputed.
+ *  - CommissionEvent.ceoCut recomputed.
  *  - TEACHER splits with the same attendance reason recover to EARNED.
  *
  * Per-event atomic array $transaction with TOCTOU guard (current status +
@@ -46,8 +46,8 @@ export async function healForfeitedByGrace(): Promise<HealResult> {
         select: {
           id: true,
           conversionDate: true,
-          fullAmountCad: true,
-          ceoCutCad: true,
+          fullAmount: true,
+          ceoCut: true,
           isRecurring: true,
         },
       },
@@ -87,14 +87,14 @@ export async function healForfeitedByGrace(): Promise<HealResult> {
   const eventIds = [...new Set(candidates.map((c) => c.event.id))];
   const teacherSplits = await prisma.commissionSplit.findMany({
     where: { eventId: { in: eventIds }, role: "TEACHER" },
-    select: { eventId: true, cutCad: true },
+    select: { eventId: true, cutAmount: true },
   });
   const teacherCutsByEvent = new Map<string, Decimal>();
   for (const t of teacherSplits) {
     const prev = teacherCutsByEvent.get(t.eventId) ?? new Decimal(0);
     teacherCutsByEvent.set(
       t.eventId,
-      prev.add(new Decimal(t.cutCad.toString()))
+      prev.add(new Decimal(t.cutAmount.toString()))
     );
   }
 
@@ -115,7 +115,7 @@ export async function healForfeitedByGrace(): Promise<HealResult> {
       ? new Decimal(user.recurringCommissionPercent.toString())
       : new Decimal(user.initialCommissionPercent.toString());
     const applicableRateNum = applicableRate.toDecimalPlaces(2).toNumber();
-    const fullAmount = new Decimal(c.event.fullAmountCad.toString());
+    const fullAmount = new Decimal(c.event.fullAmount.toString());
     const teacherCutTotal =
       teacherCutsByEvent.get(c.event.id) ?? new Decimal(0);
     const newAffiliateCut = fullAmount.mul(applicableRate).div(100);
@@ -133,7 +133,7 @@ export async function healForfeitedByGrace(): Promise<HealResult> {
           forfeitedToCeo: false,
           forfeitureReason: null,
           cutPercent: applicableRateNum,
-          cutCad: newAffiliateCut.toDecimalPlaces(2).toNumber(),
+          cutAmount: newAffiliateCut.toDecimalPlaces(2).toNumber(),
         },
       }),
       prisma.commissionEvent.updateMany({
@@ -147,7 +147,7 @@ export async function healForfeitedByGrace(): Promise<HealResult> {
             },
           },
         },
-        data: { ceoCutCad: newCeoCut.toDecimalPlaces(2).toNumber() },
+        data: { ceoCut: newCeoCut.toDecimalPlaces(2).toNumber() },
       }),
       prisma.commissionSplit.updateMany({
         where: {

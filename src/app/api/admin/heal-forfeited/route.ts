@@ -11,7 +11,7 @@ import { healForfeitedByGrace } from "@/lib/heal-forfeited-by-grace";
  * that's FORFEITED with forfeitureReason="No attendance submitted for
  * conversion date" against the attendance grace rule. Rows where the
  * affiliate had no attendance on/before the conversion date become EARNED
- * with rate-driven cutCad; teacher splits for the same event recover too.
+ * with rate-driven cutAmount; teacher splits for the same event recover too.
  *
  * Idempotent — subsequent runs heal only newly-FORFEITED rows (there
  * shouldn't be any going forward, since processConversion now respects the

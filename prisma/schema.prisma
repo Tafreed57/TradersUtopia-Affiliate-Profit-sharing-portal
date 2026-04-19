@@ -159,8 +159,8 @@ model CommissionEvent {
   affiliate             User              @relation("affiliateEvents", fields: [affiliateId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   conversionDate        DateTime
   currency              String            @default("USD")
-  fullAmountCad         Decimal           @db.Decimal(12, 2)
-  ceoCutCad             Decimal           @db.Decimal(12, 2)
+  fullAmount            Decimal           @map("fullAmountCad") @db.Decimal(12, 2)
+  ceoCut                Decimal           @map("ceoCutCad") @db.Decimal(12, 2)
   isRecurring           Boolean           @default(false)
   rewardfulData         Json?
   splits                CommissionSplit[]
@@ -181,7 +181,7 @@ model CommissionSplit {
   role             CommissionRole
   depth            Int?
   cutPercent       Decimal          @db.Decimal(5, 2)
-  cutCad           Decimal          @db.Decimal(12, 2)
+  cutAmount        Decimal          @map("cutCad") @db.Decimal(12, 2)
   status           CommissionStatus @default(PENDING)
   forfeitedToCeo   Boolean          @default(false)
   forfeitureReason String?

@@ -26,7 +26,7 @@ export async function GET() {
 
   const affiliateSplitWhere = { role: "AFFILIATE" as const, recipientId: userId };
 
-  // `CommissionSplit.cutCad` stores the event's native currency (USD or CAD
+  // `CommissionSplit.cutAmount` stores the event's native currency (USD or CAD
   // per CommissionEvent.currency) despite the column name — see the *Cad
   // DEBT. Aggregate per-currency and normalize USD→CAD server-side using
   // the cached exchange rate so the FE can treat `totalEarned` as canonical
@@ -52,19 +52,19 @@ export async function GET() {
   ] = await Promise.all([
     prisma.commissionSplit.aggregate({
       where: { ...perCurrencyTotalWhere, event: { currency: "USD" } },
-      _sum: { cutCad: true },
+      _sum: { cutAmount: true },
     }),
     prisma.commissionSplit.aggregate({
       where: { ...perCurrencyTotalWhere, event: { currency: "CAD" } },
-      _sum: { cutCad: true },
+      _sum: { cutAmount: true },
     }),
     prisma.commissionSplit.aggregate({
       where: { ...perCurrencyMonthWhere, event: { currency: "USD", conversionDate: { gte: monthStart, lte: monthEnd } } },
-      _sum: { cutCad: true },
+      _sum: { cutAmount: true },
     }),
     prisma.commissionSplit.aggregate({
       where: { ...perCurrencyMonthWhere, event: { currency: "CAD", conversionDate: { gte: monthStart, lte: monthEnd } } },
-      _sum: { cutCad: true },
+      _sum: { cutAmount: true },
     }),
 
     prisma.commissionSplit.count({ where: affiliateSplitWhere }),
@@ -86,10 +86,10 @@ export async function GET() {
       take: 5,
       select: {
         id: true,
-        cutCad: true,
+        cutAmount: true,
         status: true,
         forfeitedToCeo: true,
-        event: { select: { conversionDate: true } },
+        event: { select: { conversionDate: true, currency: true } },
       },
     }),
 
@@ -101,10 +101,10 @@ export async function GET() {
   const cadToUsd = rate?.rate.toNumber() ?? 0.74;
   const toCad = (usd: number) => Math.round((usd / cadToUsd) * 100) / 100;
 
-  const totalUsd = totalUsdAgg._sum.cutCad?.toNumber() ?? 0;
-  const totalCad = totalCadAgg._sum.cutCad?.toNumber() ?? 0;
-  const monthUsd = monthUsdAgg._sum.cutCad?.toNumber() ?? 0;
-  const monthCad = monthCadAgg._sum.cutCad?.toNumber() ?? 0;
+  const totalUsd = totalUsdAgg._sum.cutAmount?.toNumber() ?? 0;
+  const totalCad = totalCadAgg._sum.cutAmount?.toNumber() ?? 0;
+  const monthUsd = monthUsdAgg._sum.cutAmount?.toNumber() ?? 0;
+  const monthCad = monthCadAgg._sum.cutAmount?.toNumber() ?? 0;
 
   return NextResponse.json({
     totalEarned: Math.round((totalCad + toCad(totalUsd)) * 100) / 100,
@@ -114,7 +114,9 @@ export async function GET() {
     attendanceDaysThisMonth: attendanceThisMonth.length,
     recentCommissions: recentSplits.map((s) => ({
       id: s.id,
-      affiliateCutCad: s.cutCad,
+      affiliateCut: s.cutAmount,
+      // Defensive upper-case in case of legacy lowercase row.
+      currency: s.event.currency.toUpperCase() as "USD" | "CAD",
       status: s.status,
       forfeitedToCeo: s.forfeitedToCeo,
       conversionDate: s.event.conversionDate,

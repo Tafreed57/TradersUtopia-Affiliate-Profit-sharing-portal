@@ -187,8 +187,8 @@ export async function POST(req: NextRequest) {
         select: {
           id: true,
           rewardfulCommissionId: true,
-          fullAmountCad: true,
-          ceoCutCad: true,
+          fullAmount: true,
+          ceoCut: true,
           splits: {
             where: { role: "TEACHER", recipientId: teacherId },
             select: { id: true },
@@ -198,8 +198,8 @@ export async function POST(req: NextRequest) {
 
       for (const event of historicalEvents) {
         if (event.splits.length > 0) continue;
-        const full = event.fullAmountCad.toNumber();
-        const ceo = event.ceoCutCad.toNumber();
+        const full = event.fullAmount.toNumber();
+        const ceo = event.ceoCut.toNumber();
         const cut = Math.min(
           Number(((full * teacherCut) / 100).toFixed(2)),
           ceo
@@ -215,7 +215,7 @@ export async function POST(req: NextRequest) {
                 role: "TEACHER",
                 depth: 1,
                 cutPercent: teacherCut,
-                cutCad: cut,
+                cutAmount: cut,
                 status: "EARNED",
                 forfeitedToCeo: false,
                 forfeitureReason: null,
@@ -226,7 +226,7 @@ export async function POST(req: NextRequest) {
             }),
             prisma.commissionEvent.update({
               where: { id: event.id },
-              data: { ceoCutCad: Number((ceo - cut).toFixed(2)) },
+              data: { ceoCut: Number((ceo - cut).toFixed(2)) },
             }),
           ]);
         } catch (err) {
