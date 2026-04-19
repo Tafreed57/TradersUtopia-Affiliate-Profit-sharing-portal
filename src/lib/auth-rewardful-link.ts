@@ -1,4 +1,4 @@
-import { ADMIN_EMAIL } from "@/lib/constants";
+import { adminUserWhereOr } from "@/lib/constants";
 import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
 import * as rewardful from "@/lib/rewardful";
@@ -138,20 +138,24 @@ async function notifyAdminOfAutoCreate(args: {
   email: string;
 }) {
   try {
-    const adminEmail = ADMIN_EMAIL.toLowerCase();
-    if (!adminEmail) return;
-    const admin = await prisma.user.findUnique({
-      where: { email: adminEmail },
+    const where = adminUserWhereOr();
+    if (!where) return;
+    const admins = await prisma.user.findMany({
+      where,
       select: { id: true },
     });
-    if (!admin) return;
-    await createNotification({
-      userId: admin.id,
-      type: "AFFILIATE_AUTO_CREATED",
-      title: "New affiliate auto-created",
-      body: `${args.email} signed in and was added to the commission system.`,
-      data: { newUserId: args.newUserId, email: args.email },
-    });
+    if (admins.length === 0) return;
+    await Promise.all(
+      admins.map((admin) =>
+        createNotification({
+          userId: admin.id,
+          type: "AFFILIATE_AUTO_CREATED",
+          title: "New affiliate auto-created",
+          body: `${args.email} signed in and was added to the commission system.`,
+          data: { newUserId: args.newUserId, email: args.email },
+        })
+      )
+    );
   } catch (err) {
     console.error("[linkRewardfulAffiliate] admin notification failed:", err);
   }

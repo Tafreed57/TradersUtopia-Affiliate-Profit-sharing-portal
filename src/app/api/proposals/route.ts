@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth";
 import { z } from "zod";
 
 import { authOptions } from "@/lib/auth-options";
-import { ADMIN_EMAIL } from "@/lib/constants";
+import { adminUserWhereOr } from "@/lib/constants";
 import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
 
@@ -83,22 +83,27 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // Notify admin about the new proposal
-    if (ADMIN_EMAIL) {
-      const adminUser = await prisma.user.findUnique({
-        where: { email: ADMIN_EMAIL.toLowerCase() },
+    // Notify ALL admins about the new proposal.
+    const adminWhere = adminUserWhereOr();
+    if (adminWhere) {
+      const adminUsers = await prisma.user.findMany({
+        where: adminWhere,
         select: { id: true },
       });
 
-      if (adminUser) {
+      if (adminUsers.length > 0) {
         const teacherName = session.user.name || session.user.email || "A teacher";
-        await createNotification({
-          userId: adminUser.id,
-          type: "RATE_PROPOSAL_SUBMITTED",
-          title: "New Rate Proposal",
-          body: `${teacherName} proposed a rate change to ${proposedPercent}%. Review it in the admin panel.`,
-          data: { proposalId: proposal.id },
-        });
+        await Promise.all(
+          adminUsers.map((adminUser) =>
+            createNotification({
+              userId: adminUser.id,
+              type: "RATE_PROPOSAL_SUBMITTED",
+              title: "New Rate Proposal",
+              body: `${teacherName} proposed a rate change to ${proposedPercent}%. Review it in the admin panel.`,
+              data: { proposalId: proposal.id },
+            })
+          )
+        );
       }
     }
 

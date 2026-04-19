@@ -5,7 +5,7 @@ import CredentialsProvider from "next-auth/providers/credentials";
 import GoogleProvider from "next-auth/providers/google";
 
 import { linkRewardfulAffiliateWithTimeout } from "@/lib/auth-rewardful-link";
-import { ADMIN_EMAIL } from "@/lib/constants";
+import { isAdminEmail } from "@/lib/constants";
 import { prisma } from "@/lib/prisma";
 
 // On Vercel, VERCEL_URL is auto-set to the deployment-specific URL which
@@ -91,9 +91,13 @@ export const authOptions: AuthOptions = {
     async jwt({ token, user }) {
       if (user) {
         token.id = user.id;
-        token.isAdmin =
-          user.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
       }
+      // Re-evaluate on every JWT refresh so admin-allowlist changes
+      // (env var update + redeploy) take effect on the next request
+      // instead of requiring sign-out/in. token.email is populated by
+      // NextAuth from the initial user object and persists across
+      // refreshes.
+      token.isAdmin = isAdminEmail(token.email as string | null | undefined);
       return token;
     },
     async session({ session, token }) {

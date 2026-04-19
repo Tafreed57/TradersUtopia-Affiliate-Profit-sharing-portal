@@ -1,6 +1,8 @@
 import { getToken } from "next-auth/jwt";
 import { NextRequest, NextResponse } from "next/server";
 
+import { isAdminEmail } from "@/lib/constants";
+
 const publicPaths = ["/login", "/register", "/api/auth", "/api/webhooks"];
 
 function isPublic(pathname: string) {
@@ -20,9 +22,16 @@ export async function proxy(req: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
-  // Admin-only routes
+  // Admin-only routes. Re-evaluate from token.email + current env
+  // allowlist instead of trusting the stale token.isAdmin flag. This
+  // means adding/removing an admin email via ADMIN_EMAIL env takes
+  // effect on the next request without requiring the user to sign
+  // out and back in.
   if (pathname.startsWith("/admin") || pathname.startsWith("/api/admin")) {
-    if (!token.isAdmin) {
+    const admin = isAdminEmail(
+      typeof token.email === "string" ? token.email : null
+    );
+    if (!admin) {
       return NextResponse.redirect(new URL("/", req.url));
     }
   }

@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth";
 import { z } from "zod";
 
 import { authOptions } from "@/lib/auth-options";
-import { ADMIN_EMAIL } from "@/lib/constants";
+import { adminUserWhereOr } from "@/lib/constants";
 import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
 
@@ -111,22 +111,29 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Notify admin
-    const adminUser = await prisma.user.findFirst({
-      where: { email: { equals: ADMIN_EMAIL, mode: "insensitive" } },
-      select: { id: true },
-    });
-
-    if (adminUser) {
-      const teacherName = session.user.name || session.user.email || "A teacher";
-      const studentLabel = student.name || student.email;
-      await createNotification({
-        userId: adminUser.id,
-        type: "STUDENT_PROPOSAL_RECEIVED",
-        title: "New Student Proposal",
-        body: `${teacherName} proposed adding ${studentLabel} as a student at ${proposedCut}% cut. Review in proposals.`,
-        data: { teacherId, studentId },
+    // Notify ALL admins.
+    const adminWhere = adminUserWhereOr();
+    if (adminWhere) {
+      const adminUsers = await prisma.user.findMany({
+        where: adminWhere,
+        select: { id: true },
       });
+
+      if (adminUsers.length > 0) {
+        const teacherName = session.user.name || session.user.email || "A teacher";
+        const studentLabel = student.name || student.email;
+        await Promise.all(
+          adminUsers.map((adminUser) =>
+            createNotification({
+              userId: adminUser.id,
+              type: "STUDENT_PROPOSAL_RECEIVED",
+              title: "New Student Proposal",
+              body: `${teacherName} proposed adding ${studentLabel} as a student at ${proposedCut}% cut. Review in proposals.`,
+              data: { teacherId, studentId },
+            })
+          )
+        );
+      }
     }
 
     return NextResponse.json({ ok: true }, { status: 201 });
