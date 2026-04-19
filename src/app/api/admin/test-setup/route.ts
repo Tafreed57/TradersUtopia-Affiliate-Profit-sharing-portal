@@ -49,8 +49,13 @@ export async function POST(req: NextRequest) {
     throw err;
   }
 
+  // Normalize the email — Postgres findUnique is case-sensitive, but
+  // email providers (Gmail, etc.) and NextAuth store lowercase. Match
+  // whatever happens to be in the DB regardless of caller's casing.
+  const normalizedEmail = body.email.trim().toLowerCase();
+
   const user = await prisma.user.findUnique({
-    where: { email: body.email },
+    where: { email: normalizedEmail },
     select: {
       id: true,
       email: true,
