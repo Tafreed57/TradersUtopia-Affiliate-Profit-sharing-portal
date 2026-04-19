@@ -21,6 +21,8 @@ export async function GET() {
       email: true,
       name: true,
       commissionPercent: true,
+      initialCommissionPercent: true,
+      recurringCommissionPercent: true,
       canProposeRates: true,
       preferredCurrency: true,
       createdAt: true,
@@ -34,6 +36,8 @@ export async function GET() {
   return NextResponse.json({
     ...user,
     commissionPercent: user.commissionPercent.toNumber(),
+    initialCommissionPercent: user.initialCommissionPercent.toNumber(),
+    recurringCommissionPercent: user.recurringCommissionPercent.toNumber(),
   });
 }
 

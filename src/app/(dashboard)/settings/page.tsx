@@ -25,6 +25,8 @@ interface UserProfile {
   email: string;
   name: string | null;
   commissionPercent: number;
+  initialCommissionPercent: number;
+  recurringCommissionPercent: number;
   canProposeRates: boolean;
   preferredCurrency: string;
   createdAt: string;
@@ -105,7 +107,8 @@ export default function SettingsPage() {
                     Commission Rate
                   </Label>
                   <p className="font-medium text-primary">
-                    {profile?.commissionPercent}%
+                    Initial {profile?.initialCommissionPercent ?? 0}% /
+                    Recurring {profile?.recurringCommissionPercent ?? 0}%
                   </p>
                 </div>
                 <div>
