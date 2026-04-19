@@ -33,7 +33,13 @@ async function request<T>(
     );
   }
 
-  return res.json() as Promise<T>;
+  // 204 No Content (DELETE usually) + any genuinely empty body: don't
+  // call res.json() because it throws on empty input. Callers that
+  // expect void can still `await` this helper.
+  if (res.status === 204) return undefined as T;
+  const text = await res.text();
+  if (text.length === 0) return undefined as T;
+  return JSON.parse(text) as T;
 }
 
 // ---------------------------------------------------------------------------
@@ -126,10 +132,23 @@ export interface RewardfulReferral {
 
 export interface RewardfulCoupon {
   id: string;
-  code: string;
-  affiliate_id: string;
-  campaign_id: string;
-  created_at: string;
+  /** Discount token shown in checkout (e.g. "SPRING20"). Rewardful returns
+   *  this on /coupons responses. Some older endpoints used `code`; we
+   *  alias via helper below. */
+  token?: string;
+  code?: string;
+  affiliate_id?: string;
+  campaign_id?: string;
+  campaign?: { id: string; name?: string } | null;
+  leads?: number;
+  conversions?: number;
+  created_at?: string;
+}
+
+/** Returns the human-readable code for a coupon regardless of whether
+ *  Rewardful returned it as `token` or `code`. */
+export function couponCode(c: RewardfulCoupon): string {
+  return c.token ?? c.code ?? "";
 }
 
 export interface RewardfulCampaign {
@@ -254,6 +273,58 @@ export async function createCoupon(data: {
     method: "POST",
     body: JSON.stringify(data),
   });
+}
+
+/**
+ * List coupons for a specific affiliate. Paginates via the standard
+ * PaginatedResponse shape. Used by the admin panel to show all coupons
+ * (including any auto-created by Rewardful) + by the affiliate's own
+ * promo-codes page to display their existing codes alongside pending
+ * local requests.
+ */
+export async function listCoupons(params: {
+  affiliate_id: string;
+  page?: number;
+  limit?: number;
+}) {
+  const qs = new URLSearchParams();
+  qs.set("affiliate_id", params.affiliate_id);
+  if (params.page) qs.set("page", String(params.page));
+  if (params.limit) qs.set("limit", String(params.limit));
+  return request<PaginatedResponse<RewardfulCoupon>>(`/coupons?${qs}`);
+}
+
+/** Fetches ALL coupons for an affiliate across pages. Uses the shared
+ *  extractPagedRows helper so Rewardful's alternate resource-key shape
+ *  `{ coupons: [...], pagination }` is handled alongside the `{ data, pagination }`
+ *  shape. Matches how listAllCommissionsForAffiliate etc. parse pages. */
+export async function listAllCouponsForAffiliate(
+  affiliateId: string
+): Promise<RewardfulCoupon[]> {
+  const all: RewardfulCoupon[] = [];
+  let page = 1;
+  const limit = 100;
+  const MAX_PAGES = 50; // 5 000 coupons max — far beyond realistic
+  for (let i = 0; i < MAX_PAGES; i++) {
+    const qs = new URLSearchParams();
+    qs.set("affiliate_id", affiliateId);
+    qs.set("page", String(page));
+    qs.set("limit", String(limit));
+    const raw = await request<unknown>(`/coupons?${qs}`);
+    all.push(...extractPagedRows<RewardfulCoupon>(raw, ["coupons"]));
+    const next = extractNextPage(raw, page);
+    if (next === null) return all;
+    page = next;
+    await sleep(PAGE_DELAY_MS);
+  }
+  console.error(
+    `[rewardful] listAllCouponsForAffiliate hit MAX_PAGES=${MAX_PAGES} for ${affiliateId} — truncated.`
+  );
+  return all;
+}
+
+export async function deleteCoupon(couponId: string): Promise<void> {
+  await request<void>(`/coupons/${couponId}`, { method: "DELETE" });
 }
 
 export async function listCampaigns(params?: {

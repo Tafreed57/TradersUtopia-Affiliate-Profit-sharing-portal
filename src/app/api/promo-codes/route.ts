@@ -6,6 +6,7 @@ import { authOptions } from "@/lib/auth-options";
 import { PROMO_CODE_MAX_LENGTH, PROMO_CODE_MIN_LENGTH } from "@/lib/constants";
 import { createNotifications } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
+import * as rewardful from "@/lib/rewardful";
 
 const requestSchema = z.object({
   proposedCode: z
@@ -104,6 +105,12 @@ export async function GET() {
 
   const userId = session.user.id;
 
+  // Load user's upstream affiliate id so we can fetch existing coupons.
+  const me = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { rewardfulAffiliateId: true },
+  });
+
   // Get user's own requests
   const myRequests = await prisma.promoCodeRequest.findMany({
     where: { requesterId: userId },
@@ -135,8 +142,36 @@ export async function GET() {
         })
       : [];
 
+  // Fetch the user's active coupons upstream. Any auto-created codes
+  // show up here even if no local PromoCodeRequest row exists. Best-
+  // effort: upstream failure must not 500 the page.
+  type ActiveCoupon = {
+    id: string;
+    code: string;
+    campaignName: string | null;
+    createdAt: string | null;
+  };
+  let activeCoupons: ActiveCoupon[] = [];
+  if (me?.rewardfulAffiliateId) {
+    try {
+      const coupons = await rewardful.listAllCouponsForAffiliate(
+        me.rewardfulAffiliateId
+      );
+      activeCoupons = coupons.map((c) => ({
+        id: c.id,
+        code: rewardful.couponCode(c),
+        campaignName: c.campaign?.name ?? null,
+        createdAt: c.created_at ?? null,
+      }));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[promo-codes] upstream list failed for ${userId}:`, msg);
+    }
+  }
+
   return NextResponse.json({
     myRequests,
     pendingApprovals: studentRequests,
+    activeCoupons,
   });
 }

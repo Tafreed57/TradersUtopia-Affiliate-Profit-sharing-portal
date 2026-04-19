@@ -21,6 +21,7 @@ import { use, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
+import { AdminPromoCodes } from "@/components/admin/admin-promo-codes";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -861,6 +862,11 @@ export default function AffiliateDetailPage({
           </CardContent>
         </Card>
       )}
+
+      {/* Promo Codes — admin-only CRUD over this affiliate's upstream
+          coupons. Includes any auto-created on signup so admin can
+          delete them if unwanted. */}
+      <AdminPromoCodes affiliateId={id} />
     </div>
   );
 }

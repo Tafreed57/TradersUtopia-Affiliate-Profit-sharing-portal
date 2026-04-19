@@ -24,6 +24,7 @@ interface PromoCodeRequest {
   id: string;
   proposedCode: string;
   status: string;
+  rewardfulCouponId: string | null;
   rejectionReason: string | null;
   errorMessage: string | null;
   createdAt: string;
@@ -38,9 +39,17 @@ interface PendingApproval {
   requester: { id: string; name: string | null; email: string };
 }
 
+interface ActiveCoupon {
+  id: string;
+  code: string;
+  campaignName: string | null;
+  createdAt: string | null;
+}
+
 interface PromoCodesResponse {
   myRequests: PromoCodeRequest[];
   pendingApprovals: PendingApproval[];
+  activeCoupons: ActiveCoupon[];
 }
 
 const STATUS_CONFIG: Record<
@@ -276,7 +285,7 @@ export default function PromoCodesPage() {
                 <Skeleton key={i} className="h-12 w-full" />
               ))}
             </div>
-          ) : !data?.myRequests.length ? (
+          ) : !data?.myRequests.length && !data?.activeCoupons.length ? (
             <div className="py-8 text-center text-muted-foreground">
               <Tag className="mx-auto mb-2 h-8 w-8 opacity-40" />
               <p>No promo codes yet</p>
@@ -284,7 +293,54 @@ export default function PromoCodesPage() {
             </div>
           ) : (
             <div className="space-y-3">
-              {data.myRequests.map((request) => {
+              {/* Live coupons from upstream — shown first so users see
+                  what's actually active on their account regardless of
+                  whether there's a local request row for it. */}
+              {data?.activeCoupons.map((coupon) => (
+                <div
+                  key={`active-${coupon.id}`}
+                  className="flex items-center justify-between rounded-lg border border-border/50 px-4 py-3"
+                >
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <Tag className="h-4 w-4 text-primary" />
+                      <span className="font-mono font-bold text-lg">
+                        {coupon.code}
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {coupon.campaignName ? `${coupon.campaignName} · ` : ""}
+                      {coupon.createdAt
+                        ? `Created ${new Date(coupon.createdAt).toLocaleDateString(
+                            "en-US",
+                            { month: "short", day: "numeric", year: "numeric" }
+                          )}`
+                        : "Active"}
+                    </p>
+                  </div>
+                  <Badge
+                    variant="default"
+                    className="gap-1 bg-success/15 text-success border-success/30"
+                  >
+                    <Check className="h-3 w-3" />
+                    Active
+                  </Badge>
+                </div>
+              ))}
+              {/* De-dupe: only hide a CREATED request when the matching
+                  upstream coupon is actually in activeCoupons. If
+                  upstream fetch failed (activeCoupons empty) we fall
+                  back to showing the local CREATED request so the user
+                  isn't left with a blank list. */}
+              {data?.myRequests
+                .filter((r) => {
+                  if (r.status !== "CREATED") return true;
+                  if (!r.rewardfulCouponId) return true; // no upstream id to match
+                  return !data.activeCoupons.some(
+                    (c) => c.id === r.rewardfulCouponId
+                  );
+                })
+                .map((request) => {
                 const config = STATUS_CONFIG[request.status] ?? STATUS_CONFIG.FAILED;
                 return (
                   <div
