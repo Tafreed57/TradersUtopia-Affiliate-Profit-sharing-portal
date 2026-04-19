@@ -9,19 +9,24 @@ import { prisma } from "@/lib/prisma";
 import * as rewardful from "@/lib/rewardful";
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
+const CACHE_VERSION = 4;
 
 interface LifetimeStatsPayload {
   visitors: number;
   leads: number;
   conversions: number;
   conversionRate: number;
-  /** Rewardful total commission × affiliateRate% (CAD) */
+  /** Sum of own AFFILIATE CommissionSplit.cutCad where status in (EARNED, PAID). */
   grossEarnedCad: number;
   paidCad: number;
   unpaidCad: number;
   dueCad: number;
   coupons: Array<{ id: string; code: string }>;
   fetchedAt: string;
+}
+
+interface CacheRecord extends LifetimeStatsPayload {
+  cacheVersion: number;
 }
 
 /**
@@ -44,7 +49,6 @@ export async function GET() {
       rewardfulAffiliateId: true,
       lifetimeStatsJson: true,
       lifetimeStatsCachedAt: true,
-      commissionPercent: true,
     },
   });
   if (!user?.rewardfulAffiliateId) {
@@ -54,54 +58,59 @@ export async function GET() {
     );
   }
 
-  const affiliateRate = Number(user.commissionPercent);
-
-  // Guard against old ratio-based cache format (pre v2) — treat as stale.
-  const cachedPayload = user.lifetimeStatsJson as unknown as LifetimeStatsPayload | null;
+  const cachedRecord = user.lifetimeStatsJson as unknown as CacheRecord | null;
   const cachedFresh =
-    cachedPayload &&
+    cachedRecord &&
+    cachedRecord.cacheVersion === CACHE_VERSION &&
     user.lifetimeStatsCachedAt &&
-    Date.now() - user.lifetimeStatsCachedAt.getTime() < CACHE_TTL_MS &&
-    cachedPayload.paidCad !== undefined; // v2 format check
+    Date.now() - user.lifetimeStatsCachedAt.getTime() < CACHE_TTL_MS;
 
   if (cachedFresh) {
     return NextResponse.json({
-      ...cachedPayload,
+      ...cachedRecord,
       cachedAt: user.lifetimeStatsCachedAt,
       stale: false,
     });
   }
 
-  // Convert Rewardful cents to CAD at the affiliate's commission rate.
-  // Formula: Math.round(cents * rate / 100) / 100  →  dollars to 2dp
-  const applyRate = (cents: number) =>
-    Math.round(cents * affiliateRate / 100) / 100;
+  const affiliateSplitWhere = {
+    role: "AFFILIATE" as const,
+    recipientId: userId,
+  };
 
   try {
-    const stats = await rewardful.getAffiliateLifetimeStats(
-      user.rewardfulAffiliateId
-    );
+    const [stats, earnedAgg, paidAgg] = await Promise.all([
+      rewardful.getAffiliateLifetimeStats(user.rewardfulAffiliateId),
+      prisma.commissionSplit.aggregate({
+        where: { ...affiliateSplitWhere, status: "EARNED" },
+        _sum: { cutCad: true },
+      }),
+      prisma.commissionSplit.aggregate({
+        where: { ...affiliateSplitWhere, status: "PAID" },
+        _sum: { cutCad: true },
+      }),
+    ]);
+
+    const unpaidCad = earnedAgg._sum.cutCad?.toNumber() ?? 0;
+    const paidCad = paidAgg._sum.cutCad?.toNumber() ?? 0;
+    const grossEarnedCad = Math.round((unpaidCad + paidCad) * 100) / 100;
 
     const payload: LifetimeStatsPayload = {
       visitors: stats.visitors,
       leads: stats.leads,
       conversions: stats.conversions,
       conversionRate: stats.conversionRate,
-      grossEarnedCad: applyRate(stats.totalCommissionCents),
-      paidCad: applyRate(stats.paidCents),
-      unpaidCad: applyRate(stats.unpaidCents),
-      dueCad: applyRate(stats.dueCents),
+      grossEarnedCad,
+      paidCad,
+      unpaidCad,
+      dueCad: unpaidCad,
       coupons: stats.coupons,
       fetchedAt: stats.fetchedAt,
     };
 
-    const cacheRecord = {
+    const cacheRecord: CacheRecord = {
       ...payload,
-      unpaidCents: stats.unpaidCents,
-      paidCents: stats.paidCents,
-      dueCents: stats.dueCents,
-      totalCommissionCents: stats.totalCommissionCents,
-      cacheVersion: 3,
+      cacheVersion: CACHE_VERSION,
     };
 
     await prisma.user.update({
@@ -153,10 +162,10 @@ export async function GET() {
       );
     }
 
-    // Return stale cache if available (v2 format only).
-    if (cachedPayload?.paidCad !== undefined) {
+    // Return stale cache if available (current format only).
+    if (cachedRecord?.cacheVersion === CACHE_VERSION) {
       return NextResponse.json({
-        ...cachedPayload,
+        ...cachedRecord,
         cachedAt: user.lifetimeStatsCachedAt,
         stale: true,
       });
