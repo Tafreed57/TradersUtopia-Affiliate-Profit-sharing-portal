@@ -126,10 +126,15 @@ export async function linkRewardfulAffiliate(args: {
     console.error(
       `[linkRewardfulAffiliate] failed for ${normalizedEmail}; will retry next sign-in: ${msg}`
     );
+    // Release the lock on failure so the next poll / admin retry can re-claim
+    // immediately instead of waiting out the full LOCK_TTL_MS window. Without
+    // this, a failed attempt holds the lock for 5 min even though nothing is
+    // in flight — and the admin retry-link endpoint used to work around this
+    // by clearing the lock unconditionally, which races concurrent pollers.
     await prisma.user
       .update({
         where: { id: userId },
-        data: { linkError: msg.slice(0, 1000) },
+        data: { linkError: msg.slice(0, 1000), linkInProgressAt: null },
       })
       .catch(() => {
         // Swallow — never let link error bookkeeping fail the sign-in path.

@@ -41,14 +41,13 @@ export async function POST(
     );
   }
 
-  // Release any stale lock + clear the prior error so linkRewardfulAffiliate
-  // can re-claim. Only touches users still missing the external id; a
-  // successfully linked user keeps their timestamps.
-  await prisma.user.update({
-    where: { id: user.id },
-    data: { linkInProgressAt: null, linkError: null },
-  });
-
+  // Do NOT clear linkInProgressAt here — that would race a concurrent
+  // /api/me/backfill-status poll on the same user and let two createAffiliate
+  // calls run in parallel, producing duplicate upstream affiliates. Instead,
+  // rely on linkRewardfulAffiliate's singleflight claim: on failure the lock
+  // is now released in its catch block, so any legitimate retry can re-claim
+  // immediately; on in-flight work, the retry simply no-ops and the caller
+  // gets a 409.
   await linkRewardfulAffiliate({
     userId: user.id,
     email: user.email,
@@ -57,7 +56,11 @@ export async function POST(
 
   const after = await prisma.user.findUnique({
     where: { id: user.id },
-    select: { rewardfulAffiliateId: true, linkError: true },
+    select: {
+      rewardfulAffiliateId: true,
+      linkError: true,
+      linkInProgressAt: true,
+    },
   });
 
   if (after?.rewardfulAffiliateId) {
@@ -66,6 +69,22 @@ export async function POST(
       rewardfulAffiliateId: after.rewardfulAffiliateId,
     });
   }
+
+  const LOCK_TTL_MS = 5 * 60_000;
+  if (
+    after?.linkInProgressAt &&
+    Date.now() - after.linkInProgressAt.getTime() < LOCK_TTL_MS
+  ) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          "Another link attempt is currently in progress for this user. Try again in a moment.",
+      },
+      { status: 409 }
+    );
+  }
+
   return NextResponse.json(
     {
       ok: false,
