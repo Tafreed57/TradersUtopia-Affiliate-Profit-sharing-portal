@@ -174,27 +174,38 @@ export async function POST(req: NextRequest) {
     steps.syncPaid = { fetched: totalFetched, updated: totalUpdated };
   }
 
-  // Step 4: backdate attendance. Creates one row per day for the past N days,
-  // using today's IANA timezone since test-setup is admin-triggered and has
-  // no browser context. Skips days where a row already exists (composite
-  // unique on userId+date).
+  // Step 4: backdate attendance. One row per day for the past N days.
+  // The Attendance model has no unique on (userId, date) — the product
+  // allows multiple submissions per day — so skipDuplicates won't help.
+  // Pre-filter: query existing dates in range and insert only the missing
+  // ones. Idempotent across repeated test-setup runs.
   if (body.submitAttendanceDays > 0) {
     const today = new Date();
-    const rows: Array<{ userId: string; date: string; timezone: string }> = [];
+    const wantDates: string[] = [];
     for (let i = 0; i < body.submitAttendanceDays; i++) {
       const d = new Date(today);
       d.setDate(d.getDate() - i);
-      rows.push({
-        userId: user.id,
-        date: d.toISOString().slice(0, 10),
-        timezone: "UTC",
-      });
+      wantDates.push(d.toISOString().slice(0, 10));
     }
-    const result = await prisma.attendance.createMany({
-      data: rows,
-      skipDuplicates: true,
+
+    const existing = await prisma.attendance.findMany({
+      where: { userId: user.id, date: { in: wantDates } },
+      select: { date: true },
     });
-    steps.attendance = { daysBackdated: result.count };
+    const existingSet = new Set(existing.map((r) => r.date));
+    const rows = wantDates
+      .filter((date) => !existingSet.has(date))
+      .map((date) => ({ userId: user.id, date, timezone: "UTC" }));
+
+    let created = 0;
+    if (rows.length > 0) {
+      const result = await prisma.attendance.createMany({ data: rows });
+      created = result.count;
+    }
+    steps.attendance = {
+      daysBackdated: created,
+      alreadyExisted: wantDates.length - rows.length,
+    };
   }
 
   // Final summary — re-read user + split counts for a clean verification view.
