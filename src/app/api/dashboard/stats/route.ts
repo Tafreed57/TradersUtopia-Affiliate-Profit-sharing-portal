@@ -26,28 +26,24 @@ export async function GET() {
   const affiliateSplitWhere = { role: "AFFILIATE" as const, recipientId: userId };
 
   const [
-    lifetimeStatsUser,
-    totalEarnedFallback,
-    thisMonthEarned,
+    totalEarnedAgg,
+    thisMonthEarnedAgg,
     commissionCount,
     attendanceThisMonth,
     recentSplits,
   ] = await Promise.all([
-    prisma.user.findUnique({
-      where: { id: userId },
-      select: { lifetimeStatsJson: true },
-    }),
-
-    // Fallback when Rewardful cache is cold.
     prisma.commissionSplit.aggregate({
-      where: { ...affiliateSplitWhere, status: "EARNED" },
+      where: {
+        ...affiliateSplitWhere,
+        status: { in: ["EARNED", "PAID"] },
+      },
       _sum: { cutCad: true },
     }),
 
     prisma.commissionSplit.aggregate({
       where: {
         ...affiliateSplitWhere,
-        status: "EARNED",
+        status: { in: ["EARNED", "PAID"] },
         event: { conversionDate: { gte: monthStart, lte: monthEnd } },
       },
       _sum: { cutCad: true },
@@ -80,20 +76,10 @@ export async function GET() {
     }),
   ]);
 
-  const lifetimeStats = lifetimeStatsUser?.lifetimeStatsJson as
-    | { grossEarnedCad?: number }
-    | null
-    | undefined;
-  const localFallback = totalEarnedFallback._sum.cutCad?.toNumber() ?? 0;
-
-  // When Rewardful cache is warm, totalEarned is in CAD (from commission_stats).
-  // When cold, falls back to DB sum of cutCad (stored currency).
-  const hasRewardfulCache = lifetimeStats?.grossEarnedCad != null;
-
   return NextResponse.json({
-    totalEarned: lifetimeStats?.grossEarnedCad ?? localFallback,
-    totalEarnedCurrency: hasRewardfulCache ? "CAD" : "USD",
-    thisMonthEarned: thisMonthEarned._sum.cutCad?.toNumber() ?? 0,
+    totalEarned: totalEarnedAgg._sum.cutCad?.toNumber() ?? 0,
+    totalEarnedCurrency: "CAD",
+    thisMonthEarned: thisMonthEarnedAgg._sum.cutCad?.toNumber() ?? 0,
     commissionCount,
     attendanceDaysThisMonth: attendanceThisMonth.length,
     recentCommissions: recentSplits.map((s) => ({
