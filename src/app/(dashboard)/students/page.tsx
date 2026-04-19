@@ -187,7 +187,7 @@ function StudentDetailSheet({
                 <p className="text-xs text-muted-foreground">Unpaid</p>
               </div>
               <div>
-                <p className="font-semibold text-muted-foreground">{format(totalPaid)}</p>
+                <p className="font-semibold text-muted-foreground">{format(totalPaid, "CAD")}</p>
                 <p className="text-xs text-muted-foreground">Paid</p>
               </div>
               <div>
@@ -685,7 +685,7 @@ function GrandTotalSummary({
               {format(totals.totalUnpaidCad, "CAD")}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Across all students · {format(totals.totalPaidCad)} lifetime paid
+              Across all students · {format(totals.totalPaidCad, "CAD")} lifetime paid
             </p>
           </div>
           <Button

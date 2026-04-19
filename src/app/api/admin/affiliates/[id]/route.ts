@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { authOptions } from "@/lib/auth-options";
 import { TEACHER_CUT_WARN_THRESHOLD } from "@/lib/constants";
+import { getCadToUsdRate } from "@/lib/currency";
 import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
 import { runRecalcPending } from "@/lib/recalc-pending";
@@ -49,13 +50,22 @@ export async function GET(
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
+  const affiliateSplitWhere = { role: "AFFILIATE" as const, recipientId: id };
+  const earnedOrPaidWhere = {
+    ...affiliateSplitWhere,
+    status: { in: ["EARNED" as const, "PAID" as const] },
+  };
+
   const [
     teachers,
     students,
     recentCommissions,
     rateHistory,
-    totalEarned,
+    totalEarnedUsdAgg,
+    totalEarnedCadAgg,
+    totalEarnedCount,
     pendingRateNotSetCount,
+    rate,
   ] = await Promise.all([
       // Teachers of this affiliate
       prisma.teacherStudent.findMany({
@@ -101,12 +111,17 @@ export async function GET(
         },
       }),
 
-      // Total earned
+      // Total earned — per-currency so we can normalize USD→CAD server-side.
+      // cutCad stores native event currency; see anti-patterns/column-name-as-contract.
       prisma.commissionSplit.aggregate({
-        where: { role: "AFFILIATE", recipientId: id, status: "EARNED" },
+        where: { ...earnedOrPaidWhere, event: { currency: "USD" } },
         _sum: { cutCad: true },
-        _count: true,
       }),
+      prisma.commissionSplit.aggregate({
+        where: { ...earnedOrPaidWhere, event: { currency: "CAD" } },
+        _sum: { cutCad: true },
+      }),
+      prisma.commissionSplit.count({ where: earnedOrPaidWhere }),
 
       // Pending commissions parked by the rate-gate (forfeitureReason='rate_not_set')
       prisma.commissionSplit.count({
@@ -117,7 +132,15 @@ export async function GET(
           forfeitureReason: "rate_not_set",
         },
       }),
+
+      getCadToUsdRate(),
     ]);
+
+  const cadToUsd = rate?.rate.toNumber() ?? 0.74;
+  const totalEarnedUsd = totalEarnedUsdAgg._sum.cutCad?.toNumber() ?? 0;
+  const totalEarnedCadNative = totalEarnedCadAgg._sum.cutCad?.toNumber() ?? 0;
+  const totalEarnedCad =
+    Math.round((totalEarnedCadNative + totalEarnedUsd / cadToUsd) * 100) / 100;
 
   // Calculate total allocation %. With dual rates, surface both so the UI
   // can show which configuration (if either) exceeds the threshold. The
@@ -169,8 +192,8 @@ export async function GET(
       changedBy: r.changedBy.name ?? r.changedBy.email,
       createdAt: r.createdAt,
     })),
-    totalEarnedCad: totalEarned._sum.cutCad?.toNumber() ?? 0,
-    totalConversions: totalEarned._count,
+    totalEarnedCad,
+    totalConversions: totalEarnedCount,
     totalAllocated,
     allocationWarning: totalAllocated > TEACHER_CUT_WARN_THRESHOLD,
     pendingRateNotSetCount,

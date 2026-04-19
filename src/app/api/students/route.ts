@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import Decimal from "decimal.js";
 
 import { authOptions } from "@/lib/auth-options";
+import { getCadToUsdRate } from "@/lib/currency";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -95,18 +96,26 @@ export async function GET() {
   // Prisma's groupBy can't traverse relations, so pull splits + event.affiliateId
   // and aggregate in-memory — at our scale (hundreds of splits at most per
   // teacher) the round-trip overhead of a single findMany is negligible.
-  const teacherSplits = await prisma.commissionSplit.findMany({
-    where: {
-      role: "TEACHER",
-      recipientId: teacherId,
-      event: { affiliateId: { in: allStudentIds } },
-    },
-    select: {
-      cutCad: true,
-      status: true,
-      event: { select: { affiliateId: true } },
-    },
-  });
+  // `cutCad` stores native event currency; normalize USD→CAD using the cached
+  // exchange rate so the downstream per-student totals are canonical CAD.
+  // See anti-patterns/column-name-as-contract.
+  const [teacherSplits, rate] = await Promise.all([
+    prisma.commissionSplit.findMany({
+      where: {
+        role: "TEACHER",
+        recipientId: teacherId,
+        event: { affiliateId: { in: allStudentIds } },
+      },
+      select: {
+        cutCad: true,
+        status: true,
+        event: { select: { affiliateId: true, currency: true } },
+      },
+    }),
+    getCadToUsdRate(),
+  ]);
+
+  const cadToUsd = new Decimal(rate?.rate.toString() ?? "0.74");
 
   // Decimal arithmetic for sums — JS float addition on per-row toNumber()
   // can drift (0.1 + 0.2 = 0.30000000000000004). Accumulate in Decimal, emit
@@ -126,12 +135,13 @@ export async function GET() {
       paidCount: 0,
       earnedCount: 0,
     };
-    const amount = new Decimal(s.cutCad.toString());
+    const native = new Decimal(s.cutCad.toString());
+    const cad = s.event.currency === "CAD" ? native : native.div(cadToUsd);
     if (s.status === "PAID") {
-      prev.paid = prev.paid.add(amount);
+      prev.paid = prev.paid.add(cad);
       prev.paidCount += 1;
     } else if (s.status === "EARNED") {
-      prev.unpaid = prev.unpaid.add(amount);
+      prev.unpaid = prev.unpaid.add(cad);
       prev.earnedCount += 1;
     }
     summaryByStudent.set(sid, prev);

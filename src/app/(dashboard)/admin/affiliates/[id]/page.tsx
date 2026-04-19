@@ -473,7 +473,7 @@ export default function AffiliateDetailPage({
                 </p>
               </div>
               <span className="text-lg font-bold text-success">
-                {format(data.totalEarnedCad)}
+                {format(data.totalEarnedCad, "CAD")}
               </span>
             </div>
 
