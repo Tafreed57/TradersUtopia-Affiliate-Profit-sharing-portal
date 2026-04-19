@@ -242,6 +242,8 @@ export async function POST(req: NextRequest) {
     }
 
     // Allocation warning — non-blocking, returned to UI for banner.
+    // Use the student's higher of (initial, recurring) — any one conversion
+    // type's rate + teacher cuts must leave room for CEO.
     const [allTeachers, studentOwn] = await Promise.all([
       prisma.teacherStudent.findMany({
         where: { studentId, status: "ACTIVE" },
@@ -249,11 +251,18 @@ export async function POST(req: NextRequest) {
       }),
       prisma.user.findUnique({
         where: { id: studentId },
-        select: { commissionPercent: true },
+        select: {
+          initialCommissionPercent: true,
+          recurringCommissionPercent: true,
+        },
       }),
     ]);
+    const studentMaxRate = Math.max(
+      studentOwn?.initialCommissionPercent.toNumber() ?? 0,
+      studentOwn?.recurringCommissionPercent.toNumber() ?? 0
+    );
     const totalAllocated =
-      (studentOwn?.commissionPercent.toNumber() ?? 0) +
+      studentMaxRate +
       allTeachers.reduce((sum, t) => sum + t.teacherCut.toNumber(), 0);
     const allocationWarning = totalAllocated > TEACHER_CUT_WARN_THRESHOLD;
 
