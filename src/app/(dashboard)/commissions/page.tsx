@@ -33,7 +33,6 @@ import { useCurrency } from "@/providers/currency-provider";
 
 interface Commission {
   id: string;
-  affiliateCutPercent: string;
   affiliateCut: string;
   currency: "USD" | "CAD";
   status: "EARNED" | "FORFEITED" | "PENDING" | "PAID" | "VOIDED";

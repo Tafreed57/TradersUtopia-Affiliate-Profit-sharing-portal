@@ -52,7 +52,10 @@ export async function GET(req: NextRequest) {
       take: limit,
       select: {
         id: true,
-        cutPercent: true,
+        // cutPercent intentionally omitted — do not expose the applied
+        // rate on the affiliate-facing list. Admin can change rates over
+        // time and we don't want affiliates to detect changes by
+        // inspecting their own history.
         cutAmount: true,
         status: true,
         forfeitedToCeo: true,
@@ -66,7 +69,6 @@ export async function GET(req: NextRequest) {
 
   const data = splits.map((s) => ({
     id: s.id,
-    affiliateCutPercent: s.cutPercent,
     affiliateCut: s.cutAmount,
     // Upper-case defensive read: any legacy row with lowercase
     // "usd"/"cad" gets normalized before the FE formatter sees it.
