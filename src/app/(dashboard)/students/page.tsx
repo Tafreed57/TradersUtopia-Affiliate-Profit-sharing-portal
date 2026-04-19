@@ -135,21 +135,27 @@ interface StudentDetailResponse {
 
 function StudentDetailSheet({
   student,
+  viewerId,
   onClose,
   format,
 }: {
   student: Student | null;
+  viewerId: string | undefined;
   onClose: () => void;
   format: (amount: number, inputCurrency?: "CAD" | "USD") => string;
 }) {
+  // Viewer-scoped key: /api/students/:id/detail returns a response that
+  // depends on session.user.id (it shows THE VIEWER's teacher cut, not an
+  // absolute cached view of the student). Two viewers sharing a browser
+  // would serve each other's stale data without the viewer key.
   const { data, isLoading } = useQuery<StudentDetailResponse>({
-    queryKey: ["student-detail", student?.id],
+    queryKey: ["student-detail", viewerId, student?.id],
     queryFn: async () => {
       const res = await fetch(`/api/students/${student!.id}/detail`);
       if (!res.ok) throw new Error("Failed to fetch");
       return res.json();
     },
-    enabled: !!student,
+    enabled: !!student && !!viewerId,
   });
 
   const totalDueNow = data?.teacherUnpaidCad ?? 0;
@@ -575,6 +581,7 @@ export default function StudentsPage() {
     <div className="space-y-6">
       <StudentDetailSheet
         student={selectedStudent}
+        viewerId={userId}
         onClose={() => setSelectedStudent(null)}
         format={format}
       />

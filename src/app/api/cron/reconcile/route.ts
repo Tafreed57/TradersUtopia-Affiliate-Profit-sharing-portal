@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { processConversion } from "@/lib/commission-engine";
 import { prisma } from "@/lib/prisma";
+import { runRecalcPending } from "@/lib/recalc-pending";
 import * as rewardful from "@/lib/rewardful";
 import { handleCommissionPaid, handleCommissionVoided } from "@/lib/payment-service";
 
@@ -119,12 +120,74 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  // Nightly classification repair. Recomputes `isRecurring` for every event
+  // based on chronological order within its referralId. Catches the out-of-
+  // order webhook race where a newer conversion arrived first and was
+  // tagged initial incorrectly. Each event whose flag flips triggers a
+  // re-price for that affiliate so split cutCad + event ceoCutCad track
+  // the corrected classification. Idempotent — `isRecurring = (rn > 1)`
+  // no-ops when already correct.
+  //
+  // Events with any PAID or VOIDED split are EXCLUDED from the flip:
+  // re-pricing would skip those splits (PAID is immutable) and leave cutCad
+  // inconsistent with the corrected classification. Freezing classification
+  // on terminal splits matches the "paid is frozen" dogma — the affiliate
+  // was paid what they were paid. Residual cosmetic mismatch only.
+  let classificationFlipped = 0;
+  let classificationRepriced = 0;
+  try {
+    const affected = await prisma.$queryRaw<
+      Array<{ id: string; affiliateId: string }>
+    >`
+      WITH ranked AS (
+        SELECT id,
+          ROW_NUMBER() OVER (
+            PARTITION BY "rewardfulReferralId"
+            ORDER BY "conversionDate" ASC, "createdAt" ASC, id ASC
+          ) AS rn
+        FROM "CommissionEvent"
+        WHERE "rewardfulReferralId" IS NOT NULL
+      )
+      UPDATE "CommissionEvent" e
+      SET "isRecurring" = (r.rn > 1)
+      FROM ranked r
+      WHERE e.id = r.id
+        AND e."isRecurring" <> (r.rn > 1)
+        AND NOT EXISTS (
+          SELECT 1 FROM "CommissionSplit" cs
+          WHERE cs."eventId" = e.id
+            AND cs.status IN ('PAID', 'VOIDED')
+        )
+      RETURNING e.id, e."affiliateId"
+    `;
+    classificationFlipped = affected.length;
+
+    const affectedAffiliateIds = [...new Set(affected.map((a) => a.affiliateId))];
+    for (const affId of affectedAffiliateIds) {
+      try {
+        const result = await runRecalcPending(affId, "cron");
+        if (result.kind === "ok") classificationRepriced += result.updated;
+      } catch (repriceErr) {
+        const msg =
+          repriceErr instanceof Error ? repriceErr.message : String(repriceErr);
+        console.error(`[reconcile-classify] re-price failed ${affId}: ${msg}`);
+      }
+    }
+  } catch (classifyErr) {
+    const msg =
+      classifyErr instanceof Error ? classifyErr.message : String(classifyErr);
+    console.error(`[reconcile-classify] SQL failed: ${msg}`);
+    errors++;
+  }
+
   return NextResponse.json({
     ok: true,
     affiliates: affiliates.length,
     created: totalCreated,
     paidSynced: totalPaidSynced,
     voidedSynced: totalVoidedSynced,
+    classificationFlipped,
+    classificationRepriced,
     errors,
   });
 }
