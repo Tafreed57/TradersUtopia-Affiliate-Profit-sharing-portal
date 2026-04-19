@@ -270,7 +270,6 @@ export default function CommissionsPage() {
                   <TableRow>
                     <TableHead>Date</TableHead>
                     <TableHead>Your Cut</TableHead>
-                    <TableHead>Rate</TableHead>
                     <TableHead>Status</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -294,9 +293,6 @@ export default function CommissionsPage() {
                           >
                             {format(Number(commission.affiliateCut), commission.currency)}
                           </span>
-                        </TableCell>
-                        <TableCell className="text-muted-foreground">
-                          {Number(commission.affiliateCutPercent)}%
                         </TableCell>
                         <TableCell>
                           <Badge
