@@ -99,11 +99,12 @@ export async function linkRewardfulAffiliate(args: {
     const trimmed = (name || "").trim();
     const parts = trimmed ? trimmed.split(/\s+/) : [];
     const firstName = parts[0] || email.split("@")[0] || "Affiliate";
-    // Rewardful rejects last_name:"" with a 422 even though the field is
-    // optional when omitted entirely. Pass undefined (omitted) when the
-    // user has no second name part (e.g. Google profiles with family-name
-    // blanked).
-    const lastName = parts.slice(1).join(" ") || undefined;
+    // Rewardful's presence validator fires on both last_name:"" AND a
+    // missing last_name key — their docs call it optional but the API
+    // rejects with "Last name can't be blank" either way. Fall back to
+    // a single-char placeholder so single-name Google profiles can still
+    // be created; admin can correct it upstream if it matters.
+    const lastName = parts.slice(1).join(" ") || "-";
 
     const created = await rewardful.createAffiliate({
       email,

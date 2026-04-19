@@ -164,8 +164,18 @@ export async function GET() {
         createdAt: c.created_at ?? null,
       }));
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[promo-codes] upstream list failed for ${userId}:`, msg);
+      // 404: stored rewardfulAffiliateId no longer exists upstream (test
+      // fixture, cleared campaign, manual deletion). Same handling as
+      // the admin route — treat as "no coupons" without logging noise.
+      if (
+        err instanceof rewardful.RewardfulApiError &&
+        err.status === 404
+      ) {
+        // leave activeCoupons as []
+      } else {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[promo-codes] upstream list failed for ${userId}:`, msg);
+      }
     }
   }
 
