@@ -223,7 +223,26 @@ export async function GET(req: NextRequest) {
         const newCeoCut = fullAmount.sub(newAffiliateCut).sub(teacherTotal);
 
         try {
-          const [splitRes] = await prisma.$transaction([
+          // Two parallel update paths, atomic within one array $transaction:
+          //
+          // Path A (EARNED/PENDING): full re-price. New cutCad reflects the
+          // corrected classification × current rate. Event's ceoCutCad
+          // recomputed to balance.
+          //
+          // Path B (FORFEITED + attendance reason): flag-only. Affiliate
+          // earned 0, CEO absorbed. But the stored cutPercent is what
+          // reevaluateCommission will use later if the affiliate submits
+          // attendance — so if classification is wrong, the eventual recovery
+          // pays the wrong rate. Update cutPercent to track the corrected
+          // classification; leave cutCad at 0 and event.ceoCutCad unchanged
+          // (FORFEITED's CEO absorb is rate-independent).
+          //
+          // Event update (path C) gates on EITHER path having landed. The
+          // nested-predicate requires an AFFILIATE split with the new
+          // cutPercent AND in an eligible status (EARNED/PENDING/recoverable
+          // FORFEITED). If both paths no-op (e.g. affiliate split is PAID),
+          // event update no-ops too — classification locks with the frozen cutCad.
+          const [earnedRes, forfeitedRes] = await prisma.$transaction([
             prisma.commissionSplit.updateMany({
               where: {
                 eventId: event.id,
@@ -235,6 +254,21 @@ export async function GET(req: NextRequest) {
                 cutCad: newAffiliateCut.toDecimalPlaces(2).toNumber(),
               },
             }),
+            prisma.commissionSplit.updateMany({
+              where: {
+                eventId: event.id,
+                role: "AFFILIATE",
+                status: "FORFEITED",
+                forfeitureReason: "No attendance submitted for conversion date",
+              },
+              data: {
+                cutPercent: rateNum,
+              },
+            }),
+            // Two event-update paths; only one can fire because an AFFILIATE
+            // split is in exactly ONE status at tx-snapshot. The gates
+            // ensure the corresponding split-update actually landed before
+            // flipping the flag.
             prisma.commissionEvent.updateMany({
               where: {
                 id: event.id,
@@ -251,10 +285,27 @@ export async function GET(req: NextRequest) {
                 ceoCutCad: newCeoCut.toDecimalPlaces(2).toNumber(),
               },
             }),
+            prisma.commissionEvent.updateMany({
+              where: {
+                id: event.id,
+                splits: {
+                  some: {
+                    role: "AFFILIATE",
+                    status: "FORFEITED",
+                    forfeitureReason:
+                      "No attendance submitted for conversion date",
+                    cutPercent: rateNum,
+                  },
+                },
+              },
+              data: { isRecurring: newIsRecurring },
+            }),
           ]);
-          if (splitRes.count > 0) {
+
+          const totalFlipped = earnedRes.count + forfeitedRes.count;
+          if (totalFlipped > 0) {
             classificationFlipped += 1;
-            classificationRepriced += splitRes.count;
+            classificationRepriced += earnedRes.count;
           }
         } catch (txErr) {
           const msg = txErr instanceof Error ? txErr.message : String(txErr);
