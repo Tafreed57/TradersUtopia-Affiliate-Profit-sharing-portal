@@ -7,10 +7,13 @@ import { runRecalcPending } from "@/lib/recalc-pending";
 /**
  * POST /api/admin/affiliates/:id/recalc-pending
  *
- * Recalculates all PENDING commissions with forfeitureReason='rate_not_set'
- * using the affiliate's CURRENT commissionPercent. Re-checks attendance per
- * commission. Logic lives in src/lib/recalc-pending.ts (shared with the
- * PATCH route's auto-trigger on first rate set).
+ * Manual "re-run" of the unpaid-re-price. Normally fires automatically on
+ * every rate change via PATCH; admin can invoke it directly to re-apply
+ * classifications after a migration fixup or investigate drift.
+ *
+ * Scope matches runRecalcPending: re-prices all EARNED + PENDING AFFILIATE
+ * splits using the affiliate's current initial/recurring rates. PAID +
+ * VOIDED + FORFEITED are untouched.
  */
 export async function POST(
   _req: NextRequest,
@@ -29,20 +32,10 @@ export async function POST(
     if (result.kind === "not_found") {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
-    if (result.kind === "rate_zero") {
-      return NextResponse.json(
-        {
-          error:
-            "Affiliate rate is still 0. Set a rate before running recalculation.",
-        },
-        { status: 409 }
-      );
-    }
 
     return NextResponse.json({
       updated: result.updated,
       teacherRowsAffected: result.teacherRowsAffected,
-      newRate: result.newRate,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

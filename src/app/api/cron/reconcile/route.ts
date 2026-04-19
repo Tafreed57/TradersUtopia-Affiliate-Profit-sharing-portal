@@ -47,6 +47,14 @@ export async function GET(req: NextRequest) {
         aff.rewardfulAffiliateId!
       );
 
+      // Sort ascending — see backfill-service.ts for the classification
+      // ordering rationale.
+      commissions.sort((a, b) => {
+        const aDate = a.sale?.charged_at ?? a.created_at ?? "";
+        const bDate = b.sale?.charged_at ?? b.created_at ?? "";
+        return aDate < bDate ? -1 : aDate > bDate ? 1 : 0;
+      });
+
       for (const commission of commissions) {
         // Check if the event exists, and if any AFFILIATE split reflects
         // current state (for the paid/voided sync check).
@@ -70,7 +78,7 @@ export async function GET(req: NextRequest) {
           const result = await processConversion(
             {
               rewardfulCommissionId: commission.id,
-              rewardfulReferralId: commission.referral?.id,
+              rewardfulReferralId: commission.sale?.referral?.id ?? commission.referral?.id,
               affiliateRewardfulId: aff.rewardfulAffiliateId!,
               amount: amountRaw / 100,
               currency: commission.sale.currency ?? commission.currency ?? "USD",

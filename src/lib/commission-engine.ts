@@ -99,11 +99,37 @@ export async function processConversion(
   const currency = conversion.currency ?? "USD";
   const conversionDate = new Date(conversion.conversionDate);
 
+  // 2a. Classify initial vs recurring by conversionDate, not insertion order.
+  // Rewardful list endpoints can return newest-first; a naive "any prior event
+  // exists" count would misclassify an earlier conversion that happens to
+  // arrive second. Using `conversionDate: { lt: this.conversionDate }` makes
+  // the classification chronologically stable regardless of delivery order
+  // for events that arrive AFTER their own older siblings. For the opposite
+  // case (older event arrives first, then newer), the older one correctly
+  // gets isRecurring=false (initial) and the newer one gets true (recurring).
+  // A nightly reconcile that re-runs the ROW_NUMBER classification is the
+  // safety net for the residual edge case where out-of-order arrival puts
+  // the newer one FIRST (newer gets wrongly classified initial until repair).
+  // All callers of processConversion in this repo now sort inputs by
+  // conversionDate ascending to minimize this risk.
+  const isRecurring = conversion.rewardfulReferralId
+    ? (await prisma.commissionEvent.count({
+        where: {
+          rewardfulReferralId: conversion.rewardfulReferralId,
+          conversionDate: { lt: conversionDate },
+          NOT: { rewardfulCommissionId: conversion.rewardfulCommissionId },
+        },
+      })) > 0
+    : false;
+
   // 3. Get teacher chain (active teachers at depth 1 and 2).
   const teacherChain = await getTeacherChain(affiliate.id);
 
-  // 4. Calculate splits.
-  const affiliatePercent = new Decimal(affiliate.commissionPercent.toString());
+  // 4. Calculate splits. Rate depends on classification: initial vs recurring.
+  const applicableRate = isRecurring
+    ? affiliate.recurringCommissionPercent
+    : affiliate.initialCommissionPercent;
+  const affiliatePercent = new Decimal(applicableRate.toString());
   const affiliateCut = fullAmount.mul(affiliatePercent).div(100);
 
   const teacherCuts = teacherChain.map((t) => ({
@@ -217,6 +243,7 @@ export async function processConversion(
         currency,
         fullAmountCad: fullAmount.toDecimalPlaces(2).toNumber(),
         ceoCutCad: finalCeoCut.toDecimalPlaces(2).toNumber(),
+        isRecurring,
         rewardfulData: conversion.rawPayload as Prisma.InputJsonValue,
         splits: { create: splitData },
       },

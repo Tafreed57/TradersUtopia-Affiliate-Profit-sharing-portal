@@ -95,6 +95,12 @@ export interface RewardfulCommission {
       email: string;
       name: string;
     };
+    // Rewardful nests referral INSIDE sale (despite also exposing a
+    // top-level `referral` field on some payload variants). The nested one
+    // is the ground truth for webhook payloads.
+    referral?: {
+      id: string;
+    };
   };
   referral?: {
     id: string;

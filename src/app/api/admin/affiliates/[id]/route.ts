@@ -35,6 +35,8 @@ export async function GET(
       image: true,
       status: true,
       commissionPercent: true,
+      initialCommissionPercent: true,
+      recurringCommissionPercent: true,
       canProposeRates: true,
       canBeTeacher: true,
       rewardfulAffiliateId: true,
@@ -117,21 +119,27 @@ export async function GET(
       }),
     ]);
 
-  // Calculate total allocation %
-  const affiliatePercent = user.commissionPercent.toNumber();
+  // Calculate total allocation %. With dual rates, surface both so the UI
+  // can show which configuration (if either) exceeds the threshold. The
+  // higher of the two drives the allocationWarning flag.
+  const initialPercent = user.initialCommissionPercent.toNumber();
+  const recurringPercent = user.recurringCommissionPercent.toNumber();
   const teacherCuts = teachers.map((t) => ({
     teacherId: t.teacherId,
     teacherName: t.teacher.name ?? t.teacher.email,
     cutPercent: t.teacherCut.toNumber(),
     depth: t.depth,
   }));
-  const totalAllocated =
-    affiliatePercent +
-    teacherCuts.reduce((sum, t) => sum + t.cutPercent, 0);
+  const teacherSum = teacherCuts.reduce((sum, t) => sum + t.cutPercent, 0);
+  const totalInitialAllocated = initialPercent + teacherSum;
+  const totalRecurringAllocated = recurringPercent + teacherSum;
+  const totalAllocated = Math.max(totalInitialAllocated, totalRecurringAllocated);
 
   return NextResponse.json({
     ...user,
-    commissionPercent: affiliatePercent,
+    initialCommissionPercent: initialPercent,
+    recurringCommissionPercent: recurringPercent,
+    commissionPercent: user.commissionPercent.toNumber(),
     teachers: teacherCuts,
     students: students.map((s) => ({
       relationshipId: s.id,
@@ -169,7 +177,8 @@ export async function GET(
 }
 
 const updateSchema = z.object({
-  commissionPercent: z.number().min(0).max(100).optional(),
+  initialCommissionPercent: z.number().min(0).max(100).optional(),
+  recurringCommissionPercent: z.number().min(0).max(100).optional(),
   canProposeRates: z.boolean().optional(),
   canBeTeacher: z.boolean().optional(),
   status: z.enum(["ACTIVE", "DEACTIVATED"]).optional(),
@@ -197,12 +206,22 @@ export async function PATCH(
 
   try {
     const body = await req.json();
-    const { commissionPercent, canProposeRates, canBeTeacher, status, reason } =
-      updateSchema.parse(body);
+    const {
+      initialCommissionPercent,
+      recurringCommissionPercent,
+      canProposeRates,
+      canBeTeacher,
+      status,
+      reason,
+    } = updateSchema.parse(body);
 
     const currentUser = await prisma.user.findUnique({
       where: { id },
-      select: { commissionPercent: true, status: true },
+      select: {
+        initialCommissionPercent: true,
+        recurringCommissionPercent: true,
+        status: true,
+      },
     });
 
     if (!currentUser) {
@@ -210,28 +229,52 @@ export async function PATCH(
     }
 
     const updateData: Record<string, unknown> = {};
+    let rateChanged = false;
 
-    // Commission rate change
     if (
-      commissionPercent !== undefined &&
-      commissionPercent !== currentUser.commissionPercent.toNumber()
+      initialCommissionPercent !== undefined &&
+      initialCommissionPercent !==
+        currentUser.initialCommissionPercent.toNumber()
     ) {
-      updateData.commissionPercent = commissionPercent;
-      // Bust cached lifetime-stats — amounts are rate-scaled, stale on rate change.
-      updateData.lifetimeStatsCachedAt = null;
-      updateData.lifetimeStatsJson = Prisma.JsonNull;
-
-      // Create audit log (internal record only — affiliates are NOT notified
-      // of rate changes by design; admin adjusts rates silently).
+      updateData.initialCommissionPercent = initialCommissionPercent;
+      rateChanged = true;
       await prisma.commissionRateAudit.create({
         data: {
           affiliateId: id,
           changedById: session.user.id,
-          previousPercent: currentUser.commissionPercent,
-          newPercent: commissionPercent,
+          previousPercent: currentUser.initialCommissionPercent,
+          newPercent: initialCommissionPercent,
+          field: "INITIAL",
           reason: reason ?? null,
         },
       });
+    }
+
+    if (
+      recurringCommissionPercent !== undefined &&
+      recurringCommissionPercent !==
+        currentUser.recurringCommissionPercent.toNumber()
+    ) {
+      updateData.recurringCommissionPercent = recurringCommissionPercent;
+      rateChanged = true;
+      await prisma.commissionRateAudit.create({
+        data: {
+          affiliateId: id,
+          changedById: session.user.id,
+          previousPercent: currentUser.recurringCommissionPercent,
+          newPercent: recurringCommissionPercent,
+          field: "RECURRING",
+          reason: reason ?? null,
+        },
+      });
+    }
+
+    if (rateChanged) {
+      // Eager cache bust — the re-price below clears this again, but the
+      // eager write covers the narrow window between the rate write and the
+      // re-price in case a concurrent read hits cache with stale values.
+      updateData.lifetimeStatsCachedAt = null;
+      updateData.lifetimeStatsJson = Prisma.JsonNull;
     }
 
     if (canProposeRates !== undefined) {
@@ -272,35 +315,32 @@ export async function PATCH(
       return NextResponse.json({ error: "No changes" }, { status: 400 });
     }
 
-    const previousRate = currentUser.commissionPercent.toNumber();
-
     const updated = await prisma.user.update({
       where: { id },
       data: updateData,
       select: {
         id: true,
-        commissionPercent: true,
+        initialCommissionPercent: true,
+        recurringCommissionPercent: true,
         canProposeRates: true,
+        canBeTeacher: true,
         status: true,
       },
     });
 
-    // Auto-trigger recalc when rate moves from 0 → positive for the first time.
-    // Rate changes from positive → positive only apply to new commissions.
-    // Isolated try/catch: a recalc failure must NOT 500 a successful rate update.
-    let autoRecalc: { updated: number; teacherRowsAffected: number; newRate: number } | null = null;
-    if (
-      commissionPercent !== undefined &&
-      previousRate === 0 &&
-      commissionPercent > 0
-    ) {
+    // Auto re-price on ANY rate change. Re-prices all EARNED + PENDING
+    // AFFILIATE splits using each event's isRecurring + the updated rates.
+    // PAID + VOIDED + FORFEITED untouched. Isolated try/catch: a re-price
+    // failure must NOT 500 a successful rate save — admin can invoke the
+    // manual POST /recalc-pending endpoint to retry.
+    let autoRecalc: { updated: number; teacherRowsAffected: number } | null = null;
+    if (rateChanged) {
       try {
         const recalcResult = await runRecalcPending(id, session.user.id);
         if (recalcResult.kind === "ok" && recalcResult.updated > 0) {
           autoRecalc = {
             updated: recalcResult.updated,
             teacherRowsAffected: recalcResult.teacherRowsAffected,
-            newRate: recalcResult.newRate,
           };
         }
       } catch (recalcErr) {
@@ -311,7 +351,9 @@ export async function PATCH(
 
     return NextResponse.json({
       ...updated,
-      commissionPercent: updated.commissionPercent.toNumber(),
+      initialCommissionPercent: updated.initialCommissionPercent.toNumber(),
+      recurringCommissionPercent:
+        updated.recurringCommissionPercent.toNumber(),
       ...(autoRecalc ? { autoRecalc } : {}),
     });
   } catch (error) {

@@ -43,6 +43,8 @@ interface Affiliate {
   image: string | null;
   status: string;
   commissionPercent: number;
+  initialCommissionPercent: number;
+  recurringCommissionPercent: number;
   canProposeRates: boolean;
   rewardfulAffiliateId: string | null;
   linkError: string | null;
@@ -357,7 +359,7 @@ export default function AdminPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Affiliate</TableHead>
-                    <TableHead>Rate</TableHead>
+                    <TableHead>Rates (init / rec)</TableHead>
                     <TableHead>Commissions</TableHead>
                     <TableHead>Students</TableHead>
                     <TableHead>Status</TableHead>
@@ -395,8 +397,11 @@ export default function AdminPage() {
                           </div>
                         </div>
                       </TableCell>
-                      <TableCell className="font-mono">
-                        {affiliate.commissionPercent}%
+                      <TableCell className="font-mono text-xs">
+                        <div>{affiliate.initialCommissionPercent}% init</div>
+                        <div className="text-muted-foreground">
+                          {affiliate.recurringCommissionPercent}% rec
+                        </div>
                       </TableCell>
                       <TableCell>{affiliate.commissionsCount}</TableCell>
                       <TableCell>{affiliate.studentsCount}</TableCell>

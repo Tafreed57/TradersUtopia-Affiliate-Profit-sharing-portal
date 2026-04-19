@@ -166,8 +166,15 @@ function extractConversion(
     getString(payload, "affiliate_id");
   if (!affiliateId) return null;
 
-  // Referral ID
+  // Referral ID. Rewardful nests this at sale.referral.id; the older
+  // data.referral_id / data.referral.id paths never fire against real
+  // payloads but are kept as fallbacks for future shape changes.
+  const saleObj = (data.sale as Record<string, unknown>) ?? {};
   const referralId =
+    getString(
+      (saleObj.referral as Record<string, unknown>) ?? {},
+      "id"
+    ) ??
     getString(data, "referral_id") ??
     getString(
       (data.referral as Record<string, unknown>) ?? {},

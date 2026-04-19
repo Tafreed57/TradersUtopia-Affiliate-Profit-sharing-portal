@@ -54,6 +54,8 @@ interface AffiliateDetail {
   image: string | null;
   status: string;
   commissionPercent: number;
+  initialCommissionPercent: number;
+  recurringCommissionPercent: number;
   canProposeRates: boolean;
   canBeTeacher: boolean;
   rewardfulAffiliateId: string | null;
@@ -88,6 +90,7 @@ interface AffiliateDetail {
     id: string;
     previousPercent: number;
     newPercent: number;
+    field: "LEGACY" | "INITIAL" | "RECURRING";
     reason: string | null;
     changedBy: string;
     createdAt: string;
@@ -108,7 +111,8 @@ export default function AffiliateDetailPage({
   const { format } = useCurrency();
   const queryClient = useQueryClient();
 
-  const [newRate, setNewRate] = useState("");
+  const [newInitialRate, setNewInitialRate] = useState("");
+  const [newRecurringRate, setNewRecurringRate] = useState("");
   const [rateReason, setRateReason] = useState("");
   const [deactivateDialogOpen, setDeactivateDialogOpen] = useState(false);
 
@@ -138,8 +142,9 @@ export default function AffiliateDetailPage({
       queryClient.invalidateQueries({ queryKey: ["admin-affiliate", id] });
       queryClient.invalidateQueries({ queryKey: ["admin-affiliates"] });
       if (result.autoRecalc?.updated > 0) {
+        const n = result.autoRecalc.updated;
         toast.success(
-          `Rate set and ${result.autoRecalc.updated} pending commission${result.autoRecalc.updated === 1 ? "" : "s"} automatically recalculated at ${result.autoRecalc.newRate}%.`
+          `Rates saved. ${n} unpaid commission${n === 1 ? "" : "s"} re-priced.`
         );
       } else {
         toast.success("Affiliate updated");
@@ -158,13 +163,13 @@ export default function AffiliateDetailPage({
       if (!res.ok) {
         throw new Error(payload.error ?? "Failed to recalculate");
       }
-      return payload as { updated: number; newRate: number };
+      return payload as { updated: number; teacherRowsAffected: number };
     },
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ["admin-affiliate", id] });
       queryClient.invalidateQueries({ queryKey: ["admin-affiliates"] });
       toast.success(
-        `Recalculated ${result.updated} commission${result.updated === 1 ? "" : "s"} at ${result.newRate}%.`
+        `Re-priced ${result.updated} commission${result.updated === 1 ? "" : "s"}.`
       );
     },
     onError: (error: Error) => toast.error(error.message),
@@ -184,16 +189,27 @@ export default function AffiliateDetailPage({
   }
 
   const handleRateChange = () => {
-    const rate = Number(newRate);
-    if (isNaN(rate) || rate < 0 || rate > 100) {
-      toast.error("Rate must be 0-100");
+    const initial = newInitialRate === "" ? undefined : Number(newInitialRate);
+    const recurring = newRecurringRate === "" ? undefined : Number(newRecurringRate);
+    if (initial === undefined && recurring === undefined) {
+      toast.error("Enter at least one rate");
       return;
     }
-    updateMutation.mutate({
-      commissionPercent: rate,
-      reason: rateReason || undefined,
-    });
-    setNewRate("");
+    if (initial !== undefined && (isNaN(initial) || initial < 0 || initial > 100)) {
+      toast.error("Initial rate must be 0-100");
+      return;
+    }
+    if (recurring !== undefined && (isNaN(recurring) || recurring < 0 || recurring > 100)) {
+      toast.error("Recurring rate must be 0-100");
+      return;
+    }
+    const payload: Record<string, unknown> = {};
+    if (initial !== undefined) payload.initialCommissionPercent = initial;
+    if (recurring !== undefined) payload.recurringCommissionPercent = recurring;
+    if (rateReason) payload.reason = rateReason;
+    updateMutation.mutate(payload);
+    setNewInitialRate("");
+    setNewRecurringRate("");
     setRateReason("");
   };
 
@@ -261,29 +277,53 @@ export default function AffiliateDetailPage({
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">
-                Current rate
-              </span>
-              <span className="text-2xl font-bold text-primary">
-                {data.commissionPercent}%
-              </span>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <p className="text-xs text-muted-foreground">
+                  Current initial
+                </p>
+                <p className="text-2xl font-bold text-primary">
+                  {data.initialCommissionPercent}%
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">
+                  Current recurring
+                </p>
+                <p className="text-2xl font-bold text-primary">
+                  {data.recurringCommissionPercent}%
+                </p>
+              </div>
             </div>
 
             <Separator />
 
             <div className="space-y-3">
-              <div className="space-y-2">
-                <Label>New rate (%)</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  max={100}
-                  step={0.5}
-                  placeholder={String(data.commissionPercent)}
-                  value={newRate}
-                  onChange={(e) => setNewRate(e.target.value)}
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label>New initial (%)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={0.5}
+                    placeholder={String(data.initialCommissionPercent)}
+                    value={newInitialRate}
+                    onChange={(e) => setNewInitialRate(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>New recurring (%)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={0.5}
+                    placeholder={String(data.recurringCommissionPercent)}
+                    value={newRecurringRate}
+                    onChange={(e) => setNewRecurringRate(e.target.value)}
+                  />
+                </div>
               </div>
               <div className="space-y-2">
                 <Label>Reason (optional)</Label>
@@ -293,9 +333,17 @@ export default function AffiliateDetailPage({
                   onChange={(e) => setRateReason(e.target.value)}
                 />
               </div>
+              <p className="text-xs text-muted-foreground">
+                Saving re-prices all unpaid commissions for this affiliate
+                using the event&apos;s initial/recurring classification.
+                Paid commissions are never changed.
+              </p>
               <Button
                 onClick={handleRateChange}
-                disabled={!newRate || updateMutation.isPending}
+                disabled={
+                  (!newInitialRate && !newRecurringRate) ||
+                  updateMutation.isPending
+                }
                 className="gap-2"
               >
                 <Save className="h-4 w-4" />
@@ -314,8 +362,9 @@ export default function AffiliateDetailPage({
                         {data.pendingRateNotSetCount} pending commission
                         {data.pendingRateNotSetCount === 1 ? "" : "s"}
                       </span>{" "}
-                      imported before a rate was set. Recalculate at the
-                      current rate ({data.commissionPercent}%) to pay them out.
+                      imported before rates were set. Re-price using the
+                      current initial ({data.initialCommissionPercent}%) +
+                      recurring ({data.recurringCommissionPercent}%) rates.
                     </p>
                   </div>
                   <Button
@@ -323,12 +372,14 @@ export default function AffiliateDetailPage({
                     size="sm"
                     className="gap-2 w-full"
                     disabled={
-                      data.commissionPercent === 0 || recalcMutation.isPending
+                      (data.initialCommissionPercent === 0 &&
+                        data.recurringCommissionPercent === 0) ||
+                      recalcMutation.isPending
                     }
                     onClick={() => recalcMutation.mutate()}
                   >
                     <RefreshCw className="h-3 w-3" />
-                    Recalculate at current rate
+                    Re-price unpaid
                   </Button>
                 </div>
               </>
@@ -336,13 +387,17 @@ export default function AffiliateDetailPage({
 
             <Separator />
 
-            {/* Teacher allocation breakdown */}
+            {/* Teacher allocation breakdown — dual-rate aware. */}
             <div className="text-sm">
               <p className="font-medium mb-2">Allocation Breakdown</p>
               <div className="space-y-1 text-muted-foreground">
                 <div className="flex justify-between">
-                  <span>Affiliate cut</span>
-                  <span>{data.commissionPercent}%</span>
+                  <span>Affiliate cut (initial)</span>
+                  <span>{data.initialCommissionPercent}%</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Affiliate cut (recurring)</span>
+                  <span>{data.recurringCommissionPercent}%</span>
                 </div>
                 {data.teachers.map((t) => (
                   <div key={t.teacherId} className="flex justify-between">
@@ -354,7 +409,7 @@ export default function AffiliateDetailPage({
                 ))}
                 <Separator className="my-1" />
                 <div className="flex justify-between font-medium text-foreground">
-                  <span>Total allocated</span>
+                  <span>Highest total allocated</span>
                   <span>{data.totalAllocated.toFixed(1)}%</span>
                 </div>
                 <div className="flex justify-between">
@@ -514,6 +569,7 @@ export default function AffiliateDetailPage({
               <TableHeader>
                 <TableRow>
                   <TableHead>Date</TableHead>
+                  <TableHead>Rate</TableHead>
                   <TableHead>Previous</TableHead>
                   <TableHead>New</TableHead>
                   <TableHead>Changed By</TableHead>
@@ -529,6 +585,24 @@ export default function AffiliateDetailPage({
                         day: "numeric",
                         year: "numeric",
                       })}
+                    </TableCell>
+                    <TableCell>
+                      <Badge
+                        variant="default"
+                        className={
+                          entry.field === "INITIAL"
+                            ? "bg-primary/15 text-primary border-primary/30"
+                            : entry.field === "RECURRING"
+                            ? "bg-info/15 text-info border-info/30"
+                            : "bg-muted text-muted-foreground"
+                        }
+                      >
+                        {entry.field === "INITIAL"
+                          ? "Initial"
+                          : entry.field === "RECURRING"
+                          ? "Recurring"
+                          : "Legacy"}
+                      </Badge>
                     </TableCell>
                     <TableCell>{entry.previousPercent}%</TableCell>
                     <TableCell className="font-medium">

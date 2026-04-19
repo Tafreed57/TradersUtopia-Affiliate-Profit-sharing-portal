@@ -43,6 +43,8 @@ export async function GET(req: NextRequest) {
         image: true,
         status: true,
         commissionPercent: true,
+        initialCommissionPercent: true,
+        recurringCommissionPercent: true,
         canProposeRates: true,
         rewardfulAffiliateId: true,
         linkError: true,
@@ -66,6 +68,8 @@ export async function GET(req: NextRequest) {
   const data = affiliates.map((a) => ({
     ...a,
     commissionPercent: a.commissionPercent.toNumber(),
+    initialCommissionPercent: a.initialCommissionPercent.toNumber(),
+    recurringCommissionPercent: a.recurringCommissionPercent.toNumber(),
     commissionsCount: a._count.recipientSplits,
     studentsCount: a._count.studentRelations,
     teachersCount: a._count.teacherRelations,

@@ -63,6 +63,17 @@ export async function runBackfill(userId: string): Promise<{
       user.rewardfulAffiliateId
     );
 
+    // Sort ascending by sale.charged_at (fallback created_at). The initial
+    // vs recurring classification in processConversion uses conversionDate
+    // comparison, which is order-sensitive at the margins. Oldest-first
+    // processing guarantees the first arriving event IS the earliest for
+    // its referral, so classification is correct from the first write.
+    commissions.sort((a, b) => {
+      const aDate = a.sale?.charged_at ?? a.created_at ?? "";
+      const bDate = b.sale?.charged_at ?? b.created_at ?? "";
+      return aDate < bDate ? -1 : aDate > bDate ? 1 : 0;
+    });
+
     for (const commission of commissions) {
       try {
         const conversion = mapCommissionToConversion(
@@ -161,7 +172,7 @@ function mapCommissionToConversion(
 
   return {
     rewardfulCommissionId: commission.id,
-    rewardfulReferralId: commission.referral?.id,
+    rewardfulReferralId: commission.sale?.referral?.id ?? commission.referral?.id,
     affiliateRewardfulId,
     amount,
     currency,

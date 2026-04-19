@@ -5,78 +5,86 @@ import { prisma } from "@/lib/prisma";
 
 export type RecalcResult =
   | { kind: "not_found" }
-  | { kind: "rate_zero" }
-  | { kind: "ok"; updated: number; teacherRowsAffected: number; newRate: number };
+  | { kind: "ok"; updated: number; teacherRowsAffected: number };
 
 /**
- * Recalculates all AFFILIATE splits with forfeitureReason='rate_not_set' for
- * an affiliate, applying their CURRENT commissionPercent. Re-checks attendance
- * per event.
+ * Re-prices all UNPAID (EARNED + PENDING) AFFILIATE splits for an affiliate
+ * using the current `initialCommissionPercent` / `recurringCommissionPercent`
+ * rates on the User row. Each event's `isRecurring` flag picks the rate.
  *
- * Intentionally runs WITHOUT a Prisma interactive transaction — Supabase uses
- * PgBouncer in transaction mode, which routes each statement to a different
- * backend connection and causes P2028 on multi-statement interactive txns.
- * Idempotency is enforced by the updateMany predicate (status=PENDING AND
- * forfeitureReason=rate_not_set) — a crashed or concurrent recalc skips
- * already-processed rows. Re-running is safe.
+ * Scope:
+ *  - EARNED + PENDING affiliate splits: re-priced.
+ *  - FORFEITED: frozen (affiliate earned 0; rate is moot; CEO absorbs is
+ *    also rate-independent).
+ *  - PAID + VOIDED: frozen.
  *
- * Since per-event fields (fullAmount, ceoCut) live on CommissionEvent and
- * per-recipient fields (status, cutCad) live on CommissionSplit, the old
- * 5a/5b two-pass "duplicate fields sync" collapses: each event's ceoCutCad
- * updates once, each split's status/cutCad updates once.
+ * Side effects per re-priced split:
+ *  - Affiliate split: new cutPercent + cutCad.
+ *    PENDING → EARNED when rate > 0 AND attendance passes the grace/±1-day
+ *    rule; PENDING → FORFEITED when rate > 0 but attendance failed; PENDING
+ *    stays PENDING when rate is still 0; EARNED stays EARNED.
+ *  - Event.ceoCutCad recomputed so fullAmount = affiliate + teachers + CEO.
+ *  - Teacher splits for the same event flip PENDING → EARNED only when the
+ *    affiliate split was promoted to EARNED (rate-independent teacher
+ *    cutCad already right; status just catches up).
  *
- * Called from:
- *  - POST /api/admin/affiliates/:id/recalc-pending (manual admin button)
- *  - PATCH /api/admin/affiliates/:id (auto-trigger on first rate set 0→positive)
+ * Atomicity: per-event array $transaction. TOCTOU-guarded: the AFFILIATE
+ * split updateMany's `where` predicates the current status so a concurrently
+ * PAID/VOIDED row is NOT overwritten; the event + teacher-split updates are
+ * gated via nested predicate on the affiliate split having reached its
+ * post-state, so a no-op split update cascades to a no-op event update.
+ *
+ * Called by:
+ *  - PATCH /api/admin/affiliates/:id on any rate change (auto).
+ *  - POST /api/admin/affiliates/:id/recalc-pending (manual admin button).
  */
 export async function runRecalcPending(
   affiliateId: string,
-  adminId: string
+  _adminId: string
 ): Promise<RecalcResult> {
   const affiliate = await prisma.user.findUnique({
     where: { id: affiliateId },
-    select: { id: true, commissionPercent: true },
+    select: {
+      id: true,
+      initialCommissionPercent: true,
+      recurringCommissionPercent: true,
+    },
   });
-  if (!affiliate) return { kind: "not_found" as const };
+  if (!affiliate) return { kind: "not_found" };
 
-  const currentRate = new Decimal(affiliate.commissionPercent.toString());
-  if (currentRate.eq(0)) return { kind: "rate_zero" as const };
+  const initialRate = new Decimal(affiliate.initialCommissionPercent.toString());
+  const recurringRate = new Decimal(
+    affiliate.recurringCommissionPercent.toString()
+  );
 
-  // Load pending/rate-gated AFFILIATE splits along with their parent event.
-  const pendingSplits = await prisma.commissionSplit.findMany({
+  const splits = await prisma.commissionSplit.findMany({
     where: {
       role: "AFFILIATE",
       recipientId: affiliateId,
-      status: "PENDING",
-      forfeitureReason: "rate_not_set",
+      status: { in: ["EARNED", "PENDING"] },
     },
     select: {
       id: true,
+      status: true,
+      forfeitureReason: true,
       event: {
         select: {
           id: true,
-          rewardfulCommissionId: true,
           fullAmountCad: true,
           ceoCutCad: true,
+          isRecurring: true,
           conversionDate: true,
         },
       },
     },
   });
 
-  if (pendingSplits.length === 0) {
-    return {
-      kind: "ok" as const,
-      updated: 0,
-      teacherRowsAffected: 0,
-      newRate: currentRate.toDecimalPlaces(2).toNumber(),
-    };
+  if (splits.length === 0) {
+    return { kind: "ok", updated: 0, teacherRowsAffected: 0 };
   }
 
-  const eventIds = pendingSplits.map((s) => s.event.id);
-
-  // Sum teacher cuts per event so we can compute the correct ceoCutCad.
-  // Teacher splits are unchanged by recalc; we only read their cutCad totals.
+  // Pre-load teacher cuts + attendance so each per-split decision is cheap.
+  const eventIds = splits.map((s) => s.event.id);
   const teacherSplits = await prisma.commissionSplit.findMany({
     where: { eventId: { in: eventIds }, role: "TEACHER" },
     select: { eventId: true, cutCad: true },
@@ -90,7 +98,6 @@ export async function runRecalcPending(
     );
   }
 
-  // Load affiliate's attendance for the re-check.
   const allAttendance = await prisma.attendance.findMany({
     where: { userId: affiliateId },
     select: { date: true },
@@ -122,137 +129,122 @@ export async function runRecalcPending(
   }
 
   const noAttendanceReason = "No attendance submitted for conversion date";
-  let affiliateRowsUpdated = 0;
+  let updated = 0;
   let teacherRowsAffected = 0;
 
-  const processed: Array<{
-    splitId: string;
-    eventId: string;
-    fullAmountCad: string;
-    conversionDate: Date;
-    hadAttendance: boolean;
-  }> = [];
-
-  for (const p of pendingSplits) {
-    const fullAmount = new Decimal(p.event.fullAmountCad.toString());
+  for (const s of splits) {
+    const applicableRate = s.event.isRecurring ? recurringRate : initialRate;
+    const applicableRateNum = applicableRate.toDecimalPlaces(2).toNumber();
+    const fullAmount = new Decimal(s.event.fullAmountCad.toString());
     const teacherCutTotal =
-      teacherCutsByEvent.get(p.event.id) ?? new Decimal(0);
-    const newAffiliateCut = fullAmount.mul(currentRate).div(100);
-    const hadAttendance = hasAttendanceFor(p.event.conversionDate);
+      teacherCutsByEvent.get(s.event.id) ?? new Decimal(0);
+    const repricedAffiliateCut = fullAmount.mul(applicableRate).div(100);
+    const repricedCeoCut = fullAmount.sub(repricedAffiliateCut).sub(teacherCutTotal);
 
-    let finalStatus: CommissionStatus;
-    let forfeitedToCeo: boolean;
-    let forfeitureReason: string | null;
+    // Status transition decision.
+    const shouldAttemptPromote =
+      s.status === "PENDING" && applicableRate.gt(0);
+
+    let newStatus: CommissionStatus;
+    let newForfeitureReason: string | null;
+    let newForfeitedToCeo: boolean;
     let finalAffiliateCut: Decimal;
     let finalCeoCut: Decimal;
+    let promotedToEarned = false;
 
-    if (hadAttendance) {
-      finalStatus = "EARNED";
-      forfeitedToCeo = false;
-      forfeitureReason = null;
-      finalAffiliateCut = newAffiliateCut;
-      finalCeoCut = fullAmount.sub(newAffiliateCut).sub(teacherCutTotal);
+    if (shouldAttemptPromote) {
+      const hadAttendance = hasAttendanceFor(s.event.conversionDate);
+      if (hadAttendance) {
+        newStatus = "EARNED";
+        newForfeitureReason = null;
+        newForfeitedToCeo = false;
+        finalAffiliateCut = repricedAffiliateCut;
+        finalCeoCut = repricedCeoCut;
+        promotedToEarned = true;
+      } else {
+        // PENDING+rate_not_set but attendance failed: lock it as FORFEITED.
+        // CEO absorbs what the affiliate would have earned (independent of
+        // the rate now because affiliate gets 0).
+        newStatus = "FORFEITED";
+        newForfeitureReason = noAttendanceReason;
+        newForfeitedToCeo = true;
+        finalAffiliateCut = new Decimal(0);
+        finalCeoCut = fullAmount.sub(teacherCutTotal);
+      }
     } else {
-      finalStatus = "FORFEITED";
-      forfeitedToCeo = true;
-      forfeitureReason = noAttendanceReason;
-      finalAffiliateCut = new Decimal(0);
-      finalCeoCut = fullAmount.sub(teacherCutTotal);
+      // EARNED → re-priced; keeps status. Or PENDING with rate still 0 →
+      // stays PENDING, cutCad updates to reflect "rate × full" which is 0.
+      newStatus = s.status;
+      newForfeitureReason = s.forfeitureReason;
+      newForfeitedToCeo = false;
+      finalAffiliateCut = repricedAffiliateCut;
+      finalCeoCut = repricedCeoCut;
     }
 
-    // Atomic per-event: AFFILIATE flip + event.ceoCutCad + TEACHER flips all
-    // commit together (array $transaction is a real DB txn — PgBouncer-safe).
-    //
-    // Concurrent-recalc safety: the event and teacher updates are gated on the
-    // AFFILIATE split having reached its post-state (status=finalStatus AND
-    // cutPercent=currentRate). If the AFFILIATE updateMany at [0] no-ops
-    // (because a concurrent recalc already flipped the split), the gating
-    // predicate at [1]/[2] also fails and the downstream writes no-op — so
-    // the event's ceoCutCad can't drift from the split's cutPercent.
-    const currentRateNum = currentRate.toDecimalPlaces(2).toNumber();
+    // TOCTOU guard — only update if the split is still in its pre-state.
+    // If a concurrent webhook flipped it to PAID/VOIDED between the findMany
+    // and this write, count=0 and the cascaded event/teacher writes no-op
+    // via the nested-predicate gate.
+    const splitUpdate = prisma.commissionSplit.updateMany({
+      where: { id: s.id, status: s.status },
+      data: {
+        status: newStatus,
+        forfeitureReason: newForfeitureReason,
+        forfeitedToCeo: newForfeitedToCeo,
+        cutPercent: applicableRateNum,
+        cutCad: finalAffiliateCut.toDecimalPlaces(2).toNumber(),
+      },
+    });
+
+    // Gate event + teacher updates on the affiliate split having reached the
+    // post-state. Same pattern as session-32's array-tx nested gating.
     const postFlipGate = {
-      id: p.event.id,
+      id: s.event.id,
       splits: {
         some: {
-          id: p.id,
-          status: finalStatus,
-          cutPercent: currentRateNum,
+          id: s.id,
+          status: newStatus,
+          cutPercent: applicableRateNum,
         },
       },
     };
 
-    const baseTeacherWhere = {
-      eventId: p.event.id,
-      role: "TEACHER" as const,
-      // Only act when AFFILIATE split has reached its post-state.
-      event: { splits: { some: { id: p.id, status: finalStatus, cutPercent: currentRateNum } } },
-    };
+    const eventUpdate = prisma.commissionEvent.updateMany({
+      where: postFlipGate,
+      data: { ceoCutCad: finalCeoCut.toDecimalPlaces(2).toNumber() },
+    });
 
-    const teacherUpdate = hadAttendance
-      ? prisma.commissionSplit.updateMany({
+    const ops: Prisma.PrismaPromise<unknown>[] = [splitUpdate, eventUpdate];
+
+    if (promotedToEarned) {
+      ops.push(
+        prisma.commissionSplit.updateMany({
           where: {
-            ...baseTeacherWhere,
-            OR: [
-              { status: "FORFEITED", forfeitureReason: noAttendanceReason },
-              { status: "PENDING" },
-            ],
+            eventId: s.event.id,
+            role: "TEACHER",
+            status: "PENDING",
+            event: { splits: { some: { id: s.id, status: "EARNED", cutPercent: applicableRateNum } } },
           },
-          data: { status: "EARNED", forfeitureReason: null, forfeitedToCeo: false },
-        })
-      : prisma.commissionSplit.updateMany({
-          where: { ...baseTeacherWhere, status: "PENDING" },
           data: {
-            status: "FORFEITED",
-            forfeitureReason: noAttendanceReason,
+            status: "EARNED",
+            forfeitureReason: null,
             forfeitedToCeo: false,
           },
-        });
+        })
+      );
+    }
 
-    const [affRes, , teacherRes] = await prisma.$transaction([
-      prisma.commissionSplit.updateMany({
-        where: {
-          id: p.id,
-          status: "PENDING",
-          forfeitureReason: "rate_not_set",
-        },
-        data: {
-          status: finalStatus,
-          forfeitedToCeo,
-          forfeitureReason,
-          cutPercent: currentRateNum,
-          cutCad: finalAffiliateCut.toDecimalPlaces(2).toNumber(),
-        },
-      }),
-      prisma.commissionEvent.updateMany({
-        where: postFlipGate,
-        data: { ceoCutCad: finalCeoCut.toDecimalPlaces(2).toNumber() },
-      }),
-      teacherUpdate,
-    ]);
-
+    const results = await prisma.$transaction(ops);
+    const affRes = results[0] as { count: number };
     if (affRes.count === 0) continue;
-    affiliateRowsUpdated += 1;
-    teacherRowsAffected += teacherRes.count;
-
-    processed.push({
-      splitId: p.id,
-      eventId: p.event.id,
-      fullAmountCad: p.event.fullAmountCad.toString(),
-      conversionDate: p.event.conversionDate,
-      hadAttendance,
-    });
+    updated += 1;
+    if (promotedToEarned) {
+      const teacherRes = results[2] as { count: number };
+      teacherRowsAffected += teacherRes.count;
+    }
   }
 
-  if (affiliateRowsUpdated > 0) {
-    await prisma.commissionRateAudit.create({
-      data: {
-        affiliateId,
-        changedById: adminId,
-        previousPercent: 0,
-        newPercent: currentRate.toDecimalPlaces(2).toNumber(),
-        reason: `Bulk recalc of rate-not-set commissions (${affiliateRowsUpdated} conversions)`,
-      },
-    });
+  if (updated > 0) {
     await prisma.user.update({
       where: { id: affiliateId },
       data: {
@@ -262,52 +254,5 @@ export async function runRecalcPending(
     });
   }
 
-  // Rate drift compensation: re-read rate; if changed, re-price processed rows.
-  const verifiedUser = await prisma.user.findUnique({
-    where: { id: affiliateId },
-    select: { commissionPercent: true },
-  });
-  const verifiedRate = new Decimal(verifiedUser!.commissionPercent.toString());
-  if (!verifiedRate.eq(currentRate) && processed.length > 0) {
-    console.error(
-      `[recalc] rate drifted mid-recalc for affiliate ${affiliateId}: ` +
-        `${currentRate.toFixed(2)}% → ${verifiedRate.toFixed(2)}%. Re-pricing ${processed.length} rows.`
-    );
-    for (const pr of processed) {
-      const fullAmount = new Decimal(pr.fullAmountCad);
-      const teacherCutTotal =
-        teacherCutsByEvent.get(pr.eventId) ?? new Decimal(0);
-      const correctedCut = fullAmount.mul(verifiedRate).div(100);
-      const correctedCeoCut = pr.hadAttendance
-        ? fullAmount.sub(correctedCut).sub(teacherCutTotal)
-        : fullAmount.sub(teacherCutTotal);
-
-      await prisma.commissionSplit.update({
-        where: { id: pr.splitId },
-        data: {
-          cutPercent: verifiedRate.toDecimalPlaces(2).toNumber(),
-          cutCad: pr.hadAttendance
-            ? correctedCut.toDecimalPlaces(2).toNumber()
-            : 0,
-        },
-      });
-      await prisma.commissionEvent.update({
-        where: { id: pr.eventId },
-        data: { ceoCutCad: correctedCeoCut.toDecimalPlaces(2).toNumber() },
-      });
-    }
-    return {
-      kind: "ok" as const,
-      updated: affiliateRowsUpdated,
-      teacherRowsAffected,
-      newRate: verifiedRate.toDecimalPlaces(2).toNumber(),
-    };
-  }
-
-  return {
-    kind: "ok" as const,
-    updated: affiliateRowsUpdated,
-    teacherRowsAffected,
-    newRate: currentRate.toDecimalPlaces(2).toNumber(),
-  };
+  return { kind: "ok", updated, teacherRowsAffected };
 }

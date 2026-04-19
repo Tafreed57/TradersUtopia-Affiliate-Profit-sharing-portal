@@ -54,6 +54,8 @@ model User {
   emailVerified        DateTime?
   status               UserStatus            @default(ACTIVE)
   commissionPercent    Decimal               @default(0) @db.Decimal(5, 2)
+  initialCommissionPercent   Decimal         @default(0) @db.Decimal(5, 2)
+  recurringCommissionPercent Decimal         @default(0) @db.Decimal(5, 2)
   canProposeRates      Boolean               @default(true)
   canBeTeacher         Boolean               @default(false)
   rewardfulAffiliateId String?               @unique
@@ -159,6 +161,7 @@ model CommissionEvent {
   currency              String            @default("USD")
   fullAmountCad         Decimal           @db.Decimal(12, 2)
   ceoCutCad             Decimal           @db.Decimal(12, 2)
+  isRecurring           Boolean           @default(false)
   rewardfulData         Json?
   splits                CommissionSplit[]
   createdAt             DateTime          @default(now())
@@ -166,6 +169,7 @@ model CommissionEvent {
 
   @@index([affiliateId])
   @@index([conversionDate])
+  @@index([rewardfulReferralId])
 }
 
 model CommissionSplit {
@@ -199,6 +203,7 @@ model CommissionRateAudit {
   changedById     String
   previousPercent Decimal  @db.Decimal(5, 2)
   newPercent      Decimal  @db.Decimal(5, 2)
+  field           RateField @default(LEGACY)
   reason          String?
   createdAt       DateTime @default(now())
   affiliate       User     @relation("AffiliateRateChanges", fields: [affiliateId], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -206,6 +211,12 @@ model CommissionRateAudit {
 
   @@index([affiliateId])
   @@index([createdAt])
+}
+
+enum RateField {
+  LEGACY
+  INITIAL
+  RECURRING
 }
 
 model RateProposal {
