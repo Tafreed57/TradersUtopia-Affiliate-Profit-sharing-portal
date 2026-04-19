@@ -528,10 +528,10 @@ export default function AffiliateDetailPage({
               </>
             )}
 
-            {/* Sync Paid is always available — a paid commission at
-                Rewardful can flip EARNED→PAID regardless of the rate-gate
-                pending-count. Outside the warning block so it renders for
-                all affiliates, not only those with rate-gated imports. */}
+            {/* Sync Paid is always available — a paid commission upstream
+                can flip EARNED→PAID regardless of the rate-gate pending-
+                count. Outside the warning block so it renders for all
+                affiliates, not only those with rate-gated imports. */}
             <Separator />
             <Button
               variant="outline"
@@ -543,7 +543,7 @@ export default function AffiliateDetailPage({
               <RefreshCw
                 className={`h-3 w-3 ${syncPaidMutation.isPending ? "animate-spin" : ""}`}
               />
-              {syncPaidMutation.isPending ? "Syncing…" : "Sync paid state from Rewardful"}
+              {syncPaidMutation.isPending ? "Syncing…" : "Sync paid state"}
             </Button>
 
             <Separator />

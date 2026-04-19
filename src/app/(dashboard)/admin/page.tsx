@@ -147,7 +147,7 @@ export default function AdminPage() {
       return res.json() as Promise<{ fetched: number; updated: number }>;
     },
     onSuccess: (data) =>
-      toast.success(`Sync complete — ${data.updated} row${data.updated !== 1 ? "s" : ""} marked paid (${data.fetched} fetched from Rewardful)`),
+      toast.success(`Sync complete — ${data.updated} row${data.updated !== 1 ? "s" : ""} marked paid (${data.fetched} fetched upstream)`),
     onError: () => toast.error("Sync failed — check logs"),
   });
 
@@ -290,7 +290,7 @@ export default function AdminPage() {
             <div>
               <p className="text-sm font-medium">Sync Paid History</p>
               <p className="text-xs text-muted-foreground">
-                Pulls all paid commissions from Rewardful and marks them PAID here. One-time baseline sync.
+                Pulls all paid commissions from upstream and marks them PAID here. One-time baseline sync.
               </p>
             </div>
             <Button
