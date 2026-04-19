@@ -14,6 +14,8 @@ const USER_STATUS_SELECT = {
   backfillCompletedAt: true,
   rewardfulAffiliateId: true,
   commissionPercent: true,
+  initialCommissionPercent: true,
+  recurringCommissionPercent: true,
 } as const;
 
 /**
@@ -79,5 +81,7 @@ export async function GET() {
     startedAt: user.backfillStartedAt,
     completedAt: user.backfillCompletedAt,
     commissionPercent: Number(user.commissionPercent),
+    initialCommissionPercent: Number(user.initialCommissionPercent),
+    recurringCommissionPercent: Number(user.recurringCommissionPercent),
   });
 }
