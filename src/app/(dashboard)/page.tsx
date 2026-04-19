@@ -145,7 +145,7 @@ export default function DashboardPage() {
             ) : (
               <>
                 <div className="text-2xl font-bold">
-                  {format(stats?.thisMonthEarned ?? 0)}
+                  {format(stats?.thisMonthEarned ?? 0, "CAD")}
                 </div>
                 <p className="text-xs text-muted-foreground">{currency}</p>
               </>

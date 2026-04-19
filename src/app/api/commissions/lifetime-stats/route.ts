@@ -5,11 +5,12 @@ import { Prisma } from "@prisma/client";
 
 import { authOptions } from "@/lib/auth-options";
 import { linkRewardfulAffiliateWithTimeout } from "@/lib/auth-rewardful-link";
+import { getCadToUsdRate } from "@/lib/currency";
 import { prisma } from "@/lib/prisma";
 import * as rewardful from "@/lib/rewardful";
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
-const CACHE_VERSION = 4;
+const CACHE_VERSION = 6;
 
 interface LifetimeStatsPayload {
   visitors: number;
@@ -20,7 +21,12 @@ interface LifetimeStatsPayload {
   grossEarnedCad: number;
   paidCad: number;
   unpaidCad: number;
-  dueCad: number;
+  /**
+   * Currency the `*Cad` amounts are actually stored in (USD for webhook-sourced
+   * events, CAD for Rewardful-backfilled events tagged in session 33). FE must
+   * pass this to CurrencyProvider.format so USD values don't get displayed as CAD.
+   */
+  currency: "USD" | "CAD";
   coupons: Array<{ id: string; code: string }>;
   fetchedAt: string;
 }
@@ -79,20 +85,40 @@ export async function GET() {
   };
 
   try {
-    const [stats, earnedAgg, paidAgg] = await Promise.all([
-      rewardful.getAffiliateLifetimeStats(user.rewardfulAffiliateId),
-      prisma.commissionSplit.aggregate({
-        where: { ...affiliateSplitWhere, status: "EARNED" },
-        _sum: { cutCad: true },
-      }),
-      prisma.commissionSplit.aggregate({
-        where: { ...affiliateSplitWhere, status: "PAID" },
-        _sum: { cutCad: true },
-      }),
-    ]);
+    const [stats, earnedUsdAgg, earnedCadAgg, paidUsdAgg, paidCadAgg, rate] =
+      await Promise.all([
+        rewardful.getAffiliateLifetimeStats(user.rewardfulAffiliateId),
+        prisma.commissionSplit.aggregate({
+          where: { ...affiliateSplitWhere, status: "EARNED", event: { currency: "USD" } },
+          _sum: { cutCad: true },
+        }),
+        prisma.commissionSplit.aggregate({
+          where: { ...affiliateSplitWhere, status: "EARNED", event: { currency: "CAD" } },
+          _sum: { cutCad: true },
+        }),
+        prisma.commissionSplit.aggregate({
+          where: { ...affiliateSplitWhere, status: "PAID", event: { currency: "USD" } },
+          _sum: { cutCad: true },
+        }),
+        prisma.commissionSplit.aggregate({
+          where: { ...affiliateSplitWhere, status: "PAID", event: { currency: "CAD" } },
+          _sum: { cutCad: true },
+        }),
+        getCadToUsdRate(),
+      ]);
 
-    const unpaidCad = earnedAgg._sum.cutCad?.toNumber() ?? 0;
-    const paidCad = paidAgg._sum.cutCad?.toNumber() ?? 0;
+    // Normalize USD portions to CAD so the payload is canonical single-currency.
+    const cadToUsd = rate?.rate.toNumber() ?? 0.74;
+    const toCad = (usd: number) => Math.round((usd / cadToUsd) * 100) / 100;
+
+    const unpaidCad = Math.round(
+      ((earnedCadAgg._sum.cutCad?.toNumber() ?? 0) +
+        toCad(earnedUsdAgg._sum.cutCad?.toNumber() ?? 0)) * 100
+    ) / 100;
+    const paidCad = Math.round(
+      ((paidCadAgg._sum.cutCad?.toNumber() ?? 0) +
+        toCad(paidUsdAgg._sum.cutCad?.toNumber() ?? 0)) * 100
+    ) / 100;
     const grossEarnedCad = Math.round((unpaidCad + paidCad) * 100) / 100;
 
     const payload: LifetimeStatsPayload = {
@@ -103,7 +129,7 @@ export async function GET() {
       grossEarnedCad,
       paidCad,
       unpaidCad,
-      dueCad: unpaidCad,
+      currency: "CAD",
       coupons: stats.coupons,
       fetchedAt: stats.fetchedAt,
     };

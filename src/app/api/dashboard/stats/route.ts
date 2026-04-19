@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 
 import { authOptions } from "@/lib/auth-options";
+import { getCadToUsdRate } from "@/lib/currency";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -25,27 +26,44 @@ export async function GET() {
 
   const affiliateSplitWhere = { role: "AFFILIATE" as const, recipientId: userId };
 
+  // `CommissionSplit.cutCad` stores the event's native currency (USD or CAD
+  // per CommissionEvent.currency) despite the column name — see the *Cad
+  // DEBT. Aggregate per-currency and normalize USD→CAD server-side using
+  // the cached exchange rate so the FE can treat `totalEarned` as canonical
+  // CAD without worrying about mixed-currency users.
+  const perCurrencyTotalWhere = {
+    ...affiliateSplitWhere,
+    status: { in: ["EARNED" as const, "PAID" as const] },
+  };
+  const perCurrencyMonthWhere = {
+    ...perCurrencyTotalWhere,
+    event: { conversionDate: { gte: monthStart, lte: monthEnd } },
+  };
+
   const [
-    totalEarnedAgg,
-    thisMonthEarnedAgg,
+    totalUsdAgg,
+    totalCadAgg,
+    monthUsdAgg,
+    monthCadAgg,
     commissionCount,
     attendanceThisMonth,
     recentSplits,
+    rate,
   ] = await Promise.all([
     prisma.commissionSplit.aggregate({
-      where: {
-        ...affiliateSplitWhere,
-        status: { in: ["EARNED", "PAID"] },
-      },
+      where: { ...perCurrencyTotalWhere, event: { currency: "USD" } },
       _sum: { cutCad: true },
     }),
-
     prisma.commissionSplit.aggregate({
-      where: {
-        ...affiliateSplitWhere,
-        status: { in: ["EARNED", "PAID"] },
-        event: { conversionDate: { gte: monthStart, lte: monthEnd } },
-      },
+      where: { ...perCurrencyTotalWhere, event: { currency: "CAD" } },
+      _sum: { cutCad: true },
+    }),
+    prisma.commissionSplit.aggregate({
+      where: { ...perCurrencyMonthWhere, event: { currency: "USD", conversionDate: { gte: monthStart, lte: monthEnd } } },
+      _sum: { cutCad: true },
+    }),
+    prisma.commissionSplit.aggregate({
+      where: { ...perCurrencyMonthWhere, event: { currency: "CAD", conversionDate: { gte: monthStart, lte: monthEnd } } },
       _sum: { cutCad: true },
     }),
 
@@ -74,12 +92,24 @@ export async function GET() {
         event: { select: { conversionDate: true } },
       },
     }),
+
+    getCadToUsdRate(),
   ]);
 
+  // Convert USD portions to CAD. cadToUsd is CAD→USD rate, so CAD = USD / rate.
+  // Fallback 0.74 matches the lib's hardcoded fallback when API is unavailable.
+  const cadToUsd = rate?.rate.toNumber() ?? 0.74;
+  const toCad = (usd: number) => Math.round((usd / cadToUsd) * 100) / 100;
+
+  const totalUsd = totalUsdAgg._sum.cutCad?.toNumber() ?? 0;
+  const totalCad = totalCadAgg._sum.cutCad?.toNumber() ?? 0;
+  const monthUsd = monthUsdAgg._sum.cutCad?.toNumber() ?? 0;
+  const monthCad = monthCadAgg._sum.cutCad?.toNumber() ?? 0;
+
   return NextResponse.json({
-    totalEarned: totalEarnedAgg._sum.cutCad?.toNumber() ?? 0,
-    totalEarnedCurrency: "CAD",
-    thisMonthEarned: thisMonthEarnedAgg._sum.cutCad?.toNumber() ?? 0,
+    totalEarned: Math.round((totalCad + toCad(totalUsd)) * 100) / 100,
+    totalEarnedCurrency: "CAD" as const,
+    thisMonthEarned: Math.round((monthCad + toCad(monthUsd)) * 100) / 100,
     commissionCount,
     attendanceDaysThisMonth: attendanceThisMonth.length,
     recentCommissions: recentSplits.map((s) => ({

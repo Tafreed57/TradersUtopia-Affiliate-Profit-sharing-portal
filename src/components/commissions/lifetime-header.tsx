@@ -14,6 +14,7 @@ interface LifetimeStats {
   conversions: number;
   conversionRate: number;
   grossEarnedCad: number;
+  currency: "USD" | "CAD";
   cachedAt?: string;
   stale?: boolean;
 }
@@ -103,7 +104,7 @@ export function LifetimeHeader() {
         <StatCard
           icon={<DollarSign className="h-4 w-4" />}
           label="Total earned"
-          value={format(data.grossEarnedCad, "CAD")}
+          value={format(data.grossEarnedCad, data.currency ?? "USD")}
         />
       </div>
       {cachedLabel && (

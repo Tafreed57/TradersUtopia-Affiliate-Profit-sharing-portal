@@ -13,7 +13,9 @@
       "Bash(python \"C:\\\\Users\\\\Tafre\\\\.claude\\\\hooks\\\\rem-sleep.py\")",
       "Bash(mkdir -p \"C:/Users/Tafre/.claude/.session-state\")",
       "Bash(printf 'HEAD=5cd2bb9f')",
-      "Read(//c/Users/Tafre/.claude/.session-state/**)"
+      "Read(//c/Users/Tafre/.claude/.session-state/**)",
+      "Bash(touch \"C:/Users/Tafre/.claude/.session-state/codex-gate-off.flag\")",
+      "Bash(touch \"C:/Users/Tafre/.claude/.session-state/density-guard-off.flag\")"
     ]
   }
 }

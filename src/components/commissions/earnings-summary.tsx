@@ -12,7 +12,7 @@ interface LifetimeStats {
   grossEarnedCad: number;
   paidCad: number;
   unpaidCad: number;
-  dueCad: number;
+  currency: "USD" | "CAD";
   stale?: boolean;
   cachedAt?: string;
 }
@@ -88,20 +88,17 @@ export function EarningsSummary() {
 
   const paid = Math.max(0, data.paidCad ?? 0);
   const unpaid = Math.max(0, data.unpaidCad ?? 0);
-  const due = Math.max(0, data.dueCad ?? 0);
   const gross = data.grossEarnedCad;
+  const sourceCurrency = data.currency ?? "USD";
 
-  // Proportions for the progress bar only — computed from absolute amounts.
-  const total = paid + unpaid + due;
+  const total = paid + unpaid;
   const paidR = total > 0 ? paid / total : 0;
   const unpaidR = total > 0 ? unpaid / total : 0;
-  const dueR = total > 0 ? due / total : 0;
 
   const fmtPct = (r: number) => `${(r * 100).toFixed(0)}%`;
 
   const segments = [
     { ratio: paidR, color: "bg-success", label: "Paid" },
-    { ratio: dueR, color: "bg-info", label: "Due" },
     { ratio: unpaidR, color: "bg-warning", label: "Unpaid" },
   ];
 
@@ -121,7 +118,7 @@ export function EarningsSummary() {
       <CardContent className="space-y-4">
         <div className="flex items-baseline justify-between">
           <span className="text-sm text-muted-foreground">Total Earned</span>
-          <span className="text-2xl font-bold">{format(gross, "CAD")}</span>
+          <span className="text-2xl font-bold">{format(gross, sourceCurrency)}</span>
         </div>
 
         <ProgressBar segments={segments} />
@@ -130,21 +127,13 @@ export function EarningsSummary() {
           <Row
             color="bg-success"
             label="Paid Out"
-            amount={format(paid, "CAD")}
+            amount={format(paid, sourceCurrency)}
             percent={fmtPct(paidR)}
           />
-          {due > 0 && (
-            <Row
-              color="bg-info"
-              label="Due Now"
-              amount={format(due, "CAD")}
-              percent={fmtPct(dueR)}
-            />
-          )}
           <Row
             color="bg-warning"
             label="Unpaid"
-            amount={format(unpaid, "CAD")}
+            amount={format(unpaid, sourceCurrency)}
             percent={fmtPct(unpaidR)}
           />
         </div>
