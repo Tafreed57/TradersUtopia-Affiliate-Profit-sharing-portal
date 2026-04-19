@@ -56,6 +56,15 @@ export async function DELETE(
       );
     }
   } catch (err) {
+    if (err instanceof rewardful.RewardfulApiError && err.status === 404) {
+      // Affiliate no longer exists upstream → no coupons → coupon in
+      // URL cannot belong to them. 404 the delete attempt rather than
+      // silently proceeding.
+      return NextResponse.json(
+        { error: "Coupon does not belong to this affiliate" },
+        { status: 404 }
+      );
+    }
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[admin promo-codes] ownership check failed:`, msg);
     return NextResponse.json(

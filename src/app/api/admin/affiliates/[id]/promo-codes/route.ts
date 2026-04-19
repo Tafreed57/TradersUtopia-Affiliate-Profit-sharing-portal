@@ -57,6 +57,13 @@ export async function GET(
       })),
     });
   } catch (err) {
+    // 404: the stored rewardfulAffiliateId no longer exists upstream
+    // (test fixture, cleared campaign, manual deletion in Rewardful
+    // dashboard). Treat as "no coupons" and render the empty state
+    // instead of bubbling a 502 to the admin UI.
+    if (err instanceof rewardful.RewardfulApiError && err.status === 404) {
+      return NextResponse.json({ coupons: [] });
+    }
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[admin promo-codes] list failed for ${id}:`, msg);
     return NextResponse.json(

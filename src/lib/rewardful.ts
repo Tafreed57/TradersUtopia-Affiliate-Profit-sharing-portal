@@ -16,6 +16,20 @@ function headers(): HeadersInit {
   };
 }
 
+/** Typed Rewardful error — callers can branch on `.status` instead of
+ *  string-matching the error message. Preserves the original message
+ *  shape for log compatibility. */
+export class RewardfulApiError extends Error {
+  readonly status: number;
+  readonly body: string;
+  constructor(status: number, statusText: string, body: string) {
+    super(`Rewardful API ${status}: ${statusText} — ${body}`);
+    this.name = "RewardfulApiError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
 async function request<T>(
   path: string,
   init?: RequestInit
@@ -28,9 +42,7 @@ async function request<T>(
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(
-      `Rewardful API ${res.status}: ${res.statusText} — ${text}`
-    );
+    throw new RewardfulApiError(res.status, res.statusText, text);
   }
 
   // 204 No Content (DELETE usually) + any genuinely empty body: don't
