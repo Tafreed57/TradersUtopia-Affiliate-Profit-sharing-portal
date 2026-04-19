@@ -94,7 +94,11 @@ export async function linkRewardfulAffiliate(args: {
     const trimmed = (name || "").trim();
     const parts = trimmed ? trimmed.split(/\s+/) : [];
     const firstName = parts[0] || email.split("@")[0] || "Affiliate";
-    const lastName = parts.slice(1).join(" ") || "";
+    // Rewardful rejects last_name:"" with a 422 even though the field is
+    // optional when omitted entirely. Pass undefined (omitted) when the
+    // user has no second name part (e.g. Google profiles with family-name
+    // blanked).
+    const lastName = parts.slice(1).join(" ") || undefined;
 
     const created = await rewardful.createAffiliate({
       email,

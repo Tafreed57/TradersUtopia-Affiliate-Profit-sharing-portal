@@ -228,12 +228,22 @@ export async function getAffiliateByEmail(email: string) {
 export async function createAffiliate(data: {
   email: string;
   first_name: string;
-  last_name: string;
+  /** Optional — Rewardful allows creating affiliates without a last name,
+   *  but rejects requests that include `last_name: ""` with a 422. Callers
+   *  should pass undefined (or omit) when the user has no last name. */
+  last_name?: string;
   campaign_id?: string;
 }) {
+  const body: Record<string, string> = {
+    email: data.email,
+    first_name: data.first_name,
+  };
+  const trimmedLast = data.last_name?.trim();
+  if (trimmedLast) body.last_name = trimmedLast;
+  if (data.campaign_id) body.campaign_id = data.campaign_id;
   return request<RewardfulAffiliate>("/affiliates", {
     method: "POST",
-    body: JSON.stringify(data),
+    body: JSON.stringify(body),
   });
 }
 

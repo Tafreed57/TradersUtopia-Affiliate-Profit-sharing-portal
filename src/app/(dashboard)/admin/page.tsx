@@ -151,6 +151,29 @@ export default function AdminPage() {
     onError: () => toast.error("Sync failed — check logs"),
   });
 
+  const retryLinkMutation = useMutation({
+    mutationFn: async (affiliateId: string) => {
+      const res = await fetch(
+        `/api/admin/affiliates/${affiliateId}/retry-link`,
+        { method: "POST" }
+      );
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+      };
+      if (!res.ok) {
+        throw new Error(data.error ?? "Retry failed");
+      }
+      return data;
+    },
+    onSuccess: () => {
+      toast.success("Affiliate re-linked");
+      queryClient.invalidateQueries({ queryKey: ["admin-affiliates"] });
+    },
+    onError: (err) =>
+      toast.error(err instanceof Error ? err.message : "Retry failed"),
+  });
+
   const pendingProposals =
     proposalsData?.data.filter((p) => p.status === "PENDING") ?? [];
   const pendingTeacherProposals = teacherProposalsData?.data ?? [];
@@ -385,14 +408,35 @@ export default function AdminPage() {
                               {affiliate.email}
                             </p>
                             {(affiliate.linkError || affiliate.backfillError) && (
-                              <p
-                                className="mt-0.5 line-clamp-1 max-w-[260px] text-xs text-error"
-                                title={affiliate.linkError ?? affiliate.backfillError ?? ""}
-                              >
-                                {affiliate.linkError
-                                  ? `Link error: ${affiliate.linkError}`
-                                  : `Backfill error: ${affiliate.backfillError}`}
-                              </p>
+                              <div className="mt-0.5 flex items-start gap-2 max-w-[320px]">
+                                <p
+                                  className="line-clamp-1 text-xs text-error"
+                                  title={affiliate.linkError ?? affiliate.backfillError ?? ""}
+                                >
+                                  {affiliate.linkError
+                                    ? `Link error: ${affiliate.linkError}`
+                                    : `Backfill error: ${affiliate.backfillError}`}
+                                </p>
+                                {affiliate.linkError && (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-6 px-2 text-xs"
+                                    onClick={() =>
+                                      retryLinkMutation.mutate(affiliate.id)
+                                    }
+                                    disabled={
+                                      retryLinkMutation.isPending &&
+                                      retryLinkMutation.variables === affiliate.id
+                                    }
+                                  >
+                                    {retryLinkMutation.isPending &&
+                                    retryLinkMutation.variables === affiliate.id
+                                      ? "Retrying…"
+                                      : "Retry"}
+                                  </Button>
+                                )}
+                              </div>
                             )}
                           </div>
                         </div>
