@@ -75,13 +75,21 @@ export async function GET() {
     });
   }
 
+  const initialPct = Number(user.initialCommissionPercent);
+  const recurringPct = Number(user.recurringCommissionPercent);
+
   return NextResponse.json({
     linked: Boolean(user.rewardfulAffiliateId),
     status: user.backfillStatus,
     startedAt: user.backfillStartedAt,
     completedAt: user.backfillCompletedAt,
     commissionPercent: Number(user.commissionPercent),
-    initialCommissionPercent: Number(user.initialCommissionPercent),
-    recurringCommissionPercent: Number(user.recurringCommissionPercent),
+    initialCommissionPercent: initialPct,
+    recurringCommissionPercent: recurringPct,
+    // Gate for the UI import banner — both rates at 0 means admin hasn't
+    // configured this affiliate yet; the banner shows a "waiting for admin"
+    // state instead of auto-kicking backfill. Matches the rate-gate inside
+    // runBackfill so a racy manual trigger also no-ops safely.
+    canStartBackfill: initialPct > 0 || recurringPct > 0,
   });
 }

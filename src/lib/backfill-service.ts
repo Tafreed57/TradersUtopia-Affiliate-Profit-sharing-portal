@@ -20,14 +20,49 @@ export async function runBackfill(userId: string): Promise<{
   imported: number;
   skipped: number;
   failed: number;
-  status: "COMPLETED" | "FAILED";
+  status: "COMPLETED" | "FAILED" | "WAITING_FOR_RATE";
 }> {
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { rewardfulAffiliateId: true },
+    select: {
+      rewardfulAffiliateId: true,
+      initialCommissionPercent: true,
+      recurringCommissionPercent: true,
+      backfillStatus: true,
+      backfillStartedAt: true,
+    },
   });
   if (!user?.rewardfulAffiliateId) {
     return { imported: 0, skipped: 0, failed: 0, status: "FAILED" };
+  }
+
+  // Rate-gate: do not import history until admin has set at least one rate.
+  // Otherwise every split would be parked as PENDING(rate_not_set) and
+  // auto-recalc would churn through them on the next rate change.
+  if (
+    user.initialCommissionPercent.equals(0) &&
+    user.recurringCommissionPercent.equals(0)
+  ) {
+    // Clear stale IN_PROGRESS so the banner stops re-kicking us every poll
+    // past the 10-min stale threshold. A legitimate live backfill wouldn't
+    // be here — this block only runs with zero rates, and the guarded
+    // kickoff paths never enter runBackfill in that state.
+    const staleThreshold = new Date(Date.now() - 10 * 60 * 1000);
+    if (
+      user.backfillStatus === "IN_PROGRESS" &&
+      user.backfillStartedAt &&
+      user.backfillStartedAt < staleThreshold
+    ) {
+      await prisma.user.updateMany({
+        where: {
+          id: userId,
+          backfillStatus: "IN_PROGRESS",
+          backfillStartedAt: { lt: staleThreshold },
+        },
+        data: { backfillStatus: "NOT_STARTED", backfillStartedAt: null },
+      });
+    }
+    return { imported: 0, skipped: 0, failed: 0, status: "WAITING_FOR_RATE" };
   }
 
   // Atomic claim: only proceed if nobody else is running, or if the prior

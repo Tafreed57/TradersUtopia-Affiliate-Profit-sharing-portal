@@ -1,14 +1,20 @@
 import { Prisma } from "@prisma/client";
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { z } from "zod";
 
 import { authOptions } from "@/lib/auth-options";
+import { runBackfill } from "@/lib/backfill-service";
 import { TEACHER_CUT_WARN_THRESHOLD } from "@/lib/constants";
 import { getCadToUsdRate } from "@/lib/currency";
 import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
 import { runRecalcPending } from "@/lib/recalc-pending";
+
+// First-rate-set schedules a backfill via after() on PATCH — give the
+// route the same 5-min budget as /api/internal/backfill so Vercel doesn't
+// kill the background import mid-flight for affiliates with long history.
+export const maxDuration = 300;
 
 /**
  * GET /api/admin/affiliates/:id
@@ -246,6 +252,8 @@ export async function PATCH(
         initialCommissionPercent: true,
         recurringCommissionPercent: true,
         status: true,
+        backfillStatus: true,
+        rewardfulAffiliateId: true,
       },
     });
 
@@ -374,12 +382,47 @@ export async function PATCH(
       }
     }
 
+    // First-rate-set backfill: if the affiliate had rate-gated out of their
+    // initial history import (both rates were 0 at signup, so runBackfill
+    // returned WAITING_FOR_RATE and left status=NOT_STARTED), kick the
+    // backfill now that at least one rate is configured. Scheduled via
+    // after() because a large affiliate history would make this PATCH hang
+    // or time out — the user-facing route uses the same pattern.
+    let autoBackfillScheduled = false;
+    const prevBothZero =
+      currentUser.initialCommissionPercent.equals(0) &&
+      currentUser.recurringCommissionPercent.equals(0);
+    const nowAtLeastOnePositive =
+      updated.initialCommissionPercent.gt(0) ||
+      updated.recurringCommissionPercent.gt(0);
+    if (
+      rateChanged &&
+      prevBothZero &&
+      nowAtLeastOnePositive &&
+      currentUser.rewardfulAffiliateId &&
+      currentUser.backfillStatus === "NOT_STARTED"
+    ) {
+      autoBackfillScheduled = true;
+      after(async () => {
+        try {
+          await runBackfill(id);
+        } catch (backfillErr) {
+          const msg =
+            backfillErr instanceof Error
+              ? backfillErr.message
+              : String(backfillErr);
+          console.error(`[auto-backfill] failed for affiliate ${id}: ${msg}`);
+        }
+      });
+    }
+
     return NextResponse.json({
       ...updated,
       initialCommissionPercent: updated.initialCommissionPercent.toNumber(),
       recurringCommissionPercent:
         updated.recurringCommissionPercent.toNumber(),
       ...(autoRecalc ? { autoRecalc } : {}),
+      ...(autoBackfillScheduled ? { autoBackfillScheduled: true } : {}),
     });
   } catch (error) {
     if (error instanceof z.ZodError) {

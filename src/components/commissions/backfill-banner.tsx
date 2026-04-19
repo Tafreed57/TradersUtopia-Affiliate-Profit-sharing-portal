@@ -11,6 +11,9 @@ interface BackfillStatus {
   startedAt: string | null;
   completedAt: string | null;
   commissionPercent: number;
+  initialCommissionPercent: number;
+  recurringCommissionPercent: number;
+  canStartBackfill: boolean;
 }
 
 export function BackfillBanner() {
@@ -31,6 +34,9 @@ export function BackfillBanner() {
       if (!d) return false;
       if (!d.linked) return 15_000;
       if (d.status === "IN_PROGRESS") return 15_000;
+      // Keep polling while we're waiting for admin to set rates so the
+      // auto-kick can fire immediately when canStartBackfill flips true.
+      if (d.status === "NOT_STARTED" && !d.canStartBackfill) return 15_000;
       return false;
     },
     refetchOnWindowFocus: true,
@@ -52,6 +58,13 @@ export function BackfillBanner() {
   useEffect(() => {
     if (!data) return;
     if (!data.linked) return;
+    // Do not auto-kick backfill when rates haven't been set yet — the
+    // import would just park every split as PENDING(rate_not_set) and the
+    // RateNotSetBanner is already telling the affiliate to wait. When
+    // rates are eventually set, the next poll will see canStartBackfill=true
+    // with kickedRef still false (we never entered the kickoff branch), so
+    // the effect fires exactly once without any reset gymnastics.
+    if (!data.canStartBackfill) return;
     if (
       (data.status === "NOT_STARTED" || data.status === "FAILED") &&
       !kickedRef.current
