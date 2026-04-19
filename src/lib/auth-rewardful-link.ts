@@ -50,16 +50,21 @@ export async function linkRewardfulAffiliate(args: {
   // duplicate. 5 min covers very slow upstream while still self-recovering
   // after a crashed Lambda (user can't sit locked forever).
   const LOCK_TTL_MS = 5 * 60_000;
+  // Use our own timestamp as the lock fingerprint so the catch path can
+  // compare-and-swap: only clear the lock if it's still *ours*. Without
+  // this, a stale attempt completing after TTL expiry clobbers the newer
+  // attempt's lock and resurrects its stale linkError.
+  const lockedAt = new Date();
   const claim = await prisma.user.updateMany({
     where: {
       id: userId,
       rewardfulAffiliateId: null,
       OR: [
         { linkInProgressAt: null },
-        { linkInProgressAt: { lt: new Date(Date.now() - LOCK_TTL_MS) } },
+        { linkInProgressAt: { lt: new Date(lockedAt.getTime() - LOCK_TTL_MS) } },
       ],
     },
-    data: { linkInProgressAt: new Date() },
+    data: { linkInProgressAt: lockedAt },
   });
   if (claim.count === 0) {
     // Either already linked or another in-flight call holds the lock.
@@ -126,14 +131,14 @@ export async function linkRewardfulAffiliate(args: {
     console.error(
       `[linkRewardfulAffiliate] failed for ${normalizedEmail}; will retry next sign-in: ${msg}`
     );
-    // Release the lock on failure so the next poll / admin retry can re-claim
-    // immediately instead of waiting out the full LOCK_TTL_MS window. Without
-    // this, a failed attempt holds the lock for 5 min even though nothing is
-    // in flight — and the admin retry-link endpoint used to work around this
-    // by clearing the lock unconditionally, which races concurrent pollers.
+    // Compare-and-swap: only release the lock + write linkError if we still
+    // own the lock (lockedAt matches). A stale attempt that limped past the
+    // TTL while another attempt took over must NOT clobber the newer lock
+    // or overwrite a newer success/error. If we lose the CAS (updateMany
+    // affects 0 rows) the newer attempt's state is authoritative.
     await prisma.user
-      .update({
-        where: { id: userId },
+      .updateMany({
+        where: { id: userId, linkInProgressAt: lockedAt },
         data: { linkError: msg.slice(0, 1000), linkInProgressAt: null },
       })
       .catch(() => {
