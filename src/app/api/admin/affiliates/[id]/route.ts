@@ -164,6 +164,7 @@ export async function GET(
       id: r.id,
       previousPercent: r.previousPercent.toNumber(),
       newPercent: r.newPercent.toNumber(),
+      field: r.field,
       reason: r.reason,
       changedBy: r.changedBy.name ?? r.changedBy.email,
       createdAt: r.createdAt,
