@@ -317,10 +317,13 @@ export async function listAllCommissionsForAffiliate(
     const raw = await request<unknown>(`/commissions?${qs}`);
     all.push(...extractPagedRows<RewardfulCommission>(raw, ["commissions"]));
     const next = extractNextPage(raw, page);
-    if (next === null) break;
+    if (next === null) return all;
     page = next;
     await sleep(PAGE_DELAY_MS);
   }
+  console.error(
+    `[rewardful] listAllCommissionsForAffiliate hit MAX_PAGES=${MAX_PAGES} cap for affiliate=${affiliateId} — next_page still present; results truncated.`
+  );
   return all;
 }
 
@@ -340,10 +343,13 @@ export async function listAllReferralsForAffiliate(
     );
     all.push(...extractPagedRows<RewardfulReferral>(raw, ["referrals"]));
     const next = extractNextPage(raw, page);
-    if (next === null) break;
+    if (next === null) return all;
     page = next;
     await sleep(PAGE_DELAY_MS);
   }
+  console.error(
+    `[rewardful] listAllReferralsForAffiliate hit MAX_PAGES=${MAX_PAGES} cap for affiliate=${affiliateId} — next_page still present; results truncated.`
+  );
   return all;
 }
 

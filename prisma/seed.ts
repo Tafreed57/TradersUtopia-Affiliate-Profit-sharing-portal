@@ -12,8 +12,16 @@ const prisma = new PrismaClient();
 async function main() {
   console.log("Seeding database...");
 
-  // Clean existing data (order matters for FK constraints)
-  await prisma.commission.deleteMany();
+  // Clean existing data (order matters for FK constraints).
+  // The legacy `Commission` table is @@ignore'd in the Prisma schema but
+  // still physically present until its drop migration runs; clear it via
+  // raw SQL so subsequent `user.deleteMany()` doesn't trip its FK.
+  // Guarded with `to_regclass` so this no-ops after the drop migration.
+  await prisma.$executeRawUnsafe(
+    `DO $$ BEGIN IF to_regclass('public."Commission"') IS NOT NULL THEN DELETE FROM "Commission"; END IF; END $$;`
+  );
+  await prisma.commissionSplit.deleteMany();
+  await prisma.commissionEvent.deleteMany();
   await prisma.commissionRateAudit.deleteMany();
   await prisma.rateProposal.deleteMany();
   await prisma.attendance.deleteMany();
@@ -39,6 +47,8 @@ async function main() {
       name: "Admin User",
       passwordHash: password,
       commissionPercent: 0,
+      initialCommissionPercent: 0,
+      recurringCommissionPercent: 0,
       rewardfulAffiliateId: null,
     },
   });
@@ -49,6 +59,8 @@ async function main() {
       name: "Alice Johnson",
       passwordHash: password,
       commissionPercent: 40,
+      initialCommissionPercent: 40,
+      recurringCommissionPercent: 40,
       rewardfulAffiliateId: "aff_alice_test",
     },
   });
@@ -59,6 +71,8 @@ async function main() {
       name: "Bob Smith",
       passwordHash: password,
       commissionPercent: 35,
+      initialCommissionPercent: 35,
+      recurringCommissionPercent: 35,
       rewardfulAffiliateId: "aff_bob_test",
     },
   });
@@ -69,6 +83,8 @@ async function main() {
       name: "Charlie Davis",
       passwordHash: password,
       commissionPercent: 30,
+      initialCommissionPercent: 30,
+      recurringCommissionPercent: 30,
       rewardfulAffiliateId: "aff_charlie_test",
     },
   });
@@ -79,6 +95,8 @@ async function main() {
       name: "Diana Lee",
       passwordHash: password,
       commissionPercent: 25,
+      initialCommissionPercent: 25,
+      recurringCommissionPercent: 25,
       rewardfulAffiliateId: "aff_diana_test",
     },
   });
@@ -159,86 +177,9 @@ async function main() {
   await prisma.attendance.createMany({ data: attendanceRecords });
   console.log(`  Created ${attendanceRecords.length} attendance records`);
 
-  // -----------------------------------------------------------------------
-  // Commissions (sample data)
-  // -----------------------------------------------------------------------
-
-  const commissions = [];
-  const baseDate = new Date(today);
-  baseDate.setDate(baseDate.getDate() - 10);
-
-  // Alice's commissions (all earned — she has perfect attendance)
-  for (let i = 0; i < 5; i++) {
-    const convDate = new Date(baseDate);
-    convDate.setDate(convDate.getDate() + i * 2);
-    const fullAmount = 100 + i * 25;
-    const aliceCut = fullAmount * 0.4;
-    const ceoCut = fullAmount - aliceCut;
-
-    commissions.push({
-      affiliateId: alice.id,
-      teacherId: null,
-      rewardfulCommissionId: `comm_alice_${i}`,
-      fullAmountCad: fullAmount,
-      affiliateCutPercent: 40,
-      affiliateCutCad: aliceCut,
-      ceoCutCad: ceoCut,
-      status: "EARNED" as const,
-      conversionDate: convDate,
-    });
-  }
-
-  // Bob's commissions (one forfeited on day 3 due to missing attendance)
-  for (let i = 0; i < 4; i++) {
-    const convDate = new Date(baseDate);
-    convDate.setDate(convDate.getDate() + i * 2 + 1);
-    const fullAmount = 80 + i * 30;
-    const bobPercent = 35;
-    const bobCut = fullAmount * (bobPercent / 100);
-    const aliceTeacherCut = fullAmount * 0.1;
-    const ceoCutBase = fullAmount - bobCut - aliceTeacherCut;
-
-    const isForfeited = i === 1; // Simulate forfeiture
-
-    // Bob's own record
-    commissions.push({
-      affiliateId: bob.id,
-      teacherId: null,
-      rewardfulCommissionId: `comm_bob_${i}`,
-      fullAmountCad: fullAmount,
-      affiliateCutPercent: bobPercent,
-      affiliateCutCad: isForfeited ? 0 : bobCut,
-      ceoCutCad: isForfeited ? ceoCutBase + bobCut : ceoCutBase,
-      status: isForfeited ? ("FORFEITED" as const) : ("EARNED" as const),
-      forfeitedToCeo: isForfeited,
-      forfeitureReason: isForfeited
-        ? "No attendance submitted for conversion date"
-        : null,
-      conversionDate: convDate,
-    });
-
-    // Alice's teacher commission from Bob
-    commissions.push({
-      affiliateId: bob.id,
-      teacherId: alice.id,
-      rewardfulCommissionId: `comm_bob_${i}`,
-      fullAmountCad: fullAmount,
-      affiliateCutPercent: bobPercent,
-      affiliateCutCad: isForfeited ? 0 : bobCut,
-      teacherCutPercent: 10,
-      teacherCutCad: aliceTeacherCut,
-      ceoCutCad: isForfeited ? ceoCutBase + bobCut : ceoCutBase,
-      status: isForfeited ? ("FORFEITED" as const) : ("EARNED" as const),
-      forfeitedToCeo: isForfeited,
-      forfeitureReason: isForfeited
-        ? "No attendance submitted for conversion date"
-        : null,
-      conversionDate: convDate,
-    });
-  }
-
-  await prisma.commission.createMany({ data: commissions });
-  console.log(`  Created ${commissions.length} commission records`);
+  // Commission seeding is intentionally omitted — sample commissions are
+  // generated by webhook in prod-like test runs, and the legacy `Commission`
+  // model is @@ignore'd in favor of CommissionEvent + CommissionSplit.
 
   // -----------------------------------------------------------------------
   // Rate Proposals
