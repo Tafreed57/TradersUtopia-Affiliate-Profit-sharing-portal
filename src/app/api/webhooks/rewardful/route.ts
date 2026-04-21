@@ -38,12 +38,11 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const rawEvent = payload.event ?? payload.type ?? "";
-    const eventType = typeof rawEvent === "string" ? rawEvent : String(rawEvent);
+    const eventType = extractEventType(payload);
 
     // State-change event: commission.updated with state=paid or state=voided
     if (eventType.toLowerCase() === "commission.updated") {
-      const data = (payload.data ?? payload) as Record<string, unknown>;
+      const data = extractCommissionObject(payload);
       const state = (data.state as string | undefined) ?? "";
       const rewardfulCommissionId = (data.id as string | undefined) ?? "";
       if (!rewardfulCommissionId) {
@@ -126,25 +125,69 @@ function isConversionEvent(event: unknown): boolean {
 }
 
 /**
+ * Extract the event type string from a webhook payload.
+ *
+ * Live Rewardful webhooks wrap the type in an object:
+ *   { "event": { "type": "commission.created", ... }, "object": {...} }
+ * Older / test-harness payloads put the type directly as a string on
+ * `payload.event` or `payload.type`. All three forms are accepted.
+ */
+function extractEventType(payload: Record<string, unknown>): string {
+  const wrapper = payload.event;
+  if (wrapper && typeof wrapper === "object") {
+    const t = (wrapper as Record<string, unknown>).type;
+    if (typeof t === "string") return t;
+  }
+  if (typeof wrapper === "string") return wrapper;
+  if (typeof payload.type === "string") return payload.type as string;
+  return "";
+}
+
+/**
+ * Resolve the commission-shaped object inside a webhook payload.
+ *
+ * Live Rewardful webhooks wrap the commission fields under `payload.object`.
+ * Older shapes used `payload.data` or `payload.commission`; the outer payload
+ * itself is the last-resort fallback for unwrapped test harnesses.
+ */
+function extractCommissionObject(
+  payload: Record<string, unknown>
+): Record<string, unknown> {
+  // `??` alone would accept a string discriminator (e.g. `object: "commission"`)
+  // and pass a non-object to getString/getNumber — guard with typeof.
+  for (const candidate of [payload.object, payload.data, payload.commission]) {
+    if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+      return candidate as Record<string, unknown>;
+    }
+  }
+  return payload;
+}
+
+/**
  * Extract conversion data from various Rewardful webhook payload formats.
  * Handles both v1 and v2 webhook structures.
  */
 function extractConversion(
   payload: Record<string, unknown>
 ): WebhookConversion | null {
-  // Try nested data structure first (common in v1 webhooks)
-  const data =
-    (payload.data as Record<string, unknown>) ??
-    (payload.commission as Record<string, unknown>) ??
-    payload;
+  const data = extractCommissionObject(payload);
 
   const commissionId =
     getString(data, "id") ?? getString(payload, "commission_id");
   if (!commissionId) return null;
 
-  // Amount — Rewardful amounts are in cents, convert to dollars.
-  // The currency on individual commissions is typically USD.
+  // Live Rewardful webhook shape (verified 2026-04-20) nests the sale object,
+  // which holds the ground-truth gross sale amount + affiliate identity +
+  // referral + charge timestamp. `data.*` shorthand fields are commission-
+  // level (payout after campaign %) or legacy wire-format fallbacks.
+  const saleObj = (data.sale as Record<string, unknown>) ?? {};
+
+  // Amount — use the sale's gross amount so `processConversion` splits on the
+  // full customer charge, not the commission-level payout (which would be
+  // tiny on sub-100% campaigns and cause underpayment).
   const amountRaw =
+    getNumber(saleObj, "sale_amount_cents") ??
+    getNumber(saleObj, "charge_amount_cents") ??
     getNumber(data, "amount") ??
     getNumber(data, "sale_amount") ??
     getNumber(payload, "amount");
@@ -152,16 +195,22 @@ function extractConversion(
 
   const amount = amountRaw / 100;
   const currency = (
+    getString(saleObj, "currency") ??
     getString(data, "currency") ??
     getString(payload, "currency") ??
     "USD"
   ).toUpperCase();
 
-  // Affiliate ID
+  // Affiliate ID. `data.affiliate_id` + `data.affiliate.id` are legacy
+  // fallbacks that never fire against live payloads.
   const affiliateId =
     getString(data, "affiliate_id") ??
     getString(
       (data.affiliate as Record<string, unknown>) ?? {},
+      "id"
+    ) ??
+    getString(
+      (saleObj.affiliate as Record<string, unknown>) ?? {},
       "id"
     ) ??
     getString(payload, "affiliate_id");
@@ -170,7 +219,6 @@ function extractConversion(
   // Referral ID. Rewardful nests this at sale.referral.id; the older
   // data.referral_id / data.referral.id paths never fire against real
   // payloads but are kept as fallbacks for future shape changes.
-  const saleObj = (data.sale as Record<string, unknown>) ?? {};
   const referralId =
     getString(
       (saleObj.referral as Record<string, unknown>) ?? {},
@@ -182,8 +230,14 @@ function extractConversion(
       "id"
     );
 
-  // Conversion date
+  // Conversion date — prefer sale.charged_at (actual charge time) over
+  // commission.created_at (when Rewardful recorded the commission, which can
+  // lag the charge by seconds-to-minutes). Attendance gating + initial-vs-
+  // recurring classification both key on this date; using the charge time
+  // matches the backfill path and keeps classification stable.
   const dateStr =
+    getString(saleObj, "charged_at") ??
+    getString(saleObj, "invoiced_at") ??
     getString(data, "created_at") ??
     getString(data, "charged_at") ??
     getString(payload, "created_at") ??
