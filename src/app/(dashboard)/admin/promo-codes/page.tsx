@@ -8,6 +8,7 @@ import {
   Tag,
   X,
 } from "lucide-react";
+import { useSession } from "next-auth/react";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -67,9 +68,14 @@ function planLabel(plan: CommissionPlan): string {
 export default function AdminPromoCodesPage() {
   const queryClient = useQueryClient();
   const [selectedPlans, setSelectedPlans] = useState<Record<string, string>>({});
+  // Scope by adminId so account-switching in the same browser doesn't leak
+  // cached data across admins. Prefix invalidations still match.
+  const { data: session } = useSession();
+  const adminId = session?.user?.id;
 
   const { data: plansData, isLoading: plansLoading } = useQuery<{ data: CommissionPlan[] }>({
-    queryKey: ["admin", "campaigns"],
+    queryKey: ["admin", "campaigns", adminId],
+    enabled: !!adminId,
     queryFn: async () => {
       const res = await fetch("/api/admin/campaigns");
       if (!res.ok) throw new Error("Failed to fetch commission plans");
@@ -78,7 +84,8 @@ export default function AdminPromoCodesPage() {
   });
 
   const { data, isLoading } = useQuery<{ data: AdminPromoCode[] }>({
-    queryKey: ["admin", "promo-codes"],
+    queryKey: ["admin", "promo-codes", adminId],
+    enabled: !!adminId,
     queryFn: async () => {
       const res = await fetch("/api/admin/promo-codes");
       if (!res.ok) throw new Error("Failed to fetch promo codes");
@@ -191,7 +198,7 @@ export default function AdminPromoCodesPage() {
           <CardTitle className="text-lg">All Codes ({allCodes.length})</CardTitle>
         </CardHeader>
         <CardContent>
-          {isLoading ? (
+          {isLoading || !adminId ? (
             <div className="space-y-3">{Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}</div>
           ) : !allCodes.length ? (
             <div className="py-8 text-center text-muted-foreground">

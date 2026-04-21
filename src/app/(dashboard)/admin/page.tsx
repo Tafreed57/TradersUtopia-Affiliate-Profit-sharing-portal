@@ -10,6 +10,7 @@ import {
   Users,
 } from "lucide-react";
 import Link from "next/link";
+import { useSession } from "next-auth/react";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -89,6 +90,12 @@ export default function AdminPage() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [page, setPage] = useState(1);
   const queryClient = useQueryClient();
+  // Scope admin caches by adminId so account-switching in the same browser
+  // doesn't leak cached data between admins. Mirrors the affiliate-side
+  // pattern (session-25). Prefix-based invalidations still match because
+  // invalidateQueries prefix-matches by default.
+  const { data: session } = useSession();
+  const adminId = session?.user?.id;
 
   const queryParams = new URLSearchParams();
   queryParams.set("page", String(page));
@@ -97,7 +104,8 @@ export default function AdminPage() {
 
   const { data: affiliatesData, isLoading: affiliatesLoading } =
     useQuery<AffiliatesResponse>({
-      queryKey: ["admin-affiliates", page, search, statusFilter],
+      queryKey: ["admin-affiliates", adminId, page, search, statusFilter],
+      enabled: !!adminId,
       queryFn: async () => {
         const res = await fetch(`/api/admin/affiliates?${queryParams}`);
         if (!res.ok) throw new Error("Failed to fetch");
@@ -106,7 +114,8 @@ export default function AdminPage() {
     });
 
   const { data: proposalsData } = useQuery<{ data: Proposal[] }>({
-    queryKey: ["admin-proposals"],
+    queryKey: ["admin-proposals", adminId],
+    enabled: !!adminId,
     queryFn: async () => {
       const res = await fetch("/api/admin/proposals");
       if (!res.ok) throw new Error("Failed to fetch");
@@ -115,7 +124,8 @@ export default function AdminPage() {
   });
 
   const { data: teacherProposalsData } = useQuery<{ data: TeacherProposal[] }>({
-    queryKey: ["admin-teacher-proposals"],
+    queryKey: ["admin-teacher-proposals", adminId],
+    enabled: !!adminId,
     queryFn: async () => {
       const res = await fetch("/api/admin/teacher-proposals");
       if (!res.ok) throw new Error("Failed to fetch");
@@ -366,7 +376,7 @@ export default function AdminPage() {
           </div>
         </CardHeader>
         <CardContent>
-          {affiliatesLoading ? (
+          {affiliatesLoading || !adminId ? (
             <div className="space-y-3">
               {Array.from({ length: 5 }).map((_, i) => (
                 <Skeleton key={i} className="h-14 w-full" />

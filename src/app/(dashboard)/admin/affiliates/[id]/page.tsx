@@ -17,6 +17,7 @@ import {
   Users,
 } from "lucide-react";
 import Link from "next/link";
+import { useSession } from "next-auth/react";
 import { use, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -122,9 +123,15 @@ export default function AffiliateDetailPage({
   const [rateReason, setRateReason] = useState("");
   const [deactivateDialogOpen, setDeactivateDialogOpen] = useState(false);
   const [unlockDialogOpen, setUnlockDialogOpen] = useState(false);
+  // Scope admin caches by adminId so account-switching in the same browser
+  // doesn't leak cached data across admins. Prefix-based invalidations
+  // below still match because invalidateQueries is prefix-by-default.
+  const { data: session } = useSession();
+  const adminId = session?.user?.id;
 
   const { data, isLoading } = useQuery<AffiliateDetail>({
-    queryKey: ["admin-affiliate", id],
+    queryKey: ["admin-affiliate", adminId, id],
+    enabled: !!adminId,
     queryFn: async () => {
       const res = await fetch(`/api/admin/affiliates/${id}`);
       if (!res.ok) throw new Error("Failed to fetch");
@@ -146,7 +153,7 @@ export default function AffiliateDetailPage({
       return res.json();
     },
     onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: ["admin-affiliate", id] });
+      queryClient.invalidateQueries({ queryKey: ["admin-affiliate", adminId, id] });
       queryClient.invalidateQueries({ queryKey: ["admin-affiliates"] });
       if (result.autoRecalc?.updated > 0) {
         const n = result.autoRecalc.updated;
@@ -173,7 +180,7 @@ export default function AffiliateDetailPage({
       return payload as { updated: number; teacherRowsAffected: number };
     },
     onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: ["admin-affiliate", id] });
+      queryClient.invalidateQueries({ queryKey: ["admin-affiliate", adminId, id] });
       queryClient.invalidateQueries({ queryKey: ["admin-affiliates"] });
       toast.success(
         `Re-priced ${result.updated} commission${result.updated === 1 ? "" : "s"}.`
@@ -194,7 +201,7 @@ export default function AffiliateDetailPage({
       return payload as { fetched: number; updated: number };
     },
     onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: ["admin-affiliate", id] });
+      queryClient.invalidateQueries({ queryKey: ["admin-affiliate", adminId, id] });
       queryClient.invalidateQueries({ queryKey: ["admin-affiliates"] });
       toast.success(
         `Synced ${result.fetched} paid record${result.fetched === 1 ? "" : "s"} — ${result.updated} split${result.updated === 1 ? "" : "s"} flipped to PAID.`
@@ -217,7 +224,7 @@ export default function AffiliateDetailPage({
       return payload as { ratesLocked: boolean };
     },
     onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: ["admin-affiliate", id] });
+      queryClient.invalidateQueries({ queryKey: ["admin-affiliate", adminId, id] });
       queryClient.invalidateQueries({ queryKey: ["admin-affiliates"] });
       toast.success(
         result.ratesLocked
@@ -228,7 +235,10 @@ export default function AffiliateDetailPage({
     onError: (error: Error) => toast.error(error.message),
   });
 
-  if (isLoading) {
+  // `enabled: !!adminId` means the query doesn't start until session hydrates;
+  // during that window isLoading=false + data=undefined would flash the
+  // "Affiliate not found" empty state. Treat pre-session as loading too.
+  if (isLoading || !adminId) {
     return (
       <div className="space-y-6">
         <Skeleton className="h-8 w-48" />

@@ -106,6 +106,13 @@ export async function GET() {
   const monthUsd = monthUsdAgg._sum.cutAmount?.toNumber() ?? 0;
   const monthCad = monthCadAgg._sum.cutAmount?.toNumber() ?? 0;
 
+  // No HTTP cache header here. `Cache-Control: private, max-age=N` would
+  // let the browser HTTP cache reuse this response by URL alone — without
+  // `Vary: Cookie` a sign-out + sign-in-as-another-user within the TTL
+  // could serve the previous user's earnings summary (Codex catch).
+  // React Query's in-memory cache (`staleTime: 30s` from the global
+  // QueryProvider default) already dedupes within-tab fetches; multi-tab
+  // deduping isn't worth the leak risk.
   return NextResponse.json({
     totalEarned: Math.round((totalCad + toCad(totalUsd)) * 100) / 100,
     totalEarnedCurrency: "CAD" as const,

@@ -71,6 +71,15 @@ export default function NotificationsPage() {
       if (!res.ok) throw new Error("Failed to fetch notifications");
       return res.json();
     },
+    // Poll every 20s while the tab is visible so in-app notifications
+    // surface without requiring a page refresh. Returning false when the
+    // tab is hidden keeps background cost close to zero; React Query
+    // also re-evaluates this on visibility change via refetchOnWindowFocus
+    // which kicks an immediate refetch when the user returns to the tab.
+    refetchInterval: () =>
+      typeof document !== "undefined" && document.visibilityState === "visible"
+        ? 20_000
+        : false,
   });
 
   const markReadMutation = useMutation({
