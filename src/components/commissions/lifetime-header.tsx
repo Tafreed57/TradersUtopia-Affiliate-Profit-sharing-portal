@@ -8,7 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCurrency } from "@/providers/currency-provider";
 
-interface LifetimeStats {
+export interface LifetimeHeaderData {
   visitors: number;
   leads: number;
   conversions: number;
@@ -48,21 +48,14 @@ function StatCard({
   );
 }
 
-export function LifetimeHeader() {
-  const { data: session } = useSession();
-  const userId = session?.user?.id;
+export function LifetimeHeaderCards({
+  data,
+  isLoading = false,
+}: {
+  data?: LifetimeHeaderData | null;
+  isLoading?: boolean;
+}) {
   const { format } = useCurrency();
-  const { data, isLoading, isError } = useQuery<LifetimeStats>({
-    queryKey: ["lifetime-stats", userId],
-    enabled: !!userId,
-    queryFn: async () => {
-      const res = await fetch("/api/commissions/lifetime-stats");
-      if (!res.ok) throw new Error("failed");
-      return res.json();
-    },
-    staleTime: 5 * 60 * 1000,
-    refetchOnWindowFocus: false,
-  });
 
   if (isLoading) {
     return (
@@ -73,7 +66,7 @@ export function LifetimeHeader() {
       </div>
     );
   }
-  if (isError || !data) return null;
+  if (!data) return null;
 
   const cachedLabel = data.cachedAt
     ? `updated ${new Date(data.cachedAt).toLocaleTimeString([], {
@@ -112,4 +105,24 @@ export function LifetimeHeader() {
       )}
     </section>
   );
+}
+
+export function LifetimeHeader() {
+  const { data: session } = useSession();
+  const userId = session?.user?.id;
+  const { data, isLoading, isError } = useQuery<LifetimeHeaderData>({
+    queryKey: ["lifetime-stats", userId],
+    enabled: !!userId,
+    queryFn: async () => {
+      const res = await fetch("/api/commissions/lifetime-stats");
+      if (!res.ok) throw new Error("failed");
+      return res.json();
+    },
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+
+  if (isError) return null;
+
+  return <LifetimeHeaderCards data={data} isLoading={isLoading} />;
 }

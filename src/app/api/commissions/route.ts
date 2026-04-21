@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 
+import { getAffiliateCommissionsData } from "@/lib/affiliate-portal-data";
 import { authOptions } from "@/lib/auth-options";
-import { prisma } from "@/lib/prisma";
 
 /**
  * GET /api/commissions
@@ -28,65 +28,13 @@ export async function GET(req: NextRequest) {
   const from = url.searchParams.get("from");
   const to = url.searchParams.get("to");
 
-  const where: Record<string, unknown> = {
-    role: "AFFILIATE",
-    recipientId: session.user.id,
-  };
-
-  if (status && ["EARNED", "FORFEITED", "PENDING", "PAID", "VOIDED"].includes(status)) {
-    where.status = status;
-  }
-
-  if (from || to) {
-    const dateFilter: Record<string, Date> = {};
-    if (from) dateFilter.gte = new Date(from);
-    if (to) dateFilter.lte = new Date(to);
-    where.event = { conversionDate: dateFilter };
-  }
-
-  const [splits, total] = await Promise.all([
-    prisma.commissionSplit.findMany({
-      where,
-      orderBy: { event: { conversionDate: "desc" } },
-      skip: (page - 1) * limit,
-      take: limit,
-      select: {
-        id: true,
-        // cutPercent intentionally omitted — do not expose the applied
-        // rate on the affiliate-facing list. Admin can change rates over
-        // time and we don't want affiliates to detect changes by
-        // inspecting their own history.
-        cutAmount: true,
-        status: true,
-        forfeitedToCeo: true,
-        forfeitureReason: true,
-        createdAt: true,
-        event: { select: { conversionDate: true, currency: true } },
-      },
-    }),
-    prisma.commissionSplit.count({ where }),
-  ]);
-
-  const data = splits.map((s) => ({
-    id: s.id,
-    affiliateCut: s.cutAmount,
-    // Upper-case defensive read: any legacy row with lowercase
-    // "usd"/"cad" gets normalized before the FE formatter sees it.
-    currency: s.event.currency.toUpperCase() as "USD" | "CAD",
-    status: s.status,
-    forfeitedToCeo: s.forfeitedToCeo,
-    forfeitureReason: s.forfeitureReason,
-    conversionDate: s.event.conversionDate,
-    processedAt: s.createdAt,
-  }));
-
-  return NextResponse.json({
-    data,
-    pagination: {
+  return NextResponse.json(
+    await getAffiliateCommissionsData(session.user.id, {
       page,
       limit,
-      total,
-      totalPages: Math.ceil(total / limit),
-    },
-  });
+      status,
+      from,
+      to,
+    })
+  );
 }

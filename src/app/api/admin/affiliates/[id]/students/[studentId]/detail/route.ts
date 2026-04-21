@@ -8,26 +8,27 @@ import {
 import { authOptions } from "@/lib/auth-options";
 
 /**
- * GET /api/students/:id/detail
+ * GET /api/admin/affiliates/:id/students/:studentId/detail
  *
- * Returns the teacher's TEACHER CommissionSplit rows for a student plus the
- * student's attendance records. Auth requires an active teacher relationship.
+ * Admin drill-down into how the managed affiliate sees one student.
  */
 export async function GET(
   _req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  {
+    params,
+  }: {
+    params: Promise<{ id: string; studentId: string }>;
+  }
 ) {
   const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!session?.user?.isAdmin) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const { id: studentId } = await params;
+  const { id, studentId } = await params;
 
   try {
-    return NextResponse.json(
-      await getTeacherStudentDetailData(session.user.id, studentId)
-    );
+    return NextResponse.json(await getTeacherStudentDetailData(id, studentId));
   } catch (error) {
     if (error instanceof AffiliatePortalDataError) {
       return NextResponse.json(
@@ -37,7 +38,7 @@ export async function GET(
     }
 
     console.error(
-      `[student-detail] unexpected failure for viewer=${session.user.id} student=${studentId}:`,
+      `[admin-student-detail] unexpected failure for teacher=${id} student=${studentId}:`,
       error
     );
     return NextResponse.json(

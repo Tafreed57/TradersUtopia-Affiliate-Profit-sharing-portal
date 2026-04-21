@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCurrency } from "@/providers/currency-provider";
 
-interface LifetimeStats {
+export interface EarningsSummaryData {
   grossEarnedCad: number;
   paidCad: number;
   unpaidCad: number;
@@ -66,25 +66,17 @@ function Row({
   );
 }
 
-export function EarningsSummary() {
-  const { data: session } = useSession();
-  const userId = session?.user?.id;
+export function EarningsSummaryCard({
+  data,
+  isLoading = false,
+}: {
+  data?: EarningsSummaryData | null;
+  isLoading?: boolean;
+}) {
   const { format } = useCurrency();
 
-  const { data, isLoading, isError } = useQuery<LifetimeStats>({
-    queryKey: ["lifetime-stats", userId],
-    enabled: !!userId,
-    queryFn: async () => {
-      const res = await fetch("/api/commissions/lifetime-stats");
-      if (!res.ok) throw new Error("failed");
-      return res.json();
-    },
-    staleTime: 5 * 60 * 1000,
-    refetchOnWindowFocus: false,
-  });
-
   if (isLoading) return <Skeleton className="h-48 w-full" />;
-  if (isError || !data || data.grossEarnedCad <= 0) return null;
+  if (!data || data.grossEarnedCad <= 0) return null;
 
   const paid = Math.max(0, data.paidCad ?? 0);
   const unpaid = Math.max(0, data.unpaidCad ?? 0);
@@ -140,4 +132,25 @@ export function EarningsSummary() {
       </CardContent>
     </Card>
   );
+}
+
+export function EarningsSummary() {
+  const { data: session } = useSession();
+  const userId = session?.user?.id;
+
+  const { data, isLoading, isError } = useQuery<EarningsSummaryData>({
+    queryKey: ["lifetime-stats", userId],
+    enabled: !!userId,
+    queryFn: async () => {
+      const res = await fetch("/api/commissions/lifetime-stats");
+      if (!res.ok) throw new Error("failed");
+      return res.json();
+    },
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+
+  if (isError) return null;
+
+  return <EarningsSummaryCard data={data} isLoading={isLoading} />;
 }

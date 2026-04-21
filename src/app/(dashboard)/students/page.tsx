@@ -33,7 +33,7 @@ import {
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -193,7 +193,7 @@ function StudentDetailSheet({
               </div>
               <div>
                 <p className="font-semibold">{data.commissionTotal}</p>
-                <p className="text-xs text-muted-foreground">Conversions</p>
+                <p className="text-xs text-muted-foreground">Commissions</p>
               </div>
               <div>
                 <p className="font-semibold">{data.attendanceTotal}</p>
@@ -846,7 +846,7 @@ function StudentCard({
           <div>
             <Users className="mx-auto mb-1 h-4 w-4 text-info" />
             <p className="text-sm font-semibold">{student.conversionCount}</p>
-            <p className="text-xs text-muted-foreground">Conversions</p>
+            <p className="text-xs text-muted-foreground">Commissions</p>
           </div>
           <div>
             <CalendarCheck className="mx-auto mb-1 h-4 w-4 text-warning" />
@@ -992,7 +992,7 @@ function SubStudentRow({
           {sub.name ?? sub.email}
         </p>
         <p className="truncate text-xs text-muted-foreground">
-          {sub.conversionCount} conversions · {sub.attendanceDaysThisMonth}
+          {sub.conversionCount} commissions · {sub.attendanceDaysThisMonth}
           {" "}attendance · {sub.teacherCutPercent}% your rate
         </p>
       </div>

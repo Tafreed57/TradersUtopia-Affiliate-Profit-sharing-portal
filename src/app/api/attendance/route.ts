@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { z } from "zod";
 
+import { getAffiliateAttendanceData } from "@/lib/affiliate-portal-data";
 import { authOptions } from "@/lib/auth-options";
 import { reevaluateCommission } from "@/lib/commission-engine";
 import { createNotification } from "@/lib/notifications";
@@ -123,41 +124,12 @@ export async function GET(req: NextRequest) {
   const from = url.searchParams.get("from");
   const to = url.searchParams.get("to");
 
-  const where: Record<string, unknown> = { userId: session.user.id };
-
-  if (from || to) {
-    const dateFilter: Record<string, string> = {};
-    if (from) dateFilter.gte = from;
-    if (to) dateFilter.lte = to;
-    where.date = dateFilter;
-  }
-
-  const [records, total, allTimeCount] = await Promise.all([
-    prisma.attendance.findMany({
-      where,
-      orderBy: { date: "desc" },
-      skip: (page - 1) * limit,
-      take: limit,
-      select: {
-        id: true,
-        date: true,
-        timezone: true,
-        note: true,
-        submittedAt: true,
-      },
-    }),
-    prisma.attendance.count({ where }),
-    prisma.attendance.count({ where: { userId: session.user.id } }),
-  ]);
-
-  return NextResponse.json({
-    data: records,
-    hasEverSubmitted: allTimeCount > 0,
-    pagination: {
+  return NextResponse.json(
+    await getAffiliateAttendanceData(session.user.id, {
       page,
       limit,
-      total,
-      totalPages: Math.ceil(total / limit),
-    },
-  });
+      from,
+      to,
+    })
+  );
 }
