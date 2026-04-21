@@ -19,6 +19,7 @@ const DEFAULT_NOTIFICATION_HREFS: Partial<Record<NotificationType, string>> = {
   STUDENT_PAYMENT_RECEIVED: "/students",
   COMMISSION_VOIDED: "/commissions",
   FIRST_ATTENDANCE_RECORDED: "/attendance",
+  TEST_NOTIFICATION: "/notifications",
 };
 
 export function resolveNotificationHref(

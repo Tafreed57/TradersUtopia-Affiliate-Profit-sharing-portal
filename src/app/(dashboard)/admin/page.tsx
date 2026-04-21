@@ -2,6 +2,7 @@
 
 import {
   AlertTriangle,
+  Bell,
   CheckCircle,
   Clock,
   RefreshCw,
@@ -83,6 +84,21 @@ interface TeacherProposal {
   createdAt: string;
   teacher: { id: string; name: string | null; email: string };
   student: { id: string; name: string | null; email: string };
+}
+
+interface TestNotificationResponse {
+  ok: boolean;
+  notificationId: string;
+  deviceTokenCount: number;
+  pushStatus:
+    | "PENDING"
+    | "SENT"
+    | "FAILED"
+    | "SKIPPED_NO_TOKEN"
+    | "SKIPPED_NO_MESSAGING"
+    | "SKIPPED_PREF";
+  pushError: string | null;
+  sentPush: boolean;
 }
 
 export default function AdminPage() {
@@ -182,6 +198,56 @@ export default function AdminPage() {
     },
     onError: (err) =>
       toast.error(err instanceof Error ? err.message : "Retry failed"),
+  });
+
+  const testNotificationMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/admin/notifications/test", {
+        method: "POST",
+      });
+      const data =
+        (await res.json().catch(() => ({}))) as Partial<TestNotificationResponse> & {
+          error?: string;
+        };
+      if (!res.ok) {
+        throw new Error(data.error ?? "Failed to send test notification");
+      }
+      return data as TestNotificationResponse;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["notifications-page"] });
+
+      if (data.pushStatus === "SENT") {
+        toast.success(
+          `Test notification sent. ${data.deviceTokenCount} device${data.deviceTokenCount !== 1 ? "s" : ""} registered for this account.`
+        );
+        return;
+      }
+
+      if (data.pushStatus === "SKIPPED_NO_TOKEN") {
+        toast(
+          "Test notification was created, but this account does not have any registered devices yet."
+        );
+        return;
+      }
+
+      if (data.pushStatus === "SKIPPED_NO_MESSAGING") {
+        toast.error(
+          "Test notification was created, but push delivery is disabled in the current server runtime."
+        );
+        return;
+      }
+
+      toast.error(
+        data.pushError
+          ? `Test notification failed: ${data.pushError}`
+          : `Test notification ended with status ${data.pushStatus}.`
+      );
+    },
+    onError: (error) =>
+      toast.error(
+        error instanceof Error ? error.message : "Failed to send test notification"
+      ),
   });
 
   const pendingProposals =
@@ -335,6 +401,24 @@ export default function AdminPage() {
             >
               <RefreshCw className={`h-4 w-4 ${syncPaidMutation.isPending ? "animate-spin" : ""}`} />
               {syncPaidMutation.isPending ? "Syncing…" : "Sync Paid"}
+            </Button>
+          </div>
+          <div className="flex items-center justify-between border-t border-border/50 pt-4 mt-1">
+            <div>
+              <p className="text-sm font-medium">Send Test Notification</p>
+              <p className="text-xs text-muted-foreground">
+                Sends a real notification to your own admin account so you can verify push delivery on this device.
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2"
+              onClick={() => testNotificationMutation.mutate()}
+              disabled={testNotificationMutation.isPending}
+            >
+              <Bell className="h-4 w-4" />
+              {testNotificationMutation.isPending ? "Sending..." : "Send Test"}
             </Button>
           </div>
         </CardContent>

@@ -62,6 +62,7 @@ const TYPE_LABELS: Record<string, string> = {
   STUDENT_PAYMENT_RECEIVED: "Student Payment",
   COMMISSION_VOIDED: "Commission Voided",
   FIRST_ATTENDANCE_RECORDED: "Attendance",
+  TEST_NOTIFICATION: "Test",
 };
 
 export default function NotificationsPage() {
