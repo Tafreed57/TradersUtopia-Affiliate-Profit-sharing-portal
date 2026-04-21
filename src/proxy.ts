@@ -3,7 +3,16 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { isAdminEmail } from "@/lib/constants";
 
-const publicPaths = ["/login", "/register", "/api/auth", "/api/webhooks"];
+const publicPaths = [
+  "/login",
+  "/register",
+  "/api/auth",
+  "/api/webhooks",
+  // Vercel Cron hits these without a NextAuth session; the route handlers
+  // enforce CRON_SECRET Bearer auth themselves, so the middleware must not
+  // redirect them to /login before the handler runs.
+  "/api/cron",
+];
 
 function isPublic(pathname: string) {
   return publicPaths.some((p) => pathname.startsWith(p));
