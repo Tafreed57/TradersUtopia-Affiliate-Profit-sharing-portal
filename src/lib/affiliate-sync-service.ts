@@ -1,8 +1,10 @@
 import { processConversion } from "@/lib/commission-engine";
-import { syncCommissionMissingUpstream } from "@/lib/paid-sync-service";
+import {
+  syncCommissionMissingUpstream,
+  syncCommissionStatesFromCommissions,
+} from "@/lib/paid-sync-service";
 import { prisma } from "@/lib/prisma";
 import * as rewardful from "@/lib/rewardful";
-import { handleCommissionPaid, handleCommissionVoided } from "@/lib/payment-service";
 
 export interface AffiliateSyncResult {
   fetched: number;
@@ -57,6 +59,7 @@ export async function syncAffiliateCommissionCatalog(args: {
       if (!commission.sale) continue;
       const amountRaw = commission.sale.sale_amount_cents;
       if (typeof amountRaw !== "number") continue;
+      const snapshot = rewardful.snapshotFromRewardfulCommission(commission);
 
       const result = await processConversion(
         {
@@ -69,6 +72,12 @@ export async function syncAffiliateCommissionCatalog(args: {
             commission.sale.charged_at ??
             commission.created_at ??
             new Date().toISOString(),
+          upstreamState: snapshot.state,
+          upstreamDueAt: snapshot.dueAt,
+          upstreamPaidAt: snapshot.paidAt,
+          upstreamVoidedAt: snapshot.voidedAt,
+          campaignId: snapshot.campaignId,
+          campaignName: snapshot.campaignName,
           rawPayload: commission as unknown as Record<string, unknown>,
         },
         { skipAttendanceCheck: true }
@@ -76,28 +85,12 @@ export async function syncAffiliateCommissionCatalog(args: {
       if (result.success && !result.skipped) {
         created++;
       }
-      continue;
-    }
-
-    const affiliateStatus = existing.splits[0]?.status;
-
-    if (commission.state === "paid" && affiliateStatus !== "PAID") {
-      await handleCommissionPaid(
-        commission.id,
-        new Date(commission.paid_at ?? Date.now())
-      );
-      paidSynced++;
-      continue;
-    }
-
-    if (commission.state === "voided" && affiliateStatus !== "VOIDED") {
-      await handleCommissionVoided(
-        commission.id,
-        new Date(commission.voided_at ?? Date.now())
-      );
-      voidedSynced++;
     }
   }
+
+  const stateSync = await syncCommissionStatesFromCommissions(commissions);
+  paidSynced += stateSync.paidUpdated;
+  voidedSynced += stateSync.voidedUpdated;
 
   const upstreamCommissionIds = new Set(commissions.map((commission) => commission.id));
   const localEvents = await prisma.commissionEvent.findMany({
@@ -107,6 +100,7 @@ export async function syncAffiliateCommissionCatalog(args: {
     },
     select: {
       rewardfulCommissionId: true,
+      upstreamState: true,
       splits: {
         where: { role: "AFFILIATE" },
         select: { status: true },
@@ -119,28 +113,16 @@ export async function syncAffiliateCommissionCatalog(args: {
     const rewardfulCommissionId = event.rewardfulCommissionId;
     const affiliateStatus = event.splits[0]?.status;
     if (!rewardfulCommissionId) continue;
-    if (affiliateStatus === "VOIDED") continue;
+    if (affiliateStatus === "VOIDED" && event.upstreamState === "voided") continue;
     if (upstreamCommissionIds.has(rewardfulCommissionId)) continue;
 
     try {
       const upstreamCommission = await rewardful.getCommission(rewardfulCommissionId);
-
-      if (upstreamCommission.state === "paid" && affiliateStatus !== "PAID") {
-        await handleCommissionPaid(
-          rewardfulCommissionId,
-          new Date(upstreamCommission.paid_at ?? Date.now())
-        );
-        paidSynced++;
-        continue;
-      }
-
-      if (upstreamCommission.state === "voided") {
-        await handleCommissionVoided(
-          rewardfulCommissionId,
-          new Date(upstreamCommission.voided_at ?? Date.now())
-        );
-        voidedSynced++;
-      }
+      const syncResult = await syncCommissionStatesFromCommissions([
+        upstreamCommission,
+      ]);
+      paidSynced += syncResult.paidUpdated;
+      voidedSynced += syncResult.voidedUpdated;
     } catch (err) {
       if (
         err instanceof rewardful.RewardfulApiError &&

@@ -19,6 +19,7 @@ import Decimal from "decimal.js";
 import { hasConfiguredCommissionRates } from "@/lib/commission-rate-config";
 import { TEACHER_CUT_WARN_THRESHOLD } from "@/lib/constants";
 import { prisma } from "@/lib/prisma";
+import type { RewardfulCommissionState } from "@/lib/rewardful";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -33,6 +34,12 @@ export interface WebhookConversion {
   /** ISO 4217 currency code of the amount (defaults to USD). */
   currency?: string;
   conversionDate: string; // ISO 8601
+  upstreamState?: RewardfulCommissionState | null;
+  upstreamDueAt?: string | null;
+  upstreamPaidAt?: string | null;
+  upstreamVoidedAt?: string | null;
+  campaignId?: string | null;
+  campaignName?: string | null;
   rawPayload: Record<string, unknown>;
 }
 
@@ -207,18 +214,16 @@ export async function processConversion(
   } else if (isRateNotSet) {
     affiliateStatus = "PENDING";
     affiliateReason = "rate_not_set";
-    teacherStatus = hasAttendance ? "EARNED" : "FORFEITED";
-    teacherReason = hasAttendance
-      ? null
-      : "No attendance submitted for conversion date";
+    teacherStatus = "EARNED";
+    teacherReason = null;
     finalAffiliateCut = new Decimal(0);
     finalCeoCut = ceoCut;
   } else if (!hasAttendance) {
     affiliateStatus = "FORFEITED";
     affiliateForfeitedToCeo = true;
     affiliateReason = "No attendance submitted for conversion date";
-    teacherStatus = "FORFEITED";
-    teacherReason = "No attendance submitted for conversion date";
+    teacherStatus = "EARNED";
+    teacherReason = null;
     finalAffiliateCut = new Decimal(0);
     finalCeoCut = ceoCut.add(affiliateCut);
   } else {
@@ -287,6 +292,18 @@ export async function processConversion(
         fullAmount: fullAmount.toDecimalPlaces(2).toNumber(),
         ceoCut: finalCeoCut.toDecimalPlaces(2).toNumber(),
         isRecurring,
+        upstreamState: conversion.upstreamState ?? null,
+        upstreamDueAt: conversion.upstreamDueAt
+          ? new Date(conversion.upstreamDueAt)
+          : null,
+        upstreamPaidAt: conversion.upstreamPaidAt
+          ? new Date(conversion.upstreamPaidAt)
+          : null,
+        upstreamVoidedAt: conversion.upstreamVoidedAt
+          ? new Date(conversion.upstreamVoidedAt)
+          : null,
+        campaignId: conversion.campaignId ?? null,
+        campaignName: conversion.campaignName ?? null,
         rewardfulData: conversion.rawPayload as Prisma.InputJsonValue,
         splits: { create: splitData },
       },

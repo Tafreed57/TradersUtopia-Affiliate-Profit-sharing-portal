@@ -15,8 +15,64 @@ interface VoidedEntry {
   voidedAt: string;
 }
 
-type CommissionStateSnapshot = Pick<RewardfulCommission, "id" | "state"> &
-  Partial<Pick<RewardfulCommission, "paid_at" | "voided_at">>;
+type CommissionStateSnapshot = Pick<
+  RewardfulCommission,
+  "id" | "state" | "due_at" | "paid_at" | "voided_at" | "campaign"
+>;
+
+function chunk<T>(items: T[], size: number): T[][]
+{
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+async function applyEventSnapshots(
+  commissions: CommissionStateSnapshot[]
+): Promise<{ updated: number; affiliateIds: string[] }> {
+  if (commissions.length === 0) {
+    return { updated: 0, affiliateIds: [] };
+  }
+
+  const ids = [...new Set(commissions.map((commission) => commission.id))];
+  const events = await prisma.commissionEvent.findMany({
+    where: { rewardfulCommissionId: { in: ids } },
+    select: { rewardfulCommissionId: true, affiliateId: true },
+  });
+  if (events.length === 0) {
+    return { updated: 0, affiliateIds: [] };
+  }
+
+  const affiliateIds = [...new Set(events.map((event) => event.affiliateId))];
+  const knownIds = new Set(events.map((event) => event.rewardfulCommissionId));
+  const ops = commissions
+    .filter((commission) => knownIds.has(commission.id))
+    .map((commission) =>
+      prisma.commissionEvent.updateMany({
+        where: { rewardfulCommissionId: commission.id },
+        data: {
+          upstreamState: commission.state ?? null,
+          upstreamDueAt: commission.due_at ? new Date(commission.due_at) : null,
+          upstreamPaidAt: commission.paid_at ? new Date(commission.paid_at) : null,
+          upstreamVoidedAt: commission.voided_at
+            ? new Date(commission.voided_at)
+            : null,
+          campaignId: commission.campaign?.id || null,
+          campaignName: commission.campaign?.name || null,
+        },
+      })
+    );
+
+  let updated = 0;
+  for (const batch of chunk(ops, 100)) {
+    const result = await prisma.$transaction(batch);
+    updated += result.reduce((sum, item) => sum + item.count, 0);
+  }
+
+  return { updated, affiliateIds };
+}
 
 function toPaidEntries(
   commissions: CommissionStateSnapshot[]
@@ -85,6 +141,13 @@ async function applyPaidEntries(
       },
     });
     updated += result.count;
+    await prisma.commissionEvent.updateMany({
+      where: { id: { in: events.map((event) => event.id) } },
+      data: {
+        upstreamState: "paid",
+        upstreamPaidAt: new Date(paidAtStr),
+      },
+    });
   }
 
   if (updated > 0) {
@@ -133,6 +196,13 @@ async function applyVoidedEntries(
       },
     });
     updated += result.count;
+    await prisma.commissionEvent.updateMany({
+      where: { id: { in: events.map((event) => event.id) } },
+      data: {
+        upstreamState: "voided",
+        upstreamVoidedAt: new Date(voidedAtStr),
+      },
+    });
   }
 
   if (updated > 0) {
@@ -145,17 +215,26 @@ async function applyVoidedEntries(
 export async function syncCommissionStatesFromCommissions(
   commissions: CommissionStateSnapshot[]
 ): Promise<{
+  snapshotUpdated: number;
   paidFetched: number;
   paidUpdated: number;
   voidedFetched: number;
   voidedUpdated: number;
 }> {
+  const { updated: snapshotUpdated, affiliateIds } = await applyEventSnapshots(
+    commissions
+  );
   const paidEntries = toPaidEntries(commissions);
   const voidedEntries = toVoidedEntries(commissions);
   const { updated: paidUpdated } = await applyPaidEntries(paidEntries);
   const { updated: voidedUpdated } = await applyVoidedEntries(voidedEntries);
 
+  if (snapshotUpdated > 0 && paidUpdated === 0 && voidedUpdated === 0) {
+    await clearLifetimeStatsCacheForUsers(affiliateIds);
+  }
+
   return {
+    snapshotUpdated,
     paidFetched: paidEntries.length,
     paidUpdated,
     voidedFetched: voidedEntries.length,

@@ -1,11 +1,13 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSession } from "next-auth/react";
 import { Bell, Check, CheckCheck, Filter } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
+import { resolveNotificationHref } from "@/lib/notification-links";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,6 +27,9 @@ interface Notification {
   body: string;
   read: boolean;
   createdAt: string;
+  data?: {
+    href?: string;
+  } | null;
 }
 
 interface NotificationsResponse {
@@ -208,6 +213,17 @@ export default function NotificationsPage() {
                             addSuffix: true,
                           })}
                         </span>
+                        <Link
+                          href={resolveNotificationHref(n.type, n.data)}
+                          className="text-[11px] font-medium text-primary underline underline-offset-4"
+                          onClick={() => {
+                            if (!n.read) {
+                              markReadMutation.mutate([n.id]);
+                            }
+                          }}
+                        >
+                          Open
+                        </Link>
                       </div>
                     </div>
                     {!n.read && (

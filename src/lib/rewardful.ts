@@ -96,7 +96,7 @@ export interface RewardfulCommission {
   id: string;
   amount: number;
   currency: string;
-  state?: "pending" | "due" | "paid" | "voided";
+  state?: RewardfulCommissionState;
   due_at: string | null;
   paid_at: string | null;
   voided_at?: string | null;
@@ -165,17 +165,77 @@ export function couponCode(c: RewardfulCoupon): string {
 
 export interface RewardfulCampaign {
   id: string;
+  created_at?: string;
+  updated_at?: string;
   name: string;
   url: string;
-  commission_type: string;
+  commission_type?: string;
   reward_type: "percent" | "amount";
   private: boolean;
   default: boolean;
   commission_percent: number;
   commission_amount_cents: number | null;
   commission_amount_currency: string | null;
+  max_commission_period_months?: number | null;
+  max_commissions?: number | null;
+  days_before_referrals_expire?: number | null;
+  days_until_commissions_are_due?: number | null;
+  minimum_payout_cents?: number | null;
+  minimum_payout_currency?: string | null;
   stripe_coupon_id: string | null;
-  created_at: string;
+  visitors?: number;
+  leads?: number;
+  conversions?: number;
+  affiliates?: number;
+}
+
+export type RewardfulCommissionState =
+  | "pending"
+  | "due"
+  | "paid"
+  | "voided";
+
+export interface RewardfulCommissionSnapshot {
+  rewardfulCommissionId: string;
+  state: RewardfulCommissionState | null;
+  dueAt: string | null;
+  paidAt: string | null;
+  voidedAt: string | null;
+  campaignId: string | null;
+  campaignName: string | null;
+}
+
+export function normalizeRewardfulCommissionState(
+  value: unknown
+): RewardfulCommissionState | null {
+  if (typeof value !== "string") return null;
+  const lowered = value.trim().toLowerCase();
+  if (
+    lowered === "pending" ||
+    lowered === "due" ||
+    lowered === "paid" ||
+    lowered === "voided"
+  ) {
+    return lowered;
+  }
+  return null;
+}
+
+export function snapshotFromRewardfulCommission(
+  commission: Pick<
+    RewardfulCommission,
+    "id" | "state" | "due_at" | "paid_at" | "voided_at" | "campaign"
+  >
+): RewardfulCommissionSnapshot {
+  return {
+    rewardfulCommissionId: commission.id,
+    state: normalizeRewardfulCommissionState(commission.state),
+    dueAt: commission.due_at ?? null,
+    paidAt: commission.paid_at ?? null,
+    voidedAt: commission.voided_at ?? null,
+    campaignId: commission.campaign?.id ?? null,
+    campaignName: commission.campaign?.name ?? null,
+  };
 }
 
 interface PaginatedResponse<T> {
@@ -359,6 +419,24 @@ export async function listCampaigns(params?: {
   return request<PaginatedResponse<RewardfulCampaign>>(
     `/campaigns${query}`
   );
+}
+
+export async function listAllCampaigns(): Promise<RewardfulCampaign[]> {
+  const all: RewardfulCampaign[] = [];
+  let page = 1;
+  const limit = 100;
+  for (let i = 0; i < MAX_PAGES; i++) {
+    const raw = await request<unknown>(`/campaigns?page=${page}&limit=${limit}`);
+    all.push(...extractPagedRows<RewardfulCampaign>(raw, ["campaigns"]));
+    const next = extractNextPage(raw, page);
+    if (next === null) return all;
+    page = next;
+    await sleep(PAGE_DELAY_MS);
+  }
+  console.error(
+    `[rewardful] listAllCampaigns hit MAX_PAGES=${MAX_PAGES} cap - results truncated.`
+  );
+  return all;
 }
 
 // ---------------------------------------------------------------------------

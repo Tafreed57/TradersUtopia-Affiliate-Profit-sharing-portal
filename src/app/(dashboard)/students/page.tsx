@@ -57,7 +57,10 @@ interface Student {
   depth: number;
   teacherCutPercent: number;
   teacherUnpaidCad: number;
+  teacherDueCad: number;
+  teacherPendingCad: number;
   teacherPaidCad: number;
+  nextDueAt: string | null;
   conversionCount: number;
   attendanceDaysThisMonth: number;
   dataStale: boolean;
@@ -76,6 +79,8 @@ interface DirectStudent extends Student {
 
 interface GrandTotals {
   totalUnpaidCad: number;
+  totalDueCad: number;
+  totalPendingCad: number;
   directUnpaidCad: number;
   indirectUnpaidCad: number;
   totalPaidCad: number;
@@ -87,6 +92,7 @@ interface StudentsResponse {
   grandTotals: GrandTotals;
   isTeacher: boolean;
   canBeTeacher: boolean;
+  canProposeRates: boolean;
 }
 
 interface UserResult {
@@ -104,6 +110,9 @@ interface DetailCommission {
   status: string;
   forfeitureReason: string | null;
   paidAt: string | null;
+  upstreamState: string | null;
+  upstreamDueAt: string | null;
+  campaignName: string | null;
 }
 
 interface DetailAttendance {
@@ -117,7 +126,10 @@ interface StudentDetailResponse {
   student: { id: string; name: string | null; email: string; image: string | null };
   teacherCutPercent: number;
   teacherUnpaidCad: number;
+  teacherDueCad: number;
+  teacherPendingCad: number;
   teacherPaidCad: number;
+  nextDueAt: string | null;
   dataStale: boolean;
   dataReason:
     | "ok"
@@ -132,6 +144,28 @@ interface StudentDetailResponse {
   attendanceTotal: number;
   commissionHasMore: boolean;
   attendanceHasMore: boolean;
+}
+
+function getEarnedBadge(upstreamState: string | null) {
+  if (upstreamState === "due") {
+    return {
+      label: "Due Now",
+      className: "bg-info/15 text-info border-info/30",
+    };
+  }
+
+  return {
+    label: "In Holding",
+    className: "bg-warning/15 text-warning border-warning/30",
+  };
+}
+
+function formatShortDate(iso: string) {
+  return new Date(iso).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
 }
 
 function StudentDetailSheet({
@@ -159,7 +193,8 @@ function StudentDetailSheet({
     enabled: !!student && !!viewerId,
   });
 
-  const totalDueNow = data?.teacherUnpaidCad ?? 0;
+  const totalDueNow = data?.teacherDueCad ?? 0;
+  const totalInHolding = data?.teacherPendingCad ?? 0;
   const totalPaid = data?.teacherPaidCad ?? 0;
 
   return (
@@ -182,10 +217,16 @@ function StudentDetailSheet({
           </div>
 
           {data && (
-            <div className="flex gap-5 pb-4 text-sm">
+            <div className="grid grid-cols-3 gap-3 pb-4 text-sm">
               <div>
-                <p className="font-semibold text-success">{format(totalDueNow, "CAD")}</p>
-                <p className="text-xs text-muted-foreground">Unpaid</p>
+                <p className="font-semibold text-info">{format(totalDueNow, "CAD")}</p>
+                <p className="text-xs text-muted-foreground">Due now</p>
+              </div>
+              <div>
+                <p className="font-semibold text-warning">
+                  {format(totalInHolding, "CAD")}
+                </p>
+                <p className="text-xs text-muted-foreground">In holding</p>
               </div>
               <div>
                 <p className="font-semibold text-muted-foreground">{format(totalPaid, "CAD")}</p>
@@ -204,6 +245,11 @@ function StudentDetailSheet({
                 <p className="text-xs text-muted-foreground">Your rate</p>
               </div>
             </div>
+          )}
+          {data?.nextDueAt && totalInHolding > 0 && (
+            <p className="pb-4 text-xs text-muted-foreground">
+              Next release {formatShortDate(data.nextDueAt)}
+            </p>
           )}
         </SheetHeader>
 
@@ -230,55 +276,74 @@ function StudentDetailSheet({
                   No commissions yet
                 </p>
               ) : (
-                data.commissions.map((c) => (
-                  <div
-                    key={c.id}
-                    className="flex items-center justify-between rounded-lg border border-border/50 px-3 py-2.5"
-                  >
-                    <div>
-                      <p className="text-sm font-medium">
-                        {new Date(c.conversionDate).toLocaleDateString("en-US", {
-                          month: "short",
-                          day: "numeric",
-                          year: "numeric",
-                        })}
-                      </p>
-                      {c.status === "PAID" && c.paidAt && (
-                        <p className="text-xs text-muted-foreground">
-                          Paid {new Date(c.paidAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                data.commissions.map((c) => {
+                  const earnedBadge = getEarnedBadge(c.upstreamState);
+                  const badgeClassName =
+                    c.status === "EARNED"
+                      ? earnedBadge.className
+                      : c.status === "PAID"
+                      ? "bg-info/15 text-info border-info/30"
+                      : c.status === "FORFEITED"
+                      ? "bg-error/15 text-error border-error/30"
+                      : c.status === "VOIDED"
+                      ? "bg-destructive/15 text-destructive border-destructive/30"
+                      : "bg-warning/15 text-warning border-warning/30";
+                  const badgeLabel =
+                    c.status === "PAID"
+                      ? "Paid"
+                      : c.status === "EARNED"
+                      ? earnedBadge.label
+                      : c.status;
+
+                  return (
+                    <div
+                      key={c.id}
+                      className="flex items-center justify-between rounded-lg border border-border/50 px-3 py-2.5"
+                    >
+                      <div>
+                        <p className="text-sm font-medium">
+                          {formatShortDate(c.conversionDate)}
                         </p>
-                      )}
-                      {c.forfeitureReason && (
-                        <p className="text-xs capitalize text-muted-foreground">
-                          {c.forfeitureReason.replace(/_/g, " ")}
-                        </p>
-                      )}
+                        {c.status === "PAID" && c.paidAt && (
+                          <p className="text-xs text-muted-foreground">
+                            Paid {formatShortDate(c.paidAt)}
+                          </p>
+                        )}
+                        {c.status === "EARNED" &&
+                          c.upstreamState !== "due" &&
+                          c.upstreamDueAt && (
+                            <p className="text-xs text-muted-foreground">
+                              Releases {formatShortDate(c.upstreamDueAt)}
+                            </p>
+                          )}
+                        {c.campaignName && (
+                          <p className="text-xs text-muted-foreground">
+                            {c.campaignName}
+                          </p>
+                        )}
+                        {c.forfeitureReason && (
+                          <p className="text-xs capitalize text-muted-foreground">
+                            {c.forfeitureReason.replace(/_/g, " ")}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`text-sm font-semibold ${
+                            c.status === "EARNED"
+                              ? "text-success"
+                              : "text-muted-foreground"
+                          }`}
+                        >
+                          {format(c.teacherCut, c.currency)}
+                        </span>
+                        <Badge variant="default" className={badgeClassName}>
+                          {badgeLabel}
+                        </Badge>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`text-sm font-semibold ${
-                          c.status === "EARNED" ? "text-success" : "text-muted-foreground"
-                        }`}
-                      >
-                        {format(c.teacherCut, c.currency)}
-                      </span>
-                      <Badge
-                        variant="default"
-                        className={
-                          c.status === "EARNED"
-                            ? "bg-success/15 text-success border-success/30"
-                            : c.status === "PAID"
-                            ? "bg-info/15 text-info border-info/30"
-                            : c.status === "FORFEITED"
-                            ? "bg-error/15 text-error border-error/30"
-                            : "bg-warning/15 text-warning border-warning/30"
-                        }
-                      >
-                        {c.status === "PAID" ? "Paid" : c.status === "EARNED" ? "Due" : c.status}
-                      </Badge>
-                    </div>
-                  </div>
-                ))
+                  );
+                })
               )}
               {data?.commissionHasMore && (
                 <p className="pt-2 text-center text-xs text-muted-foreground">
@@ -639,6 +704,7 @@ export default function StudentsPage() {
                 key={student.id}
                 student={student}
                 format={format}
+                allowRateProposals={data?.canProposeRates || isAdmin}
                 onProposalSubmitted={() =>
                   queryClient.invalidateQueries({ queryKey: ["students"] })
                 }
@@ -647,6 +713,28 @@ export default function StudentsPage() {
               />
             ))}
           </div>
+        </div>
+      )}
+
+      {orphanedSubStudents.length > 0 && (
+        <div>
+          <h2 className="mb-2 text-lg font-semibold">Other linked students</h2>
+          <p className="mb-3 text-sm text-muted-foreground">
+            These second-level students still flow into your totals, but their
+            direct parent is not currently active under your tree.
+          </p>
+          <Card>
+            <CardContent className="space-y-2 pt-4">
+              {orphanedSubStudents.map((student) => (
+                <SubStudentRow
+                  key={student.id}
+                  sub={student}
+                  format={format}
+                  onClick={() => setSelectedStudent(student)}
+                />
+              ))}
+            </CardContent>
+          </Card>
         </div>
       )}
     </div>
@@ -669,7 +757,7 @@ function GrandTotalSummary({
   const denom = totals.totalUnpaidCad > 0 ? totals.totalUnpaidCad : 1;
   const directPct = Math.min(100, (totals.directUnpaidCad / denom) * 100);
   const indirectPct = Math.min(100, (totals.indirectUnpaidCad / denom) * 100);
-  // Hide the "your students' students" bar when there aren't any — showing
+  // Hide the "your students' students" bar when there aren't any - showing
   // an empty $0 bar implies the teacher is missing earnings that never
   // existed.
   const showIndirect = indirectCount > 0;
@@ -686,7 +774,9 @@ function GrandTotalSummary({
               {format(totals.totalUnpaidCad, "CAD")}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Across all students · {format(totals.totalPaidCad, "CAD")} lifetime paid
+              Due now {format(totals.totalDueCad, "CAD")} | In holding{" "}
+              {format(totals.totalPendingCad, "CAD")} | Paid{" "}
+              {format(totals.totalPaidCad, "CAD")}
             </p>
           </div>
           <Button
@@ -697,7 +787,7 @@ function GrandTotalSummary({
             className="gap-2 self-start"
           >
             <RefreshCw className={`h-3 w-3 ${isRefreshing ? "animate-spin" : ""}`} />
-            {isRefreshing ? "Refreshing…" : "Refresh"}
+            {isRefreshing ? "Refreshing..." : "Refresh"}
           </Button>
         </div>
 
@@ -743,12 +833,14 @@ function GrandTotalSummary({
 function StudentCard({
   student,
   format,
+  allowRateProposals,
   onProposalSubmitted,
   onViewDetail,
   onSubStudentClick,
 }: {
   student: DirectStudent;
   format: (amount: number, inputCurrency?: "CAD" | "USD") => string;
+  allowRateProposals: boolean;
   onProposalSubmitted: () => void;
   onViewDetail: () => void;
   onSubStudentClick: (sub: Student) => void;
@@ -835,26 +927,40 @@ function StudentCard({
           )}
         </div>
 
-        <div className="mt-4 grid grid-cols-3 gap-3 text-center">
+        <div className="mt-4 grid grid-cols-2 gap-3 text-center sm:grid-cols-4">
           <div>
-            <DollarSign className="mx-auto mb-1 h-4 w-4 text-success" />
+            <DollarSign className="mx-auto mb-1 h-4 w-4 text-info" />
             <p className="text-sm font-semibold">
-              {format(student.teacherUnpaidCad, "CAD")}
+              {format(student.teacherDueCad, "CAD")}
             </p>
-            <p className="text-xs text-muted-foreground">Unpaid</p>
+            <p className="text-xs text-muted-foreground">Due now</p>
           </div>
           <div>
-            <Users className="mx-auto mb-1 h-4 w-4 text-info" />
+            <RefreshCw className="mx-auto mb-1 h-4 w-4 text-warning" />
+            <p className="text-sm font-semibold">
+              {format(student.teacherPendingCad, "CAD")}
+            </p>
+            <p className="text-xs text-muted-foreground">In holding</p>
+          </div>
+          <div>
+            <Users className="mx-auto mb-1 h-4 w-4 text-success" />
             <p className="text-sm font-semibold">{student.conversionCount}</p>
             <p className="text-xs text-muted-foreground">Commissions</p>
           </div>
           <div>
-            <CalendarCheck className="mx-auto mb-1 h-4 w-4 text-warning" />
+            <CalendarCheck className="mx-auto mb-1 h-4 w-4 text-muted-foreground" />
             <p className="text-sm font-semibold">
               {student.attendanceDaysThisMonth}
             </p>
             <p className="text-xs text-muted-foreground">Attendance</p>
           </div>
+        </div>
+
+        <div className="mt-3 text-xs text-muted-foreground">
+          Paid {format(student.teacherPaidCad, "CAD")}
+          {student.nextDueAt && student.teacherPendingCad > 0
+            ? ` · next release ${formatShortDate(student.nextDueAt)}`
+            : ""}
         </div>
 
         <div className="mt-4 flex items-center justify-between border-t border-border/50 pt-3">
@@ -865,7 +971,8 @@ function StudentCard({
               </span>
             </div>
 
-            <Button
+            {allowRateProposals && (
+              <Button
                 variant="ghost"
                 size="sm"
                 className="gap-1 text-xs"
@@ -874,6 +981,7 @@ function StudentCard({
                 <Send className="h-3 w-3" />
                 Propose Rate
               </Button>
+            )}
             <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
               <DialogContent>
                 <DialogHeader>
@@ -992,20 +1100,25 @@ function SubStudentRow({
           {sub.name ?? sub.email}
         </p>
         <p className="truncate text-xs text-muted-foreground">
-          {sub.conversionCount} commissions · {sub.attendanceDaysThisMonth}
-          {" "}attendance · {sub.teacherCutPercent}% your rate
+          {sub.conversionCount} commissions | {sub.attendanceDaysThisMonth}{" "}
+          attendance | {sub.teacherCutPercent}% your rate
         </p>
       </div>
       <div className="flex flex-col items-end">
-        <span className="text-sm font-semibold text-success">
-          {format(sub.teacherUnpaidCad, "CAD")}
+        <span className="text-sm font-semibold text-info">
+          {format(sub.teacherDueCad, "CAD")}
         </span>
+        {sub.teacherPendingCad > 0 && (
+          <span className="text-[10px] text-muted-foreground">
+            Holding {format(sub.teacherPendingCad, "CAD")}
+          </span>
+        )}
         {sub.dataStale && (
           <span
             className="flex items-center gap-0.5 text-[10px] text-warning"
             title={
               sub.dataReason === "timeout"
-                ? "Could not refresh — showing last known value"
+                ? "Could not refresh - showing last known value"
                 : "Using cached value"
             }
           >

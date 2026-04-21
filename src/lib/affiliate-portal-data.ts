@@ -8,7 +8,7 @@ import * as rewardful from "@/lib/rewardful";
 import { getTeacherStudentSplitStatsOne } from "@/lib/rewardful-student-stats";
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
-const CACHE_VERSION = 6;
+const CACHE_VERSION = 7;
 const VALID_COMMISSION_STATUSES = [
   "EARNED",
   "FORFEITED",
@@ -27,8 +27,22 @@ interface LifetimeStatsPayload {
   grossEarnedCad: number;
   paidCad: number;
   unpaidCad: number;
+  dueCad: number;
+  pendingCad: number;
   currency: "USD" | "CAD";
   coupons: Array<{ id: string; code: string }>;
+  nextDueAt: string | null;
+  campaign: {
+    id: string;
+    name: string;
+    rewardType: "percent" | "amount";
+    commissionPercent: number | null;
+    commissionAmountCents: number | null;
+    commissionAmountCurrency: string | null;
+    daysUntilCommissionsAreDue: number | null;
+    minimumPayoutCents: number | null;
+    minimumPayoutCurrency: string | null;
+  } | null;
   fetchedAt: string;
   cachedAt?: string;
   stale?: boolean;
@@ -126,7 +140,15 @@ export async function getAffiliateCommissionsData(
         forfeitedToCeo: true,
         forfeitureReason: true,
         createdAt: true,
-        event: { select: { conversionDate: true, currency: true } },
+        event: {
+          select: {
+            conversionDate: true,
+            currency: true,
+            upstreamState: true,
+            upstreamDueAt: true,
+            campaignName: true,
+          },
+        },
       },
     }),
     prisma.commissionSplit.count({ where }),
@@ -141,6 +163,9 @@ export async function getAffiliateCommissionsData(
       forfeitedToCeo: split.forfeitedToCeo,
       forfeitureReason: split.forfeitureReason,
       conversionDate: split.event.conversionDate.toISOString(),
+      upstreamState: split.event.upstreamState,
+      upstreamDueAt: toIsoString(split.event.upstreamDueAt),
+      campaignName: split.event.campaignName,
       processedAt: split.createdAt.toISOString(),
     })),
     pagination: {
@@ -242,53 +267,90 @@ export async function getAffiliateLifetimeStatsData(userId: string) {
   };
 
   try {
-    const [stats, earnedUsdAgg, earnedCadAgg, paidUsdAgg, paidCadAgg, rate] =
-      await Promise.all([
-        rewardful.getAffiliateLifetimeStats(user.rewardfulAffiliateId),
-        prisma.commissionSplit.aggregate({
-          where: {
-            ...affiliateSplitWhere,
-            status: "EARNED",
-            event: { currency: "USD" },
+    const [stats, splits, rate] = await Promise.all([
+      rewardful.getAffiliateLifetimeStats(user.rewardfulAffiliateId),
+      prisma.commissionSplit.findMany({
+        where: {
+          ...affiliateSplitWhere,
+          status: { in: ["EARNED", "PAID"] },
+        },
+        select: {
+          cutAmount: true,
+          status: true,
+          event: {
+            select: {
+              currency: true,
+              upstreamState: true,
+              upstreamDueAt: true,
+            },
           },
-          _sum: { cutAmount: true },
-        }),
-        prisma.commissionSplit.aggregate({
-          where: {
-            ...affiliateSplitWhere,
-            status: "EARNED",
-            event: { currency: "CAD" },
-          },
-          _sum: { cutAmount: true },
-        }),
-        prisma.commissionSplit.aggregate({
-          where: {
-            ...affiliateSplitWhere,
-            status: "PAID",
-            event: { currency: "USD" },
-          },
-          _sum: { cutAmount: true },
-        }),
-        prisma.commissionSplit.aggregate({
-          where: {
-            ...affiliateSplitWhere,
-            status: "PAID",
-            event: { currency: "CAD" },
-          },
-          _sum: { cutAmount: true },
-        }),
-        getCadToUsdRate(),
-      ]);
+        },
+      }),
+      getCadToUsdRate(),
+    ]);
 
     const cadToUsd = rate?.rate.toNumber() ?? 0.74;
-    const earnedUsd = earnedUsdAgg._sum.cutAmount?.toNumber() ?? 0;
-    const earnedCad = earnedCadAgg._sum.cutAmount?.toNumber() ?? 0;
-    const paidUsd = paidUsdAgg._sum.cutAmount?.toNumber() ?? 0;
-    const paidCadNative = paidCadAgg._sum.cutAmount?.toNumber() ?? 0;
+    let paidCad = 0;
+    let dueCad = 0;
+    let pendingCad = 0;
+    let nextDueAt: Date | null = null;
 
-    const unpaidCad = roundMoney(earnedCad + earnedUsd / cadToUsd);
-    const paidCad = roundMoney(paidCadNative + paidUsd / cadToUsd);
+    for (const split of splits) {
+      const cad = toCad(
+        split.cutAmount.toNumber(),
+        split.event.currency,
+        cadToUsd
+      );
+
+      if (split.status === "PAID") {
+        paidCad += cad;
+        continue;
+      }
+
+      if (split.event.upstreamState === "due") {
+        dueCad += cad;
+      } else {
+        pendingCad += cad;
+      }
+
+      if (
+        split.event.upstreamDueAt &&
+        split.event.upstreamState !== "due" &&
+        (!nextDueAt || split.event.upstreamDueAt < nextDueAt)
+      ) {
+        nextDueAt = split.event.upstreamDueAt;
+      }
+    }
+
+    paidCad = roundMoney(paidCad);
+    dueCad = roundMoney(dueCad);
+    pendingCad = roundMoney(pendingCad);
+    const unpaidCad = roundMoney(dueCad + pendingCad);
     const grossEarnedCad = roundMoney(unpaidCad + paidCad);
+
+    let campaign: LifetimeStatsPayload["campaign"] = null;
+    if (stats.campaignId) {
+      const campaigns = await rewardful.listAllCampaigns();
+      const matched = campaigns.find((candidate) => candidate.id === stats.campaignId);
+      if (matched) {
+        campaign = {
+          id: matched.id,
+          name: matched.name,
+          rewardType: matched.reward_type,
+          commissionPercent:
+            matched.reward_type === "percent"
+              ? matched.commission_percent ?? null
+              : null,
+          commissionAmountCents: matched.commission_amount_cents ?? null,
+          commissionAmountCurrency:
+            matched.commission_amount_currency ?? null,
+          daysUntilCommissionsAreDue:
+            matched.days_until_commissions_are_due ?? null,
+          minimumPayoutCents: matched.minimum_payout_cents ?? null,
+          minimumPayoutCurrency: matched.minimum_payout_currency ?? null,
+        };
+      }
+    }
 
     const payload: LifetimeStatsPayload = {
       visitors: stats.visitors,
@@ -298,8 +360,12 @@ export async function getAffiliateLifetimeStatsData(userId: string) {
       grossEarnedCad,
       paidCad,
       unpaidCad,
+      dueCad,
+      pendingCad,
       currency: "CAD",
       coupons: stats.coupons,
+      nextDueAt: nextDueAt?.toISOString() ?? null,
+      campaign,
       fetchedAt: stats.fetchedAt,
     };
 
@@ -365,7 +431,7 @@ export async function getAffiliateLifetimeStatsData(userId: string) {
 export async function getTeacherStudentsData(teacherId: string) {
   const me = await prisma.user.findUnique({
     where: { id: teacherId },
-    select: { canBeTeacher: true },
+    select: { canBeTeacher: true, canProposeRates: true },
   });
 
   if (!me) {
@@ -395,8 +461,11 @@ export async function getTeacherStudentsData(teacherId: string) {
     return {
       isTeacher: false,
       canBeTeacher: me.canBeTeacher,
+      canProposeRates: me.canProposeRates,
       grandTotals: {
         totalUnpaidCad: 0,
+        totalDueCad: 0,
+        totalPendingCad: 0,
         directUnpaidCad: 0,
         indirectUnpaidCad: 0,
         totalPaidCad: 0,
@@ -445,7 +514,14 @@ export async function getTeacherStudentsData(teacherId: string) {
       select: {
         cutAmount: true,
         status: true,
-        event: { select: { affiliateId: true, currency: true } },
+        event: {
+          select: {
+            affiliateId: true,
+            currency: true,
+            upstreamState: true,
+            upstreamDueAt: true,
+          },
+        },
       },
     }),
     getCadToUsdRate(),
@@ -456,8 +532,10 @@ export async function getTeacherStudentsData(teacherId: string) {
   type Summary = {
     paid: Decimal;
     unpaid: Decimal;
-    paidCount: number;
-    earnedCount: number;
+    due: Decimal;
+    pending: Decimal;
+    count: number;
+    nextDueAt: Date | null;
   };
 
   const summaryByStudent = new Map<string, Summary>();
@@ -466,8 +544,10 @@ export async function getTeacherStudentsData(teacherId: string) {
     const previous = summaryByStudent.get(studentId) ?? {
       paid: new Decimal(0),
       unpaid: new Decimal(0),
-      paidCount: 0,
-      earnedCount: 0,
+      due: new Decimal(0),
+      pending: new Decimal(0),
+      count: 0,
+      nextDueAt: null,
     };
 
     const native = new Decimal(split.cutAmount.toString());
@@ -476,10 +556,24 @@ export async function getTeacherStudentsData(teacherId: string) {
 
     if (split.status === "PAID") {
       previous.paid = previous.paid.add(cad);
-      previous.paidCount += 1;
+      previous.count += 1;
     } else if (split.status === "EARNED") {
       previous.unpaid = previous.unpaid.add(cad);
-      previous.earnedCount += 1;
+      if (split.event.upstreamState === "due") {
+        previous.due = previous.due.add(cad);
+      } else {
+        previous.pending = previous.pending.add(cad);
+      }
+      if (
+        split.event.upstreamDueAt &&
+        split.event.upstreamState !== "due" &&
+        (!previous.nextDueAt || split.event.upstreamDueAt < previous.nextDueAt)
+      ) {
+        previous.nextDueAt = split.event.upstreamDueAt;
+      }
+      previous.count += 1;
+    } else if (split.status !== "PENDING") {
+      previous.count += 1;
     }
 
     summaryByStudent.set(studentId, previous);
@@ -506,8 +600,10 @@ export async function getTeacherStudentsData(teacherId: string) {
     const summary = summaryByStudent.get(relationship.studentId) ?? {
       paid: new Decimal(0),
       unpaid: new Decimal(0),
-      paidCount: 0,
-      earnedCount: 0,
+      due: new Decimal(0),
+      pending: new Decimal(0),
+      count: 0,
+      nextDueAt: null,
     };
 
     return {
@@ -524,8 +620,11 @@ export async function getTeacherStudentsData(teacherId: string) {
       depth: relationship.depth,
       teacherCutPercent: relationship.teacherCut.toNumber(),
       teacherUnpaidCad: summary.unpaid.toDecimalPlaces(2).toNumber(),
+      teacherDueCad: summary.due.toDecimalPlaces(2).toNumber(),
+      teacherPendingCad: summary.pending.toDecimalPlaces(2).toNumber(),
       teacherPaidCad: summary.paid.toDecimalPlaces(2).toNumber(),
-      conversionCount: summary.paidCount + summary.earnedCount,
+      nextDueAt: summary.nextDueAt?.toISOString() ?? null,
+      conversionCount: summary.count,
       attendanceDaysThisMonth: attendanceMap.get(relationship.studentId) ?? 0,
       dataStale: false,
       dataReason: "ok" as const,
@@ -564,6 +663,33 @@ export async function getTeacherStudentsData(teacherId: string) {
     (sum, student) => sum + student.teacherUnpaidCad,
     0
   );
+  const totalDueCad =
+    directStudents.reduce(
+      (sum, student) =>
+        sum +
+        student.teacherDueCad +
+        student.subStudents.reduce(
+          (subTotal, subStudent) => subTotal + subStudent.teacherDueCad,
+          0
+        ),
+      0
+    ) +
+    orphanedSubStudents.reduce((sum, student) => sum + student.teacherDueCad, 0);
+  const totalPendingCad =
+    directStudents.reduce(
+      (sum, student) =>
+        sum +
+        student.teacherPendingCad +
+        student.subStudents.reduce(
+          (subTotal, subStudent) => subTotal + subStudent.teacherPendingCad,
+          0
+        ),
+      0
+    ) +
+    orphanedSubStudents.reduce(
+      (sum, student) => sum + student.teacherPendingCad,
+      0
+    );
   const indirectUnpaidCad =
     directStudents.reduce(
       (sum, student) =>
@@ -597,8 +723,11 @@ export async function getTeacherStudentsData(teacherId: string) {
   return {
     isTeacher: true,
     canBeTeacher: me.canBeTeacher,
+    canProposeRates: me.canProposeRates,
     grandTotals: {
       totalUnpaidCad: roundMoney(directUnpaidCad + indirectUnpaidCad),
+      totalDueCad: roundMoney(totalDueCad),
+      totalPendingCad: roundMoney(totalPendingCad),
       directUnpaidCad: roundMoney(directUnpaidCad),
       indirectUnpaidCad: roundMoney(indirectUnpaidCad),
       totalPaidCad: roundMoney(totalPaidCad),
@@ -656,7 +785,14 @@ export async function getTeacherStudentDetailData(
         forfeitureReason: true,
         paidAt: true,
         event: {
-          select: { conversionDate: true, fullAmount: true, currency: true },
+          select: {
+            conversionDate: true,
+            fullAmount: true,
+            currency: true,
+            upstreamState: true,
+            upstreamDueAt: true,
+            campaignName: true,
+          },
         },
       },
     }),
@@ -686,7 +822,10 @@ export async function getTeacherStudentDetailData(
     depth: relationship.depth,
     teacherCutPercent: relationship.teacherCut.toNumber(),
     teacherUnpaidCad: teacherSplitStats.teacherUnpaidCad,
+    teacherDueCad: teacherSplitStats.teacherDueCad,
+    teacherPendingCad: teacherSplitStats.teacherPendingCad,
     teacherPaidCad: teacherSplitStats.teacherPaidCad,
+    nextDueAt: teacherSplitStats.nextDueAt,
     dataStale: teacherSplitStats.stale,
     dataReason: teacherSplitStats.reason,
     fetchedAt: teacherSplitStats.fetchedAt,
@@ -705,6 +844,9 @@ export async function getTeacherStudentDetailData(
       forfeitedToCeo: split.forfeitedToCeo,
       forfeitureReason: split.forfeitureReason,
       paidAt: toIsoString(split.paidAt),
+      upstreamState: split.event.upstreamState,
+      upstreamDueAt: toIsoString(split.event.upstreamDueAt),
+      campaignName: split.event.campaignName,
     })),
     attendance: attendance.map((record) => ({
       id: record.id,

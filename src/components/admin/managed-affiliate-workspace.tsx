@@ -162,6 +162,9 @@ interface Commission {
   forfeitedToCeo: boolean;
   forfeitureReason: string | null;
   conversionDate: string;
+  upstreamState: string | null;
+  upstreamDueAt: string | null;
+  campaignName: string | null;
   processedAt: string;
 }
 
@@ -203,7 +206,10 @@ interface Student {
   depth: number;
   teacherCutPercent: number;
   teacherUnpaidCad: number;
+  teacherDueCad: number;
+  teacherPendingCad: number;
   teacherPaidCad: number;
+  nextDueAt: string | null;
   conversionCount: number;
   attendanceDaysThisMonth: number;
   dataStale: boolean;
@@ -217,6 +223,8 @@ interface DirectStudent extends Student {
 
 interface GrandTotals {
   totalUnpaidCad: number;
+  totalDueCad: number;
+  totalPendingCad: number;
   directUnpaidCad: number;
   indirectUnpaidCad: number;
   totalPaidCad: number;
@@ -238,6 +246,9 @@ interface DetailCommission {
   status: string;
   forfeitureReason: string | null;
   paidAt: string | null;
+  upstreamState: string | null;
+  upstreamDueAt: string | null;
+  campaignName: string | null;
 }
 
 interface DetailAttendance {
@@ -257,7 +268,10 @@ interface StudentDetailResponse {
   };
   teacherCutPercent: number;
   teacherUnpaidCad: number;
+  teacherDueCad: number;
+  teacherPendingCad: number;
   teacherPaidCad: number;
+  nextDueAt: string | null;
   dataStale: boolean;
   dataReason: "ok" | "stale-cache" | "timeout" | "error" | "not-linked";
   fetchedAt: string | null;
@@ -320,6 +334,20 @@ function formatShortDate(iso: string) {
     day: "numeric",
     year: "numeric",
   });
+}
+
+function getEarnedBadge(upstreamState: string | null) {
+  if (upstreamState === "due") {
+    return {
+      label: "Due Now",
+      className: "bg-info/15 text-info border-info/30",
+    };
+  }
+
+  return {
+    label: "In Holding",
+    className: "bg-warning/15 text-warning border-warning/30",
+  };
 }
 
 function formatAttendanceDate(dateStr: string) {
@@ -478,12 +506,18 @@ function StudentDetailSheet({
           </div>
 
           {data && (
-            <div className="grid grid-cols-2 gap-3 pb-4 text-sm">
+            <div className="grid grid-cols-3 gap-3 pb-4 text-sm">
               <div>
-                <p className="font-semibold text-success">
-                  {format(data.teacherUnpaidCad, "CAD")}
+                <p className="font-semibold text-info">
+                  {format(data.teacherDueCad, "CAD")}
                 </p>
-                <p className="text-xs text-muted-foreground">Unpaid</p>
+                <p className="text-xs text-muted-foreground">Due now</p>
+              </div>
+              <div>
+                <p className="font-semibold text-warning">
+                  {format(data.teacherPendingCad, "CAD")}
+                </p>
+                <p className="text-xs text-muted-foreground">In holding</p>
               </div>
               <div>
                 <p className="font-semibold text-muted-foreground">
@@ -499,7 +533,16 @@ function StudentDetailSheet({
                 <p className="font-semibold">{data.attendanceTotal}</p>
                 <p className="text-xs text-muted-foreground">Attendance</p>
               </div>
+              <div>
+                <p className="font-semibold">{data.teacherCutPercent}%</p>
+                <p className="text-xs text-muted-foreground">Teacher cut</p>
+              </div>
             </div>
+          )}
+          {data?.nextDueAt && data.teacherPendingCad > 0 && (
+            <p className="pb-4 text-xs text-muted-foreground">
+              Next release {formatShortDate(data.nextDueAt)}
+            </p>
           )}
         </SheetHeader>
 
@@ -529,7 +572,26 @@ function StudentDetailSheet({
                   No commissions yet
                 </p>
               ) : (
-                data.commissions.map((commission) => (
+                data.commissions.map((commission) => {
+                  const earnedBadge = getEarnedBadge(commission.upstreamState);
+                  const badgeClassName =
+                    commission.status === "EARNED"
+                      ? earnedBadge.className
+                      : commission.status === "PAID"
+                        ? "bg-info/15 text-info border-info/30"
+                        : commission.status === "FORFEITED"
+                          ? "bg-error/15 text-error border-error/30"
+                          : commission.status === "VOIDED"
+                            ? "bg-destructive/15 text-destructive border-destructive/30"
+                            : "bg-warning/15 text-warning border-warning/30";
+                  const badgeLabel =
+                    commission.status === "PAID"
+                      ? "Paid"
+                      : commission.status === "EARNED"
+                        ? earnedBadge.label
+                        : commission.status;
+
+                  return (
                   <div
                     key={commission.id}
                     className="flex items-center justify-between rounded-lg border border-border/50 px-3 py-2.5"
@@ -541,6 +603,18 @@ function StudentDetailSheet({
                       {commission.status === "PAID" && commission.paidAt && (
                         <p className="text-xs text-muted-foreground">
                           Paid {formatShortDate(commission.paidAt)}
+                        </p>
+                      )}
+                      {commission.status === "EARNED" &&
+                        commission.upstreamState !== "due" &&
+                        commission.upstreamDueAt && (
+                          <p className="text-xs text-muted-foreground">
+                            Releases {formatShortDate(commission.upstreamDueAt)}
+                          </p>
+                        )}
+                      {commission.campaignName && (
+                        <p className="text-xs text-muted-foreground">
+                          {commission.campaignName}
                         </p>
                       )}
                       {friendlyForfeitureReason(commission.forfeitureReason) && (
@@ -559,27 +633,13 @@ function StudentDetailSheet({
                       >
                         {format(commission.teacherCut, commission.currency)}
                       </span>
-                      <Badge
-                        variant="default"
-                        className={
-                          commission.status === "EARNED"
-                            ? "bg-success/15 text-success border-success/30"
-                            : commission.status === "PAID"
-                              ? "bg-info/15 text-info border-info/30"
-                              : commission.status === "FORFEITED"
-                                ? "bg-error/15 text-error border-error/30"
-                                : "bg-warning/15 text-warning border-warning/30"
-                        }
-                      >
-                        {commission.status === "PAID"
-                          ? "Paid"
-                          : commission.status === "EARNED"
-                            ? "Due"
-                            : commission.status}
+                      <Badge variant="default" className={badgeClassName}>
+                        {badgeLabel}
                       </Badge>
                     </div>
                   </div>
-                ))
+                  );
+                })
               )}
               {data?.commissionHasMore && (
                 <p className="pt-2 text-center text-xs text-muted-foreground">
@@ -682,15 +742,15 @@ function ManagedStudentCard({
 
         <div className="mt-4 grid gap-3 sm:grid-cols-4">
           <div className="rounded-xl border border-border/50 bg-muted/20 p-3">
-            <p className="text-xs text-muted-foreground">Unpaid</p>
-            <p className="mt-1 font-semibold text-success">
-              {format(student.teacherUnpaidCad, "CAD")}
+            <p className="text-xs text-muted-foreground">Due now</p>
+            <p className="mt-1 font-semibold text-info">
+              {format(student.teacherDueCad, "CAD")}
             </p>
           </div>
           <div className="rounded-xl border border-border/50 bg-muted/20 p-3">
-            <p className="text-xs text-muted-foreground">Paid</p>
+            <p className="text-xs text-muted-foreground">In holding</p>
             <p className="mt-1 font-semibold">
-              {format(student.teacherPaidCad, "CAD")}
+              {format(student.teacherPendingCad, "CAD")}
             </p>
           </div>
           <div className="rounded-xl border border-border/50 bg-muted/20 p-3">
@@ -698,14 +758,18 @@ function ManagedStudentCard({
             <p className="mt-1 font-semibold">{student.conversionCount}</p>
           </div>
           <div className="rounded-xl border border-border/50 bg-muted/20 p-3">
-            <p className="text-xs text-muted-foreground">Attendance</p>
-            <p className="mt-1 font-semibold">
-              {student.attendanceDaysThisMonth}
-            </p>
+            <p className="text-xs text-muted-foreground">Paid</p>
+            <p className="mt-1 font-semibold">{format(student.teacherPaidCad, "CAD")}</p>
           </div>
         </div>
 
         <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+          <span>
+            Attendance{" "}
+            <span className="font-medium text-foreground">
+              {student.attendanceDaysThisMonth}
+            </span>
+          </span>
           <span>
             Teacher cut{" "}
             <span className="font-medium text-foreground">
@@ -724,6 +788,14 @@ function ManagedStudentCard({
                   hour: "numeric",
                   minute: "2-digit",
                 })}
+              </span>
+            </span>
+          )}
+          {student.nextDueAt && student.teacherPendingCad > 0 && (
+            <span>
+              Next release{" "}
+              <span className="font-medium text-foreground">
+                {formatShortDate(student.nextDueAt)}
               </span>
             </span>
           )}
@@ -767,11 +839,13 @@ function ManagedStudentCard({
                       </p>
                     </div>
                     <div className="text-right">
-                      <p className="text-sm font-semibold text-success">
-                        {format(subStudent.teacherUnpaidCad, "CAD")}
+                      <p className="text-sm font-semibold text-info">
+                        {format(subStudent.teacherDueCad, "CAD")}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        {subStudent.teacherCutPercent}% cut
+                        {subStudent.teacherPendingCad > 0
+                          ? `Holding ${format(subStudent.teacherPendingCad, "CAD")}`
+                          : `${subStudent.teacherCutPercent}% cut`}
                       </p>
                     </div>
                   </button>
@@ -1619,12 +1693,26 @@ export function ManagedAffiliateWorkspace({
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {commissionsQuery.data.data.map((commission) => (
+                        {commissionsQuery.data.data.map((commission) => {
+                          const earnedBadge = getEarnedBadge(commission.upstreamState);
+                          return (
                           <TableRow key={commission.id}>
                             <TableCell>
                               <div className="font-medium">
                                 {formatConversionDate(commission.conversionDate)}
                               </div>
+                              {commission.status === "EARNED" &&
+                                commission.upstreamState !== "due" &&
+                                commission.upstreamDueAt && (
+                                  <p className="mt-1 text-xs text-muted-foreground">
+                                    Releases {formatShortDate(commission.upstreamDueAt)}
+                                  </p>
+                                )}
+                              {commission.campaignName && (
+                                <p className="mt-1 text-xs text-muted-foreground">
+                                  {commission.campaignName}
+                                </p>
+                              )}
                             </TableCell>
                             <TableCell>
                               <span
@@ -1641,7 +1729,16 @@ export function ManagedAffiliateWorkspace({
                               </span>
                             </TableCell>
                             <TableCell>
-                              <CommissionStatusBadge status={commission.status} />
+                              {commission.status === "EARNED" ? (
+                                <Badge
+                                  variant="default"
+                                  className={earnedBadge.className}
+                                >
+                                  {earnedBadge.label}
+                                </Badge>
+                              ) : (
+                                <CommissionStatusBadge status={commission.status} />
+                              )}
                               {friendlyForfeitureReason(commission.forfeitureReason) && (
                                 <p className="mt-1 text-xs text-muted-foreground capitalize">
                                   {friendlyForfeitureReason(commission.forfeitureReason)}
@@ -1649,7 +1746,8 @@ export function ManagedAffiliateWorkspace({
                               )}
                             </TableCell>
                           </TableRow>
-                        ))}
+                        );
+                        })}
                       </TableBody>
                     </Table>
 

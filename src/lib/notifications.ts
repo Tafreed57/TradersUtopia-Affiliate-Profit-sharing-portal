@@ -1,5 +1,11 @@
-import type { NotificationType, Prisma } from "@prisma/client";
+import * as Sentry from "@sentry/nextjs";
+import type {
+  NotificationType,
+  Prisma,
+  PushStatus,
+} from "@prisma/client";
 
+import { resolveNotificationHref } from "@/lib/notification-links";
 import { prisma } from "@/lib/prisma";
 
 interface CreateNotificationParams {
@@ -10,9 +16,50 @@ interface CreateNotificationParams {
   data?: Record<string, unknown>;
 }
 
+interface PushAttemptResult {
+  sentPush: boolean;
+  pushStatus: PushStatus;
+  pushError: string | null;
+}
+
+function truncatePushError(message: string | null | undefined): string | null {
+  if (!message) return null;
+  return message.slice(0, 1000);
+}
+
+function normalizeNotificationData(
+  type: NotificationType,
+  data?: Record<string, unknown>
+): Record<string, unknown> {
+  return {
+    ...(data ?? {}),
+    href: resolveNotificationHref(type, data),
+  };
+}
+
+function formatPushError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "object" && error !== null) {
+    const maybeCode =
+      "code" in error && typeof error.code === "string" ? error.code : null;
+    const maybeMessage =
+      "message" in error && typeof error.message === "string"
+        ? error.message
+        : null;
+    const pieces = [maybeCode, maybeMessage].filter(Boolean);
+    if (pieces.length > 0) {
+      return pieces.join(": ");
+    }
+  }
+  return String(error);
+}
+
 /**
- * Create an in-app notification record and attempt to send a push notification
- * to all registered devices for the user.
+ * Create an in-app notification record and attempt to send push delivery for
+ * that exact record. Push failures should never break the caller's main flow,
+ * but they should be persisted for audit/debug instead of failing silently.
  */
 export async function createNotification({
   userId,
@@ -21,28 +68,68 @@ export async function createNotification({
   body,
   data,
 }: CreateNotificationParams) {
-  // Create the in-app notification record
+  const notificationData = normalizeNotificationData(type, data);
+
   const notification = await prisma.notification.create({
     data: {
       userId,
       type,
       title,
       body,
-      data: (data as Prisma.InputJsonValue) ?? undefined,
+      data: notificationData as Prisma.InputJsonValue,
     },
   });
 
-  // Send push notification in the background — don't block the caller
-  sendPush(notification.id, userId, title, body, data).catch((err) => {
-    console.error(`Push notification failed for user ${userId}:`, err);
-  });
+  let pushResult: PushAttemptResult;
+  try {
+    pushResult = await sendPush(notification.id, userId, title, body, notificationData);
+  } catch (error) {
+    console.error(
+      `[notifications] push delivery failed for notification ${notification.id}:`,
+      error
+    );
+    Sentry.captureException(error, {
+      tags: { subsystem: "notifications", stage: "push-delivery" },
+      extra: { notificationId: notification.id, userId, type },
+    });
+    pushResult = {
+      sentPush: false,
+      pushStatus: "FAILED",
+      pushError: truncatePushError(formatPushError(error)),
+    };
+  }
+
+  try {
+    await prisma.notification.update({
+      where: { id: notification.id },
+      data: {
+        sentPush: pushResult.sentPush,
+        pushStatus: pushResult.pushStatus,
+        pushError: pushResult.pushError,
+      },
+    });
+  } catch (error) {
+    console.error(
+      `[notifications] failed to persist push result for notification ${notification.id}:`,
+      error
+    );
+    Sentry.captureException(error, {
+      tags: { subsystem: "notifications", stage: "push-status-persist" },
+      extra: {
+        notificationId: notification.id,
+        userId,
+        type,
+        pushStatus: pushResult.pushStatus,
+      },
+    });
+  }
 
   return notification;
 }
 
 /**
  * Send push notification to all registered devices for a user.
- * Cleans up invalid tokens automatically.
+ * Invalid tokens are removed automatically.
  */
 async function sendPush(
   notificationId: string,
@@ -50,45 +137,84 @@ async function sendPush(
   title: string,
   body: string,
   data?: Record<string, unknown>
-) {
+): Promise<PushAttemptResult> {
   const tokens = await prisma.deviceToken.findMany({
     where: { userId },
     select: { id: true, token: true },
   });
 
-  if (tokens.length === 0) return;
+  if (tokens.length === 0) {
+    return {
+      sentPush: false,
+      pushStatus: "SKIPPED_NO_TOKEN",
+      pushError: null,
+    };
+  }
 
-  // Lazy-import firebase-admin to avoid initialization errors when
-  // Firebase credentials are not configured (e.g., in tests)
-  const { messaging } = await import("@/lib/firebase-admin");
+  const firebaseAdminModule = await import("@/lib/firebase-admin");
+  const getMessagingFn =
+    typeof firebaseAdminModule.getMessaging === "function"
+      ? firebaseAdminModule.getMessaging
+      : typeof firebaseAdminModule.default?.getMessaging === "function"
+        ? firebaseAdminModule.default.getMessaging
+        : null;
+
+  if (!getMessagingFn) {
+    return {
+      sentPush: false,
+      pushStatus: "FAILED",
+      pushError: "Push messaging helper is unavailable in this runtime.",
+    };
+  }
+
+  const messaging = getMessagingFn();
+  if (!messaging) {
+    return {
+      sentPush: false,
+      pushStatus: "SKIPPED_NO_MESSAGING",
+      pushError: null,
+    };
+  }
+
+  const href =
+    typeof data?.href === "string" && data.href.startsWith("/")
+      ? data.href
+      : "/notifications";
 
   const message = {
     notification: { title, body },
     data: data
-      ? Object.fromEntries(
-          Object.entries(data).map(([k, v]) => [k, String(v)])
-        )
+      ? Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)]))
       : undefined,
     webpush: {
-      fcmOptions: { link: "/" },
+      fcmOptions: { link: href },
     },
   };
 
   const staleTokenIds: string[] = [];
-  let delivered = false;
+  const failureMessages: string[] = [];
+  let deliveredCount = 0;
 
-  // Send to each token individually so we can track which ones fail
   await Promise.allSettled(
     tokens.map(async ({ id, token }) => {
       try {
         await messaging.send({ ...message, token });
-        delivered = true;
-      } catch (err: unknown) {
-        const error = err as { code?: string };
-        // Remove invalid/expired tokens
+        deliveredCount += 1;
+      } catch (error: unknown) {
+        const formattedError = formatPushError(error);
+        failureMessages.push(formattedError);
+
+        const errorCode =
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          typeof error.code === "string"
+            ? error.code
+            : null;
+
         if (
-          error.code === "messaging/invalid-registration-token" ||
-          error.code === "messaging/registration-token-not-registered"
+          errorCode === "messaging/invalid-registration-token" ||
+          errorCode === "messaging/registration-token-not-registered"
         ) {
           staleTokenIds.push(id);
         }
@@ -96,31 +222,46 @@ async function sendPush(
     })
   );
 
-  if (delivered) {
-    await prisma.notification
-      .update({
-        where: { id: notificationId },
-        data: { sentPush: true },
-      })
-      .catch(() => {});
-  }
-
-  // Clean up stale tokens
   if (staleTokenIds.length > 0) {
     await prisma.deviceToken.deleteMany({
       where: { id: { in: staleTokenIds } },
     });
   }
+
+  if (deliveredCount === 0) {
+    return {
+      sentPush: false,
+      pushStatus: "FAILED",
+      pushError: truncatePushError(
+        failureMessages[0] ?? "Push delivery failed for every registered device."
+      ),
+    };
+  }
+
+  const partialFailure =
+    failureMessages.length > 0
+      ? `Delivered to ${deliveredCount} of ${tokens.length} devices. First failure: ${failureMessages[0]}`
+      : null;
+
+  if (partialFailure) {
+    console.warn(
+      `[notifications] partial push delivery for notification ${notificationId}: ${partialFailure}`
+    );
+  }
+
+  return {
+    sentPush: true,
+    pushStatus: "SENT",
+    pushError: truncatePushError(partialFailure),
+  };
 }
 
 /**
- * Send notifications to multiple users at once (e.g., conversion event
- * notifying affiliate + teachers).
+ * Send notifications to multiple users at once (for example conversion events
+ * that fan out to the affiliate plus their teachers).
  */
 export async function createNotifications(
   notifications: CreateNotificationParams[]
 ) {
-  return Promise.allSettled(
-    notifications.map((n) => createNotification(n))
-  );
+  return Promise.allSettled(notifications.map((n) => createNotification(n)));
 }

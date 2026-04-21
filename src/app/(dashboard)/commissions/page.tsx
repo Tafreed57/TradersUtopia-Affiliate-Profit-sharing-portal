@@ -39,6 +39,9 @@ interface Commission {
   forfeitedToCeo: boolean;
   forfeitureReason: string | null;
   conversionDate: string;
+  upstreamState: string | null;
+  upstreamDueAt: string | null;
+  campaignName: string | null;
   processedAt: string;
 }
 
@@ -74,7 +77,7 @@ function friendlyForfeitureReason(raw: string | null): string | null {
 
 const STATUS_CONFIG = {
   EARNED: {
-    label: "Earned",
+    label: "Unpaid",
     variant: "default" as const,
     className: "bg-success/15 text-success border-success/30",
   },
@@ -99,6 +102,26 @@ const STATUS_CONFIG = {
     className: "bg-destructive/15 text-destructive border-destructive/30",
   },
 };
+
+function getCommissionStatusConfig(commission: Commission) {
+  if (commission.status !== "EARNED") {
+    return STATUS_CONFIG[commission.status];
+  }
+
+  if (commission.upstreamState === "due") {
+    return {
+      label: "Due Now",
+      variant: "default" as const,
+      className: "bg-info/15 text-info border-info/30",
+    };
+  }
+
+  return {
+    label: "In Holding",
+    variant: "default" as const,
+    className: "bg-warning/15 text-warning border-warning/30",
+  };
+}
 
 export default function CommissionsPage() {
   const { data: session } = useSession();
@@ -274,13 +297,33 @@ export default function CommissionsPage() {
                 </TableHeader>
                 <TableBody>
                   {data.data.map((commission) => {
-                    const config = STATUS_CONFIG[commission.status];
+                    const config = getCommissionStatusConfig(commission);
                     return (
                       <TableRow key={commission.id}>
                         <TableCell>
                           <div className="font-medium">
                             {formatConversionDate(commission.conversionDate)}
                           </div>
+                          {commission.status === "EARNED" &&
+                            commission.upstreamState !== "due" &&
+                            commission.upstreamDueAt && (
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              Releases{" "}
+                              {new Date(commission.upstreamDueAt).toLocaleDateString(
+                                "en-US",
+                                {
+                                  month: "short",
+                                  day: "numeric",
+                                  year: "numeric",
+                                }
+                              )}
+                            </p>
+                          )}
+                          {commission.campaignName && (
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              {commission.campaignName}
+                            </p>
+                          )}
                         </TableCell>
                         <TableCell>
                           <span

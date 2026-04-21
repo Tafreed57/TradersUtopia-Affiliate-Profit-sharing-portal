@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { Bell, Check, CheckCheck } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
+import { resolveNotificationHref } from "@/lib/notification-links";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -17,12 +19,39 @@ interface Notification {
   body: string;
   read: boolean;
   createdAt: string;
+  data?: {
+    href?: string;
+  } | null;
 }
 
 export function NotificationBell() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [open, setOpen] = useState(false);
+  const [notificationPermission, setNotificationPermission] = useState<
+    NotificationPermission | "unsupported"
+  >(() => {
+    if (typeof window === "undefined") return "default";
+    if (!("Notification" in window)) return "unsupported";
+    return Notification.permission;
+  });
+
+  useEffect(() => {
+    if (typeof document === "undefined" || typeof window === "undefined") return;
+    if (!("Notification" in window)) return;
+
+    const syncPermission = () => {
+      setNotificationPermission(Notification.permission);
+    };
+
+    document.addEventListener("visibilitychange", syncPermission);
+    window.addEventListener("focus", syncPermission);
+
+    return () => {
+      document.removeEventListener("visibilitychange", syncPermission);
+      window.removeEventListener("focus", syncPermission);
+    };
+  }, []);
 
   const fetchNotifications = useCallback(async () => {
     try {
@@ -38,14 +67,29 @@ export function NotificationBell() {
 
   // Poll for new notifications every 30 seconds
   useEffect(() => {
-    fetchNotifications();
-    const interval = setInterval(fetchNotifications, 30_000);
-    return () => clearInterval(interval);
+    const initialFetch = window.setTimeout(() => {
+      void fetchNotifications();
+    }, 0);
+    const interval = window.setInterval(() => {
+      void fetchNotifications();
+    }, 30_000);
+
+    return () => {
+      window.clearTimeout(initialFetch);
+      window.clearInterval(interval);
+    };
   }, [fetchNotifications]);
 
   // Refresh when dropdown opens
   useEffect(() => {
-    if (open) fetchNotifications();
+    if (!open) return;
+    const refresh = window.setTimeout(() => {
+      void fetchNotifications();
+    }, 0);
+
+    return () => {
+      window.clearTimeout(refresh);
+    };
   }, [open, fetchNotifications]);
 
   const markAllRead = async () => {
@@ -101,6 +145,18 @@ export function NotificationBell() {
             </button>
           )}
         </div>
+        {notificationPermission === "denied" && (
+          <div className="border-b bg-warning/5 px-3 py-2 text-xs text-muted-foreground">
+            Push alerts are blocked in this browser.{" "}
+            <Link
+              href="/settings"
+              className="font-medium text-primary underline underline-offset-4"
+            >
+              Enable them in Settings
+            </Link>
+            .
+          </div>
+        )}
         <div className="max-h-80 overflow-y-auto">
           {notifications.length === 0 ? (
             <div className="px-3 py-6 text-center text-sm text-muted-foreground">
@@ -121,11 +177,24 @@ export function NotificationBell() {
                   <p className="mt-0.5 text-xs text-muted-foreground line-clamp-2">
                     {n.body}
                   </p>
-                  <p className="mt-1 text-[10px] text-muted-foreground">
-                    {formatDistanceToNow(new Date(n.createdAt), {
-                      addSuffix: true,
-                    })}
-                  </p>
+                  <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground">
+                    <p>
+                      {formatDistanceToNow(new Date(n.createdAt), {
+                        addSuffix: true,
+                      })}
+                    </p>
+                    <Link
+                      href={resolveNotificationHref(n.type, n.data)}
+                      className="font-medium text-primary underline underline-offset-4"
+                      onClick={() => {
+                        if (!n.read) {
+                          void markOneRead(n.id);
+                        }
+                      }}
+                    >
+                      Open
+                    </Link>
+                  </div>
                 </div>
                 {!n.read && (
                   <button

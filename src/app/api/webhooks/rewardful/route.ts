@@ -7,7 +7,9 @@ import {
   type WebhookConversion,
 } from "@/lib/commission-engine";
 import { createNotifications } from "@/lib/notifications";
+import { syncCommissionStatesFromCommissions } from "@/lib/paid-sync-service";
 import { handleCommissionPaid, handleCommissionVoided } from "@/lib/payment-service";
+import { normalizeRewardfulCommissionState } from "@/lib/rewardful";
 
 /**
  * POST /api/webhooks/rewardful
@@ -49,6 +51,11 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Missing commission id" }, { status: 400 });
       }
 
+      const campaign =
+        data.campaign && typeof data.campaign === "object"
+          ? (data.campaign as { id?: string; name?: string })
+          : undefined;
+
       if (state === "paid") {
         const paidAtStr = (data.paid_at as string | undefined) ?? new Date().toISOString();
         const result = await handleCommissionPaid(rewardfulCommissionId, new Date(paidAtStr));
@@ -61,7 +68,20 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true, ...result });
       }
 
-      return NextResponse.json({ status: "ignored", reason: `state_${state}` });
+      const syncResult = await syncCommissionStatesFromCommissions([
+        {
+          id: rewardfulCommissionId,
+          state: normalizeRewardfulCommissionState(state) ?? undefined,
+          due_at: (data.due_at as string | null | undefined) ?? null,
+          paid_at: (data.paid_at as string | null | undefined) ?? null,
+          voided_at: (data.voided_at as string | null | undefined) ?? null,
+          campaign: campaign
+            ? { id: campaign.id ?? "", name: campaign.name ?? "" }
+            : undefined,
+        },
+      ]);
+
+      return NextResponse.json({ ok: true, ...syncResult });
     }
 
     // Conversion event: create/process new commission
@@ -250,6 +270,18 @@ function extractConversion(
     amount,
     currency,
     conversionDate: dateStr,
+    upstreamState: normalizeRewardfulCommissionState(data.state),
+    upstreamDueAt: getString(data, "due_at"),
+    upstreamPaidAt: getString(data, "paid_at"),
+    upstreamVoidedAt: getString(data, "voided_at"),
+    campaignId: getString(
+      (data.campaign as Record<string, unknown>) ?? {},
+      "id"
+    ),
+    campaignName: getString(
+      (data.campaign as Record<string, unknown>) ?? {},
+      "name"
+    ),
     rawPayload: payload,
   };
 }

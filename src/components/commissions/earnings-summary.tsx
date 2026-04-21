@@ -12,7 +12,10 @@ export interface EarningsSummaryData {
   grossEarnedCad: number;
   paidCad: number;
   unpaidCad: number;
+  dueCad: number;
+  pendingCad: number;
   currency: "USD" | "CAD";
+  nextDueAt: string | null;
   stale?: boolean;
   cachedAt?: string;
 }
@@ -79,19 +82,22 @@ export function EarningsSummaryCard({
   if (!data || data.grossEarnedCad <= 0) return null;
 
   const paid = Math.max(0, data.paidCad ?? 0);
-  const unpaid = Math.max(0, data.unpaidCad ?? 0);
+  const due = Math.max(0, data.dueCad ?? 0);
+  const pending = Math.max(0, data.pendingCad ?? 0);
   const gross = data.grossEarnedCad;
   const sourceCurrency = data.currency ?? "USD";
 
-  const total = paid + unpaid;
+  const total = paid + due + pending;
   const paidR = total > 0 ? paid / total : 0;
-  const unpaidR = total > 0 ? unpaid / total : 0;
+  const dueR = total > 0 ? due / total : 0;
+  const pendingR = total > 0 ? pending / total : 0;
 
   const fmtPct = (r: number) => `${(r * 100).toFixed(0)}%`;
 
   const segments = [
     { ratio: paidR, color: "bg-success", label: "Paid" },
-    { ratio: unpaidR, color: "bg-warning", label: "Unpaid" },
+    { ratio: dueR, color: "bg-info", label: "Due now" },
+    { ratio: pendingR, color: "bg-warning", label: "In holding" },
   ];
 
   return (
@@ -123,12 +129,28 @@ export function EarningsSummaryCard({
             percent={fmtPct(paidR)}
           />
           <Row
+            color="bg-info"
+            label="Due Now"
+            amount={format(due, sourceCurrency)}
+            percent={fmtPct(dueR)}
+          />
+          <Row
             color="bg-warning"
-            label="Unpaid"
-            amount={format(unpaid, sourceCurrency)}
-            percent={fmtPct(unpaidR)}
+            label="In Holding"
+            amount={format(pending, sourceCurrency)}
+            percent={fmtPct(pendingR)}
           />
         </div>
+        {pending > 0 && data.nextDueAt && (
+          <p className="text-xs text-muted-foreground">
+            Next release:{" "}
+            {new Date(data.nextDueAt).toLocaleDateString("en-US", {
+              month: "short",
+              day: "numeric",
+              year: "numeric",
+            })}
+          </p>
+        )}
       </CardContent>
     </Card>
   );

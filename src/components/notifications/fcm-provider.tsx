@@ -61,6 +61,25 @@ export function FcmProvider() {
     registerToken();
   }, [status]);
 
+  useEffect(() => {
+    if (status !== "authenticated") return;
+    if (typeof document === "undefined" || typeof window === "undefined") return;
+    if (!("Notification" in window)) return;
+
+    const refreshTokenOnFocus = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Notification.permission !== "granted") return;
+
+      registered.current = true;
+      void registerToken();
+    };
+
+    document.addEventListener("visibilitychange", refreshTokenOnFocus);
+    return () => {
+      document.removeEventListener("visibilitychange", refreshTokenOnFocus);
+    };
+  }, [status]);
+
   // Show foreground notifications as toasts
   useEffect(() => {
     if (status !== "authenticated") return;

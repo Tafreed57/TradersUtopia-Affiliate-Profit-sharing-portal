@@ -17,7 +17,10 @@ import { prisma } from "@/lib/prisma";
  */
 export interface TeacherStudentSplitStats {
   teacherUnpaidCad: number;
+  teacherDueCad: number;
+  teacherPendingCad: number;
   teacherPaidCad: number;
+  nextDueAt: string | null;
   fetchedAt: string;
   stale: false;
   reason: "ok";
@@ -46,7 +49,14 @@ export async function getTeacherStudentSplitStats(
       select: {
         status: true,
         cutAmount: true,
-        event: { select: { affiliateId: true, currency: true } },
+        event: {
+          select: {
+            affiliateId: true,
+            currency: true,
+            upstreamState: true,
+            upstreamDueAt: true,
+          },
+        },
       },
     }),
     getCadToUsdRate(),
@@ -56,9 +66,12 @@ export async function getTeacherStudentSplitStats(
 
   const fetchedAt = new Date().toISOString();
   for (const id of ids) {
-    result.set(id, {
+        result.set(id, {
       teacherUnpaidCad: 0,
+      teacherDueCad: 0,
+      teacherPendingCad: 0,
       teacherPaidCad: 0,
+      nextDueAt: null,
       fetchedAt,
       stale: false,
       reason: "ok",
@@ -71,11 +84,24 @@ export async function getTeacherStudentSplitStats(
     const native = row.cutAmount.toNumber();
     const cad = row.event.currency === "CAD" ? native : native / cadToUsd;
     if (row.status === "PAID") acc.teacherPaidCad += cad;
-    else acc.teacherUnpaidCad += cad;
+    else {
+      acc.teacherUnpaidCad += cad;
+      if (row.event.upstreamState === "due") acc.teacherDueCad += cad;
+      else acc.teacherPendingCad += cad;
+      if (
+        row.event.upstreamDueAt &&
+        row.event.upstreamState !== "due" &&
+        (!acc.nextDueAt || row.event.upstreamDueAt < new Date(acc.nextDueAt))
+      ) {
+        acc.nextDueAt = row.event.upstreamDueAt.toISOString();
+      }
+    }
   }
 
   for (const acc of result.values()) {
     acc.teacherUnpaidCad = roundCents(acc.teacherUnpaidCad);
+    acc.teacherDueCad = roundCents(acc.teacherDueCad);
+    acc.teacherPendingCad = roundCents(acc.teacherPendingCad);
     acc.teacherPaidCad = roundCents(acc.teacherPaidCad);
   }
 
@@ -90,7 +116,10 @@ export async function getTeacherStudentSplitStatsOne(
   return (
     map.get(studentId) ?? {
       teacherUnpaidCad: 0,
+      teacherDueCad: 0,
+      teacherPendingCad: 0,
       teacherPaidCad: 0,
+      nextDueAt: null,
       fetchedAt: new Date().toISOString(),
       stale: false,
       reason: "ok",

@@ -210,6 +210,7 @@ function mapCommissionToConversion(
     commission.sale?.charged_at ??
     commission.created_at ??
     new Date().toISOString();
+  const snapshot = rewardful.snapshotFromRewardfulCommission(commission);
 
   return {
     rewardfulCommissionId: commission.id,
@@ -218,6 +219,12 @@ function mapCommissionToConversion(
     amount,
     currency,
     conversionDate,
+    upstreamState: snapshot.state,
+    upstreamDueAt: snapshot.dueAt,
+    upstreamPaidAt: snapshot.paidAt,
+    upstreamVoidedAt: snapshot.voidedAt,
+    campaignId: snapshot.campaignId,
+    campaignName: snapshot.campaignName,
     rawPayload: commission as unknown as Record<string, unknown>,
   };
 }

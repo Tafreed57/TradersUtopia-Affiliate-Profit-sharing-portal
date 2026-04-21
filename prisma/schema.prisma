@@ -172,6 +172,12 @@ model CommissionEvent {
   fullAmount            Decimal           @map("fullAmountCad") @db.Decimal(12, 2)
   ceoCut                Decimal           @map("ceoCutCad") @db.Decimal(12, 2)
   isRecurring           Boolean           @default(false)
+  upstreamState         String?
+  upstreamDueAt         DateTime?
+  upstreamPaidAt        DateTime?
+  upstreamVoidedAt      DateTime?
+  campaignId            String?
+  campaignName          String?
   rewardfulData         Json?
   splits                CommissionSplit[]
   createdAt             DateTime          @default(now())
@@ -180,6 +186,9 @@ model CommissionEvent {
   @@index([affiliateId])
   @@index([conversionDate])
   @@index([rewardfulReferralId])
+  @@index([upstreamState])
+  @@index([upstreamDueAt])
+  @@index([campaignId])
 }
 
 model CommissionSplit {
@@ -307,12 +316,15 @@ model Notification {
   data      Json?
   read      Boolean          @default(false)
   sentPush  Boolean          @default(false)
+  pushStatus PushStatus      @default(PENDING)
+  pushError String?
   createdAt DateTime         @default(now())
   user      User             @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([userId, read])
   @@index([userId, createdAt])
   @@index([type])
+  @@index([pushStatus])
 }
 
 model DeviceToken {
@@ -394,6 +406,15 @@ enum NotificationType {
   STUDENT_PAYMENT_RECEIVED
   COMMISSION_VOIDED
   FIRST_ATTENDANCE_RECORDED
+}
+
+enum PushStatus {
+  PENDING
+  SENT
+  FAILED
+  SKIPPED_NO_TOKEN
+  SKIPPED_NO_MESSAGING
+  SKIPPED_PREF
 }
 
 enum TeacherStudentStatus {

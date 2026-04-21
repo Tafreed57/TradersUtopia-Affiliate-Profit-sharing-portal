@@ -21,6 +21,13 @@ export async function syncCommissionPaid(
     where: { eventId: event.id, status: "EARNED" },
     data: { status: "PAID", paidAt },
   });
+  await prisma.commissionEvent.update({
+    where: { id: event.id },
+    data: {
+      upstreamState: "paid",
+      upstreamPaidAt: paidAt,
+    },
+  });
   if (res.count > 0 && opts.bustCache !== false) {
     await clearLifetimeStatsCacheForUsers([event.affiliateId]);
   }
@@ -55,6 +62,13 @@ export async function handleCommissionPaid(
   await prisma.commissionSplit.updateMany({
     where: { id: { in: event.splits.map((s) => s.id) } },
     data: { status: "PAID", paidAt },
+  });
+  await prisma.commissionEvent.update({
+    where: { id: event.id },
+    data: {
+      upstreamState: "paid",
+      upstreamPaidAt: paidAt,
+    },
   });
   await clearLifetimeStatsCacheForUsers([event.affiliateId]);
 
@@ -125,6 +139,13 @@ export async function handleCommissionVoided(
   await prisma.commissionSplit.updateMany({
     where: { id: { in: event.splits.map((s) => s.id) } },
     data: { status: "VOIDED", voidedAt },
+  });
+  await prisma.commissionEvent.update({
+    where: { id: event.id },
+    data: {
+      upstreamState: "voided",
+      upstreamVoidedAt: voidedAt,
+    },
   });
   await clearLifetimeStatsCacheForUsers([event.affiliateId]);
 

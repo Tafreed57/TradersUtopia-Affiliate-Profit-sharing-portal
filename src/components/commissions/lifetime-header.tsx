@@ -15,6 +15,18 @@ export interface LifetimeHeaderData {
   conversionRate: number;
   grossEarnedCad: number;
   currency: "USD" | "CAD";
+  nextDueAt: string | null;
+  campaign: {
+    id: string;
+    name: string;
+    rewardType: "percent" | "amount";
+    commissionPercent: number | null;
+    commissionAmountCents: number | null;
+    commissionAmountCurrency: string | null;
+    daysUntilCommissionsAreDue: number | null;
+    minimumPayoutCents: number | null;
+    minimumPayoutCurrency: string | null;
+  } | null;
   cachedAt?: string;
   stale?: boolean;
 }
@@ -74,6 +86,33 @@ export function LifetimeHeaderCards({
         minute: "2-digit",
       })}${data.stale ? " · cached" : ""}`
     : undefined;
+  const campaignLabel = data.campaign
+    ? [
+        data.campaign.name,
+        data.campaign.daysUntilCommissionsAreDue != null
+          ? `${data.campaign.daysUntilCommissionsAreDue}-day hold`
+          : null,
+        data.campaign.minimumPayoutCents != null &&
+        data.campaign.minimumPayoutCurrency
+          ? `min payout ${format(
+              data.campaign.minimumPayoutCents / 100,
+              data.campaign.minimumPayoutCurrency as "CAD" | "USD"
+            )}`
+          : null,
+        data.nextDueAt
+          ? `next release ${new Date(data.nextDueAt).toLocaleDateString(
+              "en-US",
+              {
+                month: "short",
+                day: "numeric",
+                year: "numeric",
+              }
+            )}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : null;
 
   return (
     <section className="space-y-2">
@@ -102,6 +141,9 @@ export function LifetimeHeaderCards({
       </div>
       {cachedLabel && (
         <p className="text-xs text-muted-foreground">{cachedLabel}</p>
+      )}
+      {campaignLabel && (
+        <p className="text-xs text-muted-foreground">{campaignLabel}</p>
       )}
     </section>
   );
