@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { z } from "zod";
@@ -172,37 +173,51 @@ export async function PATCH(
           })
           .filter(({ teacherCutAmount }) => teacherCutAmount > 0);
 
-        if (toProcess.length > 0) {
-          // Array-form $transaction: safe with PgBouncer (no interactive tx).
-          await prisma.$transaction([
-            prisma.commissionSplit.createMany({
-              data: toProcess.map(({ event, teacherCutAmount }) => ({
-                eventId: event.id,
-                recipientId: proposal.teacherId,
-                role: "TEACHER" as const,
-                depth: proposal.depth,
-                cutPercent: proposal.teacherCut,
-                cutAmount: teacherCutAmount,
-                status: "EARNED" as const,
-                forfeitedToCeo: false,
-                forfeitureReason: null,
-                idempotencyKey: event.rewardfulCommissionId
-                  ? `${event.rewardfulCommissionId}:teacher:${proposal.teacherId}`
-                  : `evt:${event.id}:teacher:${proposal.teacherId}`,
-              })),
-              skipDuplicates: true,
-            }),
-            ...toProcess.map(({ event, teacherCutAmount }) =>
+        // Per-event $transaction mirroring admin/teacher-student: if a
+        // concurrent process wins the split-insert race (P2002), that single
+        // event's tx rolls back and we continue with the remaining events.
+        // Bulk createMany would fail the whole batch AFTER the proposal has
+        // already flipped to ACTIVE, leaving subsequent retries blocked by the
+        // "Proposal is already active" 409 and the backfill permanently
+        // incomplete (Codex catch).
+        for (const { event, teacherCutAmount } of toProcess) {
+          const ceoAfter = Number(
+            (event.ceoCut.toNumber() - teacherCutAmount).toFixed(2)
+          );
+          try {
+            await prisma.$transaction([
+              prisma.commissionSplit.create({
+                data: {
+                  eventId: event.id,
+                  recipientId: proposal.teacherId,
+                  role: "TEACHER" as const,
+                  depth: proposal.depth,
+                  cutPercent: proposal.teacherCut,
+                  cutAmount: teacherCutAmount,
+                  status: "EARNED" as const,
+                  forfeitedToCeo: false,
+                  forfeitureReason: null,
+                  idempotencyKey: event.rewardfulCommissionId
+                    ? `${event.rewardfulCommissionId}:teacher:${proposal.teacherId}`
+                    : `evt:${event.id}:teacher:${proposal.teacherId}`,
+                },
+              }),
               prisma.commissionEvent.update({
                 where: { id: event.id },
-                data: {
-                  ceoCut: Number(
-                    (event.ceoCut.toNumber() - teacherCutAmount).toFixed(2)
-                  ),
-                },
-              })
-            ),
-          ]);
+                data: { ceoCut: ceoAfter },
+              }),
+            ]);
+          } catch (err) {
+            if (
+              err instanceof Prisma.PrismaClientKnownRequestError &&
+              err.code === "P2002"
+            ) {
+              // Concurrent inserter already created this event's teacher split.
+              // Their tx already debited ceoCut; ours is a no-op. Continue.
+              continue;
+            }
+            throw err;
+          }
         }
       }
     }

@@ -26,10 +26,13 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // Pull linked users regardless of status — processConversion now records
+  // DEACTIVATED-affiliate commissions as FORFEITED with an audit trail, so
+  // the reconcile recovery path must include them; otherwise a dropped
+  // webhook for a deactivated affiliate is lost forever (Codex catch).
   const affiliates = await prisma.user.findMany({
     where: {
       rewardfulAffiliateId: { not: null },
-      status: "ACTIVE",
     },
     select: {
       id: true,

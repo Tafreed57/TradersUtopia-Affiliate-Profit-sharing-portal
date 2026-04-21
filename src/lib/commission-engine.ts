@@ -86,17 +86,18 @@ export async function processConversion(
     return { success: true, skipped: true, reason: "Duplicate webhook" };
   }
 
-  // 2. Find affiliate by Rewardful ID.
+  // 2. Find affiliate by Rewardful ID. Deactivated affiliates are still
+  // looked up so the commission is recorded + forfeited to CEO (see below);
+  // only an unlinked Rewardful ID still silent-drops.
   const affiliate = await prisma.user.findFirst({
     where: {
       rewardfulAffiliateId: conversion.affiliateRewardfulId,
-      status: "ACTIVE",
     },
   });
   if (!affiliate) {
     return {
       success: false,
-      reason: `No active affiliate found for Rewardful ID ${conversion.affiliateRewardfulId}`,
+      reason: `No affiliate linked for Rewardful ID ${conversion.affiliateRewardfulId}`,
     };
   }
 
@@ -184,7 +185,25 @@ export async function processConversion(
   let finalAffiliateCut: Decimal;
   let finalCeoCut: Decimal;
 
-  if (isRateNotSet) {
+  if (affiliate.status !== "ACTIVE") {
+    // Deactivated (or otherwise non-active) affiliate: forfeit the AFFILIATE
+    // split to CEO so the commission is still recorded with an audit trail.
+    // Teacher splits follow the normal attendance gate — the teacher chain
+    // itself has already been filtered for ACTIVE TeacherStudent rows, so
+    // admins who want teachers to stop earning must cascade-unpair.
+    affiliateStatus = "FORFEITED";
+    affiliateForfeitedToCeo = true;
+    affiliateReason = "affiliate_deactivated";
+    teacherStatus = hasAttendance ? "EARNED" : "FORFEITED";
+    teacherReason = hasAttendance
+      ? null
+      : "No attendance submitted for conversion date";
+    finalAffiliateCut = new Decimal(0);
+    finalCeoCut = ceoCut.add(affiliateCut);
+    warnings.push(
+      `Commission received for deactivated affiliate ${affiliate.email}`
+    );
+  } else if (isRateNotSet) {
     affiliateStatus = "PENDING";
     affiliateReason = "rate_not_set";
     teacherStatus = hasAttendance ? "EARNED" : "FORFEITED";
@@ -206,6 +225,23 @@ export async function processConversion(
     teacherStatus = "EARNED";
     finalAffiliateCut = affiliateCut;
     finalCeoCut = ceoCut;
+  }
+
+  // 6a. CEO-cut invariant: fail loud if rates are misconfigured such that
+  // affiliate% + sum(teacher%) > 100. Silent cap-to-zero would hide the
+  // misconfig indefinitely; throwing surfaces the bad rate in Sentry + webhook
+  // 500 response + WebhookLog so the admin fixes it. Subsequent webhooks
+  // succeed automatically; the daily reconcile cron backfills the gap. Matches
+  // the loud-failure pattern in runRecalcPending's rate re-verification guard
+  // (session-19).
+  if (finalCeoCut.lt(0)) {
+    throw new Error(
+      `CEO cut negative (${finalCeoCut.toString()}) for commission ${conversion.rewardfulCommissionId}: ` +
+        `fullAmount=${fullAmount.toString()} ${currency}, ` +
+        `affiliateCut=${affiliateCut.toString()} (${affiliatePercent.toString()}% of ${affiliate.email}), ` +
+        `totalTeacherCuts=${totalTeacherCuts.toString()} over ${teacherCuts.length} teachers. ` +
+        `Admin must reduce teacher % sum so affiliate% + teachers% <= 100.`
+    );
   }
 
   // 7. Persist event + splits in one transaction.
@@ -280,6 +316,10 @@ export async function processConversion(
 
   if (isRateNotSet) {
     // Rate not set — no notification; UI banner surfaces the unset-rate state.
+  } else if (affiliateReason === "affiliate_deactivated") {
+    // Deactivated affiliate — suppress notification entirely. They've been
+    // offboarded; an "attendance missed, recover it" push would be wrong +
+    // misleading. Audit trail lives in the CommissionSplit row.
   } else if (affiliateForfeitedToCeo) {
     notifications.push({
       userId: affiliate.id,
@@ -393,7 +433,12 @@ export async function reevaluateCommission(
           role: "AFFILIATE",
           status: { in: ["FORFEITED", "PENDING"] },
           // rate_not_set is resolved by the admin recalc flow, not attendance.
-          NOT: { forfeitureReason: "rate_not_set" },
+          // affiliate_deactivated must NEVER be reversed by attendance — the
+          // affiliate is offboarded and attendance submissions (if any still
+          // slip through) must not restore their cut (Codex catch).
+          NOT: {
+            forfeitureReason: { in: ["rate_not_set", "affiliate_deactivated"] },
+          },
         },
       },
     },

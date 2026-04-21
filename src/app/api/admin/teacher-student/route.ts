@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import Decimal from "decimal.js";
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { z } from "zod";
@@ -198,13 +199,18 @@ export async function POST(req: NextRequest) {
 
       for (const event of historicalEvents) {
         if (event.splits.length > 0) continue;
-        const full = event.fullAmount.toNumber();
-        const ceo = event.ceoCut.toNumber();
-        const cut = Math.min(
-          Number(((full * teacherCut) / 100).toFixed(2)),
+        // Decimal.js throughout so high-amount fullAmount × teacherCut%
+        // doesn't lose precision via native-float mul/div before rounding
+        // to 2 dp. Matches the commission-engine money-math dogma.
+        const full = new Decimal(event.fullAmount.toString());
+        const ceo = new Decimal(event.ceoCut.toString());
+        const cut = Decimal.min(
+          full.mul(teacherCut).div(100).toDecimalPlaces(2),
           ceo
         );
-        if (cut <= 0) continue;
+        if (cut.lte(0)) continue;
+        const cutNum = cut.toNumber();
+        const ceoAfter = ceo.sub(cut).toDecimalPlaces(2).toNumber();
 
         try {
           await prisma.$transaction([
@@ -215,7 +221,7 @@ export async function POST(req: NextRequest) {
                 role: "TEACHER",
                 depth: 1,
                 cutPercent: teacherCut,
-                cutAmount: cut,
+                cutAmount: cutNum,
                 status: "EARNED",
                 forfeitedToCeo: false,
                 forfeitureReason: null,
@@ -226,7 +232,7 @@ export async function POST(req: NextRequest) {
             }),
             prisma.commissionEvent.update({
               where: { id: event.id },
-              data: { ceoCut: Number((ceo - cut).toFixed(2)) },
+              data: { ceoCut: ceoAfter },
             }),
           ]);
         } catch (err) {
