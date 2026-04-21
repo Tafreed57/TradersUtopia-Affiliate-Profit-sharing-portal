@@ -1,4 +1,5 @@
 import { processConversion } from "@/lib/commission-engine";
+import { hasConfiguredCommissionRates } from "@/lib/commission-rate-config";
 import { syncCommissionStatesFromCommissions } from "@/lib/paid-sync-service";
 import { prisma } from "@/lib/prisma";
 import * as rewardful from "@/lib/rewardful";
@@ -31,6 +32,7 @@ export async function runBackfill(userId: string): Promise<{
       rewardfulAffiliateId: true,
       initialCommissionPercent: true,
       recurringCommissionPercent: true,
+      ratesConfiguredAt: true,
       backfillStatus: true,
       backfillStartedAt: true,
     },
@@ -39,13 +41,10 @@ export async function runBackfill(userId: string): Promise<{
     return { imported: 0, skipped: 0, failed: 0, status: "FAILED" };
   }
 
-  // Rate-gate: do not import history until admin has set at least one rate.
-  // Otherwise every split would be parked as PENDING(rate_not_set) and
-  // auto-recalc would churn through them on the next rate change.
-  if (
-    user.initialCommissionPercent.equals(0) &&
-    user.recurringCommissionPercent.equals(0)
-  ) {
+  // Rate-gate: do not import history until admin has explicitly configured
+  // the affiliate's rates. Numeric 0 is valid, so we must not treat it as
+  // "unset" once onboarding is complete.
+  if (!hasConfiguredCommissionRates(user)) {
     // Clear stale IN_PROGRESS so the banner stops re-kicking us every poll
     // past the 10-min stale threshold. A legitimate live backfill wouldn't
     // be here — this block only runs with zero rates, and the guarded

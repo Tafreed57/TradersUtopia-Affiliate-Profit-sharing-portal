@@ -16,6 +16,7 @@
 import { CommissionStatus, NotificationType, Prisma } from "@prisma/client";
 import Decimal from "decimal.js";
 
+import { hasConfiguredCommissionRates } from "@/lib/commission-rate-config";
 import { TEACHER_CUT_WARN_THRESHOLD } from "@/lib/constants";
 import { prisma } from "@/lib/prisma";
 
@@ -169,7 +170,7 @@ export async function processConversion(
   // the AFFILIATE split as PENDING. Teacher splits don't wait on the rate-gate
   // (teachers have their own cuts). CEO holds the affiliate's share until
   // admin runs "Recalculate at current rate".
-  const isRateNotSet = affiliatePercent.eq(0);
+  const isRateNotSet = !hasConfiguredCommissionRates(affiliate);
 
   // 6. Attendance evaluated up-front so teacher-split status stays consistent
   // across the rate-gate and non-rate-gate branches.
@@ -326,6 +327,14 @@ export async function processConversion(
       type: "ATTENDANCE_FORFEITURE_ALERT",
       title: "Commission Forfeited",
       body: `You missed attendance on ${conversionDate.toLocaleDateString()} and your commission of $${affiliateCut.toFixed(2)} ${currency} was forfeited. Submit attendance to recover it.`,
+      data: { rewardfulCommissionId: conversion.rewardfulCommissionId },
+    });
+  } else if (finalAffiliateCut.eq(0)) {
+    notifications.push({
+      userId: affiliate.id,
+      type: "CONVERSION_RECEIVED",
+      title: "Conversion Recorded",
+      body: `A conversion was recorded under your account. Your current cut on this conversion is $0.00 ${currency}.`,
       data: { rewardfulCommissionId: conversion.rewardfulCommissionId },
     });
   } else {

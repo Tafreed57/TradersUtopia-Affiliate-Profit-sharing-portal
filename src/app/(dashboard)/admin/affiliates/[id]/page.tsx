@@ -63,6 +63,7 @@ interface AffiliateDetail {
   canProposeRates: boolean;
   canBeTeacher: boolean;
   ratesLocked: boolean;
+  ratesConfigured: boolean;
   rewardfulAffiliateId: string | null;
   rewardfulEmail: string | null;
   preferredCurrency: string;
@@ -590,11 +591,7 @@ export default function AffiliateDetailPage({
                     variant="outline"
                     size="sm"
                     className="gap-2 w-full"
-                    disabled={
-                      (data.initialCommissionPercent === 0 &&
-                        data.recurringCommissionPercent === 0) ||
-                      recalcMutation.isPending
-                    }
+                    disabled={!data.ratesConfigured || recalcMutation.isPending}
                     onClick={() => recalcMutation.mutate()}
                   >
                     <RefreshCw className="h-3 w-3" />

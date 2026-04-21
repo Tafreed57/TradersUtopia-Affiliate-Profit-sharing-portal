@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { authOptions } from "@/lib/auth-options";
 import { runBackfill } from "@/lib/backfill-service";
+import { hasConfiguredCommissionRates } from "@/lib/commission-rate-config";
 import { TEACHER_CUT_WARN_THRESHOLD } from "@/lib/constants";
 import { getCadToUsdRate } from "@/lib/currency";
 import { createNotification } from "@/lib/notifications";
@@ -47,6 +48,7 @@ export async function GET(
       canProposeRates: true,
       canBeTeacher: true,
       ratesLocked: true,
+      ratesConfiguredAt: true,
       rewardfulAffiliateId: true,
       rewardfulEmail: true,
       preferredCurrency: true,
@@ -170,6 +172,7 @@ export async function GET(
     ...user,
     initialCommissionPercent: initialPercent,
     recurringCommissionPercent: recurringPercent,
+    ratesConfigured: hasConfiguredCommissionRates(user),
     commissionPercent: user.commissionPercent.toNumber(),
     teachers: teacherCuts,
     students: students.map((s) => ({
@@ -254,6 +257,7 @@ export async function PATCH(
       select: {
         initialCommissionPercent: true,
         recurringCommissionPercent: true,
+        ratesConfiguredAt: true,
         status: true,
         backfillStatus: true,
         rewardfulAffiliateId: true,
@@ -273,6 +277,15 @@ export async function PATCH(
 
     const updateData: Record<string, unknown> = {};
     let rateChanged = false;
+    const rateInputsTouched =
+      initialCommissionPercent !== undefined ||
+      recurringCommissionPercent !== undefined;
+    const ratesConfiguredNow =
+      currentUser.ratesConfiguredAt === null && rateInputsTouched;
+
+    if (ratesConfiguredNow) {
+      updateData.ratesConfiguredAt = new Date();
+    }
 
     if (
       initialCommissionPercent !== undefined &&
@@ -314,7 +327,7 @@ export async function PATCH(
       });
     }
 
-    if (rateChanged) {
+    if (rateChanged || ratesConfiguredNow) {
       // Eager cache bust — the re-price below clears this again, but the
       // eager write covers the narrow window between the rate write and the
       // re-price in case a concurrent read hits cache with stale values.
@@ -367,6 +380,7 @@ export async function PATCH(
         id: true,
         initialCommissionPercent: true,
         recurringCommissionPercent: true,
+        ratesConfiguredAt: true,
         canProposeRates: true,
         canBeTeacher: true,
         status: true,
@@ -383,7 +397,7 @@ export async function PATCH(
     // Isolated try/catch: a re-price failure must NOT 500 a successful
     // rate save — admin can invoke POST /recalc-pending to retry.
     let autoRecalc: { updated: number; teacherRowsAffected: number } | null = null;
-    if (rateChanged) {
+    if (rateChanged || ratesConfiguredNow) {
       try {
         const recalcResult = await runRecalcPending(id, session.user.id, {
           pendingOnly: currentUser.ratesLocked,
@@ -407,16 +421,8 @@ export async function PATCH(
     // after() because a large affiliate history would make this PATCH hang
     // or time out — the user-facing route uses the same pattern.
     let autoBackfillScheduled = false;
-    const prevBothZero =
-      currentUser.initialCommissionPercent.equals(0) &&
-      currentUser.recurringCommissionPercent.equals(0);
-    const nowAtLeastOnePositive =
-      updated.initialCommissionPercent.gt(0) ||
-      updated.recurringCommissionPercent.gt(0);
     if (
-      rateChanged &&
-      prevBothZero &&
-      nowAtLeastOnePositive &&
+      ratesConfiguredNow &&
       currentUser.rewardfulAffiliateId &&
       currentUser.backfillStatus === "NOT_STARTED"
     ) {
@@ -434,11 +440,21 @@ export async function PATCH(
       });
     }
 
+    if (rateChanged) {
+      await createNotification({
+        userId: id,
+        type: "COMMISSION_RATE_CHANGED",
+        title: "Commission Settings Updated",
+        body: "Your commission settings were updated by an admin. New calculations will use the current configuration.",
+      });
+    }
+
     return NextResponse.json({
       ...updated,
       initialCommissionPercent: updated.initialCommissionPercent.toNumber(),
       recurringCommissionPercent:
         updated.recurringCommissionPercent.toNumber(),
+      ratesConfigured: hasConfiguredCommissionRates(updated),
       ...(autoRecalc ? { autoRecalc } : {}),
       ...(autoBackfillScheduled ? { autoBackfillScheduled: true } : {}),
     });

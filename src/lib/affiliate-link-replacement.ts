@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 
 import { runBackfill } from "@/lib/backfill-service";
+import { hasConfiguredCommissionRates } from "@/lib/commission-rate-config";
 import { prisma } from "@/lib/prisma";
 import * as rewardful from "@/lib/rewardful";
 
@@ -47,6 +48,7 @@ export async function replaceAffiliateLink(args: {
       backfillStatus: true,
       initialCommissionPercent: true,
       recurringCommissionPercent: true,
+      ratesConfiguredAt: true,
     },
   });
   if (!user) {
@@ -109,9 +111,7 @@ export async function replaceAffiliateLink(args: {
     return { eventsDeleted: eventsDeleted.count };
   });
 
-  const waitingForRate =
-    user.initialCommissionPercent.equals(0) &&
-    user.recurringCommissionPercent.equals(0);
+  const waitingForRate = !hasConfiguredCommissionRates(user);
 
   let backfill: Awaited<ReturnType<typeof runBackfill>> | null = null;
   if (!waitingForRate) {

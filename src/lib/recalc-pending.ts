@@ -1,6 +1,7 @@
 import { CommissionStatus, Prisma } from "@prisma/client";
 import Decimal from "decimal.js";
 
+import { hasConfiguredCommissionRates } from "@/lib/commission-rate-config";
 import { prisma } from "@/lib/prisma";
 
 export type RecalcResult =
@@ -49,6 +50,7 @@ export async function runRecalcPending(
       id: true,
       initialCommissionPercent: true,
       recurringCommissionPercent: true,
+      ratesConfiguredAt: true,
     },
   });
   if (!affiliate) return { kind: "not_found" };
@@ -57,6 +59,7 @@ export async function runRecalcPending(
   const recurringRate = new Decimal(
     affiliate.recurringCommissionPercent.toString()
   );
+  const ratesConfigured = hasConfiguredCommissionRates(affiliate);
 
   // pendingOnly: used when the affiliate is rate-locked — EARNED splits are
   // frozen (do not re-price them), but PENDING(rate_not_set) splits still
@@ -153,7 +156,9 @@ export async function runRecalcPending(
 
     // Status transition decision.
     const shouldAttemptPromote =
-      s.status === "PENDING" && applicableRate.gt(0);
+      s.status === "PENDING" &&
+      s.forfeitureReason === "rate_not_set" &&
+      ratesConfigured;
 
     let newStatus: CommissionStatus;
     let newForfeitureReason: string | null;

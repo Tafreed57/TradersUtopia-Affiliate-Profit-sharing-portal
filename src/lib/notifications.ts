@@ -33,7 +33,7 @@ export async function createNotification({
   });
 
   // Send push notification in the background — don't block the caller
-  sendPush(userId, title, body, data).catch((err) => {
+  sendPush(notification.id, userId, title, body, data).catch((err) => {
     console.error(`Push notification failed for user ${userId}:`, err);
   });
 
@@ -45,6 +45,7 @@ export async function createNotification({
  * Cleans up invalid tokens automatically.
  */
 async function sendPush(
+  notificationId: string,
   userId: string,
   title: string,
   body: string,
@@ -74,20 +75,14 @@ async function sendPush(
   };
 
   const staleTokenIds: string[] = [];
+  let delivered = false;
 
   // Send to each token individually so we can track which ones fail
   await Promise.allSettled(
     tokens.map(async ({ id, token }) => {
       try {
         await messaging.send({ ...message, token });
-
-        // Mark notification as sent
-        await prisma.notification
-          .updateMany({
-            where: { userId, sentPush: false },
-            data: { sentPush: true },
-          })
-          .catch(() => {});
+        delivered = true;
       } catch (err: unknown) {
         const error = err as { code?: string };
         // Remove invalid/expired tokens
@@ -100,6 +95,15 @@ async function sendPush(
       }
     })
   );
+
+  if (delivered) {
+    await prisma.notification
+      .update({
+        where: { id: notificationId },
+        data: { sentPush: true },
+      })
+      .catch(() => {});
+  }
 
   // Clean up stale tokens
   if (staleTokenIds.length > 0) {

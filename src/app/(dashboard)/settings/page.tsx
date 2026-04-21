@@ -1,11 +1,12 @@
 "use client";
 
-import { Save, Shield, User } from "lucide-react";
+import { Bell, Save, Shield, User } from "lucide-react";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 
+import { requestNotificationPermission } from "@/lib/firebase-client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
@@ -24,9 +25,6 @@ interface UserProfile {
   id: string;
   email: string;
   name: string | null;
-  commissionPercent: number;
-  initialCommissionPercent: number;
-  recurringCommissionPercent: number;
   canProposeRates: boolean;
   preferredCurrency: string;
   createdAt: string;
@@ -37,6 +35,13 @@ export default function SettingsPage() {
   const userId = session?.user?.id;
   const { currency, setCurrency } = useCurrency();
   const queryClient = useQueryClient();
+  const [notificationPermission, setNotificationPermission] = useState<
+    NotificationPermission | "unsupported"
+  >(() => {
+    if (typeof window === "undefined") return "default";
+    if (!("Notification" in window)) return "unsupported";
+    return Notification.permission;
+  });
 
   const { data: profile, isLoading } = useQuery<UserProfile>({
     queryKey: ["user-profile", userId],
@@ -49,7 +54,6 @@ export default function SettingsPage() {
   });
 
   const [selectedCurrency, setSelectedCurrency] = useState(currency);
-
   const saveMutation = useMutation({
     mutationFn: async (data: { preferredCurrency: string }) => {
       const res = await fetch("/api/settings/profile", {
@@ -66,6 +70,38 @@ export default function SettingsPage() {
       toast.success("Settings saved");
     },
     onError: () => toast.error("Failed to save settings"),
+  });
+
+  const notificationMutation = useMutation({
+    mutationFn: async () => {
+      const token = await requestNotificationPermission();
+      const currentPermission =
+        typeof window !== "undefined" && "Notification" in window
+          ? Notification.permission
+          : "default";
+      setNotificationPermission(currentPermission);
+
+      if (!token) {
+        if (currentPermission === "denied") {
+          throw new Error("Browser notifications are blocked for this site.");
+        }
+        throw new Error("Notifications could not be enabled on this device.");
+      }
+
+      const res = await fetch("/api/notifications/register-token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, platform: "web" }),
+      });
+      if (!res.ok) {
+        throw new Error("Failed to register this device for notifications.");
+      }
+    },
+    onSuccess: () => {
+      setNotificationPermission("granted");
+      toast.success("Notifications enabled on this device");
+    },
+    onError: (error: Error) => toast.error(error.message),
   });
 
   return (
@@ -101,15 +137,6 @@ export default function SettingsPage() {
                 <div>
                   <Label className="text-xs text-muted-foreground">Email</Label>
                   <p className="font-medium">{profile?.email}</p>
-                </div>
-                <div>
-                  <Label className="text-xs text-muted-foreground">
-                    Commission Rate
-                  </Label>
-                  <p className="font-medium text-primary">
-                    Initial {profile?.initialCommissionPercent ?? 0}% /
-                    Recurring {profile?.recurringCommissionPercent ?? 0}%
-                  </p>
                 </div>
                 <div>
                   <Label className="text-xs text-muted-foreground">
@@ -179,6 +206,47 @@ export default function SettingsPage() {
           >
             <Save className="h-4 w-4" />
             {saveMutation.isPending ? "Saving..." : "Save Preferences"}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-lg">
+            <Bell className="h-5 w-5 text-primary" />
+            Notifications
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-1">
+            <Label>Push Notifications</Label>
+            <p className="text-sm text-muted-foreground">
+              {notificationPermission === "granted"
+                ? "This device is enabled for push notifications."
+                : notificationPermission === "denied"
+                  ? "Notifications are blocked in this browser for the portal."
+                  : notificationPermission === "unsupported"
+                    ? "This browser does not support push notifications."
+                    : "Enable push notifications on this device to receive alerts in real time."}
+            </p>
+          </div>
+
+          <Button
+            variant="outline"
+            onClick={() => notificationMutation.mutate()}
+            disabled={
+              notificationMutation.isPending ||
+              notificationPermission === "unsupported" ||
+              notificationPermission === "granted"
+            }
+            className="gap-2"
+          >
+            <Bell className="h-4 w-4" />
+            {notificationPermission === "granted"
+              ? "Notifications Enabled"
+              : notificationMutation.isPending
+                ? "Enabling..."
+                : "Enable Notifications"}
           </Button>
         </CardContent>
       </Card>

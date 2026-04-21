@@ -4,6 +4,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth-options";
 import { linkRewardfulAffiliateWithTimeout } from "@/lib/auth-rewardful-link";
 import { runBackfill } from "@/lib/backfill-service";
+import { hasConfiguredCommissionRates } from "@/lib/commission-rate-config";
 import { prisma } from "@/lib/prisma";
 
 const USER_STATUS_SELECT = {
@@ -16,6 +17,7 @@ const USER_STATUS_SELECT = {
   commissionPercent: true,
   initialCommissionPercent: true,
   recurringCommissionPercent: true,
+  ratesConfiguredAt: true,
 } as const;
 
 /**
@@ -77,6 +79,7 @@ export async function GET() {
 
   const initialPct = Number(user.initialCommissionPercent);
   const recurringPct = Number(user.recurringCommissionPercent);
+  const ratesConfigured = hasConfiguredCommissionRates(user);
 
   return NextResponse.json({
     linked: Boolean(user.rewardfulAffiliateId),
@@ -86,10 +89,11 @@ export async function GET() {
     commissionPercent: Number(user.commissionPercent),
     initialCommissionPercent: initialPct,
     recurringCommissionPercent: recurringPct,
+    ratesConfigured,
     // Gate for the UI import banner — both rates at 0 means admin hasn't
     // configured this affiliate yet; the banner shows a "waiting for admin"
     // state instead of auto-kicking backfill. Matches the rate-gate inside
     // runBackfill so a racy manual trigger also no-ops safely.
-    canStartBackfill: initialPct > 0 || recurringPct > 0,
+    canStartBackfill: ratesConfigured,
   });
 }

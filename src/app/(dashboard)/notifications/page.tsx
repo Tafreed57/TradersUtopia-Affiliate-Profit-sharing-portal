@@ -47,9 +47,16 @@ const TYPE_LABELS: Record<string, string> = {
   COMMISSION_RATE_CHANGED: "Rate Changed",
   NEW_STUDENT_LINKED: "New Student",
   AFFILIATE_DEACTIVATED: "Deactivated",
+  AFFILIATE_AUTO_CREATED: "Auto Created",
   RATE_PROPOSAL_SUBMITTED: "Proposal",
   RATE_PROPOSAL_APPROVED: "Proposal Approved",
   RATE_PROPOSAL_REJECTED: "Proposal Rejected",
+  STUDENT_PROPOSAL_RECEIVED: "Student Proposal",
+  STUDENT_PROPOSAL_APPROVED: "Student Approved",
+  STUDENT_PROPOSAL_REJECTED: "Student Rejected",
+  STUDENT_PAYMENT_RECEIVED: "Student Payment",
+  COMMISSION_VOIDED: "Commission Voided",
+  FIRST_ATTENDANCE_RECORDED: "Attendance",
 };
 
 export default function NotificationsPage() {

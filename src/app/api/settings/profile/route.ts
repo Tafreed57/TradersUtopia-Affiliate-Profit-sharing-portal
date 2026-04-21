@@ -20,9 +20,6 @@ export async function GET() {
       id: true,
       email: true,
       name: true,
-      commissionPercent: true,
-      initialCommissionPercent: true,
-      recurringCommissionPercent: true,
       canProposeRates: true,
       preferredCurrency: true,
       createdAt: true,
@@ -33,12 +30,7 @@ export async function GET() {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
-  return NextResponse.json({
-    ...user,
-    commissionPercent: user.commissionPercent.toNumber(),
-    initialCommissionPercent: user.initialCommissionPercent.toNumber(),
-    recurringCommissionPercent: user.recurringCommissionPercent.toNumber(),
-  });
+  return NextResponse.json(user);
 }
 
 const updateSchema = z.object({

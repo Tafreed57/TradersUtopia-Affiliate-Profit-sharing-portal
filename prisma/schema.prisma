@@ -65,6 +65,9 @@ model User {
   // PENDING(rate_not_set) splits always re-price regardless — they have no
   // price to preserve. Admin toggles via PATCH /api/admin/affiliates/:id/lock.
   ratesLocked          Boolean               @default(false)
+  // null = onboarding/unset; non-null = the current numeric initial and
+  // recurring rates are the active configured values, including valid 0%.
+  ratesConfiguredAt    DateTime?
   rewardfulAffiliateId String?               @unique
   rewardfulEmail       String?
   backfillStatus       RewardfulBackfillStatus @default(NOT_STARTED)
