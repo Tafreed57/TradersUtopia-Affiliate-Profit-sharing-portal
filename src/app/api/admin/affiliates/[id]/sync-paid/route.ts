@@ -1,19 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 
+import { syncAffiliateCommissionCatalog } from "@/lib/affiliate-sync-service";
 import { authOptions } from "@/lib/auth-options";
 import { prisma } from "@/lib/prisma";
-import { syncPaidHistoryForAffiliate } from "@/lib/paid-sync-service";
 
 /**
  * POST /api/admin/affiliates/:id/sync-paid
  *
- * Affiliate-scoped version of the global /api/admin/commissions/sync-paid.
- * Pulls Rewardful `state=paid` commissions for THIS affiliate only and
- * flips matching EARNED splits to PAID. Useful for debugging a single
- * affiliate's state without scanning the entire paid-commission list.
+ * Affiliate-scoped state sync. Imports any missing commissions, syncs paid
+ * and voided statuses, and voids local orphan rows whose upstream commission
+ * no longer exists.
  */
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 export async function POST(
   _req: NextRequest,
@@ -34,19 +33,20 @@ export async function POST(
   }
   if (!user.rewardfulAffiliateId) {
     return NextResponse.json(
-      { error: "User has no Rewardful affiliate link yet" },
+      { error: "User has no linked affiliate account yet" },
       { status: 409 }
     );
   }
 
-  const { fetched, updated } = await syncPaidHistoryForAffiliate(
-    user.rewardfulAffiliateId
-  );
+  const result = await syncAffiliateCommissionCatalog({
+    affiliateId: user.id,
+    rewardfulAffiliateId: user.rewardfulAffiliateId,
+  });
 
   return NextResponse.json({
     ok: true,
     email: user.email,
-    fetched,
-    updated,
+    ...result,
+    updated: result.paidSynced,
   });
 }

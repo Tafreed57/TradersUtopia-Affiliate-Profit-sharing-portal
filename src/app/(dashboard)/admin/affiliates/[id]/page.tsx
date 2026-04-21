@@ -64,6 +64,7 @@ interface AffiliateDetail {
   canBeTeacher: boolean;
   ratesLocked: boolean;
   rewardfulAffiliateId: string | null;
+  rewardfulEmail: string | null;
   preferredCurrency: string;
   createdAt: string;
   teachers: {
@@ -123,6 +124,9 @@ export default function AffiliateDetailPage({
   const [rateReason, setRateReason] = useState("");
   const [deactivateDialogOpen, setDeactivateDialogOpen] = useState(false);
   const [unlockDialogOpen, setUnlockDialogOpen] = useState(false);
+  const [replaceLinkDialogOpen, setReplaceLinkDialogOpen] = useState(false);
+  const [replaceLinkIdentifier, setReplaceLinkIdentifier] = useState("");
+  const [replaceLinkConfirmText, setReplaceLinkConfirmText] = useState("");
   // Scope admin caches by adminId so account-switching in the same browser
   // doesn't leak cached data across admins. Prefix-based invalidations
   // below still match because invalidateQueries is prefix-by-default.
@@ -196,15 +200,76 @@ export default function AffiliateDetailPage({
       });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(payload.error ?? "Failed to sync paid state");
+        throw new Error(payload.error ?? "Failed to sync account state");
       }
-      return payload as { fetched: number; updated: number };
+      return payload as {
+        fetched: number;
+        created: number;
+        paidSynced: number;
+        voidedSynced: number;
+        missingVoided: number;
+        updated: number;
+      };
     },
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ["admin-affiliate", adminId, id] });
       queryClient.invalidateQueries({ queryKey: ["admin-affiliates"] });
       toast.success(
         `Synced ${result.fetched} paid record${result.fetched === 1 ? "" : "s"} — ${result.updated} split${result.updated === 1 ? "" : "s"} flipped to PAID.`
+      );
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const replaceLinkMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`/api/admin/affiliates/${id}/replace-link`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ identifier: replaceLinkIdentifier.trim() }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(payload.error ?? "Failed to replace linked account");
+      }
+      return payload as {
+        targetAffiliateEmail: string;
+        deleted: {
+          events: number;
+          splitsCascaded: number;
+        };
+        waitingForRate: boolean;
+        backfill: null | {
+          imported: number;
+          skipped: number;
+          failed: number;
+          status: "COMPLETED" | "FAILED" | "WAITING_FOR_RATE";
+        };
+      };
+    },
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ["admin-affiliate", adminId, id] });
+      queryClient.invalidateQueries({ queryKey: ["admin-affiliates"] });
+      setReplaceLinkDialogOpen(false);
+      setReplaceLinkIdentifier("");
+      setReplaceLinkConfirmText("");
+
+      if (result.waitingForRate || result.backfill?.status === "WAITING_FOR_RATE") {
+        toast.success(
+          "Linked account replaced. Existing imported history was cleared; import will start after rates are set."
+        );
+        return;
+      }
+
+      if (result.backfill?.status === "FAILED") {
+        toast.warning(
+          `Linked account replaced, but the history import needs attention. ${result.deleted.events} old commission ${result.deleted.events === 1 ? "entry was" : "entries were"} cleared first.`
+        );
+        return;
+      }
+
+      toast.success(
+        `Linked account replaced. Imported ${result.backfill?.imported ?? 0} commission${result.backfill?.imported === 1 ? "" : "s"} from ${result.targetAffiliateEmail}.`
       );
     },
     onError: (error: Error) => toast.error(error.message),
@@ -647,6 +712,115 @@ export default function AffiliateDetailPage({
               <span className="text-lg font-bold text-success">
                 {format(data.totalEarnedCad, "CAD")}
               </span>
+            </div>
+
+            <Separator />
+
+            <div className="space-y-3">
+              <div>
+                <p className="font-medium">Linked Affiliate Account</p>
+                <p className="text-xs text-muted-foreground">
+                  {data.rewardfulEmail ??
+                    (data.rewardfulAffiliateId
+                      ? "Affiliate ID linked with no stored email"
+                      : "No affiliate account linked yet")}
+                </p>
+                {data.rewardfulAffiliateId && (
+                  <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
+                    {data.rewardfulAffiliateId}
+                  </p>
+                )}
+                <p className="mt-2 text-xs text-muted-foreground">
+                  This link is anchored by affiliate ID, not portal email.
+                  Changing the portal email alone does not move history.
+                </p>
+              </div>
+
+              <Dialog
+                open={replaceLinkDialogOpen}
+                onOpenChange={(open) => {
+                  setReplaceLinkDialogOpen(open);
+                  if (!open) {
+                    setReplaceLinkIdentifier("");
+                    setReplaceLinkConfirmText("");
+                  }
+                }}
+              >
+                <DialogTrigger>
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                  >
+                    {data.rewardfulAffiliateId
+                      ? "Replace Linked Account"
+                      : "Link Account"}
+                  </Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>
+                      {data.rewardfulAffiliateId
+                        ? "Replace Linked Account"
+                        : "Link Affiliate Account"}
+                    </DialogTitle>
+                    <DialogDescription>
+                      Use this only when the wrong affiliate account was linked
+                      to this portal user. The portal user, rates, teachers,
+                      and attendance stay the same, but imported commissions
+                      from the current linked account are cleared before the new
+                      account is imported.
+                    </DialogDescription>
+                  </DialogHeader>
+
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <Label>Replacement affiliate email or ID</Label>
+                      <Input
+                        value={replaceLinkIdentifier}
+                        onChange={(e) => setReplaceLinkIdentifier(e.target.value)}
+                        placeholder="name@example.com or affiliate id"
+                        autoFocus
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Type REPLACE to confirm</Label>
+                      <Input
+                        value={replaceLinkConfirmText}
+                        onChange={(e) => setReplaceLinkConfirmText(e.target.value)}
+                        placeholder="REPLACE"
+                      />
+                    </div>
+
+                    <p className="text-xs text-muted-foreground">
+                      This does not merge two histories. It replaces the linked
+                      affiliate account on this user and then re-imports from
+                      the new source.
+                    </p>
+                  </div>
+
+                  <DialogFooter>
+                    <Button
+                      variant="outline"
+                      onClick={() => setReplaceLinkDialogOpen(false)}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      disabled={
+                        !replaceLinkIdentifier.trim() ||
+                        replaceLinkConfirmText.trim().toUpperCase() !== "REPLACE" ||
+                        replaceLinkMutation.isPending
+                      }
+                      onClick={() => replaceLinkMutation.mutate()}
+                    >
+                      {replaceLinkMutation.isPending
+                        ? "Replacing..."
+                        : "Replace Link"}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
             </div>
 
             <Separator />

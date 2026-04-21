@@ -2,10 +2,8 @@ import { Prisma } from "@prisma/client";
 import Decimal from "decimal.js";
 import { NextRequest, NextResponse } from "next/server";
 
-import { processConversion } from "@/lib/commission-engine";
+import { syncAffiliateCommissionCatalog } from "@/lib/affiliate-sync-service";
 import { prisma } from "@/lib/prisma";
-import * as rewardful from "@/lib/rewardful";
-import { handleCommissionPaid, handleCommissionVoided } from "@/lib/payment-service";
 
 /**
  * GET /api/cron/reconcile
@@ -44,79 +42,22 @@ export async function GET(req: NextRequest) {
   let totalCreated = 0;
   let totalPaidSynced = 0;
   let totalVoidedSynced = 0;
+  let totalMissingVoided = 0;
   let errors = 0;
 
   for (const aff of affiliates) {
     try {
-      const commissions = await rewardful.listAllCommissionsForAffiliate(
-        aff.rewardfulAffiliateId!
-      );
+      const result = await syncAffiliateCommissionCatalog({
+        affiliateId: aff.id,
+        rewardfulAffiliateId: aff.rewardfulAffiliateId!,
+      });
+      totalCreated += result.created;
+      totalPaidSynced += result.paidSynced;
+      totalVoidedSynced += result.voidedSynced;
+      totalMissingVoided += result.missingVoided;
 
       // Sort ascending — see backfill-service.ts for the classification
       // ordering rationale.
-      commissions.sort((a, b) => {
-        const aDate = a.sale?.charged_at ?? a.created_at ?? "";
-        const bDate = b.sale?.charged_at ?? b.created_at ?? "";
-        return aDate < bDate ? -1 : aDate > bDate ? 1 : 0;
-      });
-
-      for (const commission of commissions) {
-        // Check if the event exists, and if any AFFILIATE split reflects
-        // current state (for the paid/voided sync check).
-        const existing = await prisma.commissionEvent.findUnique({
-          where: { rewardfulCommissionId: commission.id },
-          select: {
-            id: true,
-            splits: {
-              where: { role: "AFFILIATE" },
-              select: { status: true },
-              take: 1,
-            },
-          },
-        });
-
-        if (!existing) {
-          if (!commission.sale) continue;
-          const amountRaw = commission.sale.sale_amount_cents;
-          if (typeof amountRaw !== "number") continue;
-
-          const result = await processConversion(
-            {
-              rewardfulCommissionId: commission.id,
-              rewardfulReferralId: commission.sale?.referral?.id ?? commission.referral?.id,
-              affiliateRewardfulId: aff.rewardfulAffiliateId!,
-              amount: amountRaw / 100,
-              currency: commission.sale.currency ?? commission.currency ?? "USD",
-              conversionDate:
-                commission.sale.charged_at ??
-                commission.created_at ??
-                new Date().toISOString(),
-              rawPayload: commission as unknown as Record<string, unknown>,
-            },
-            { skipAttendanceCheck: true }
-          );
-          if (result.success && !result.skipped) totalCreated++;
-          continue;
-        }
-
-        const affiliateStatus = existing.splits[0]?.status;
-
-        if (commission.state === "paid" && affiliateStatus !== "PAID") {
-          await handleCommissionPaid(
-            commission.id,
-            new Date(commission.paid_at ?? Date.now())
-          );
-          totalPaidSynced++;
-        }
-
-        if (commission.state === "voided" && affiliateStatus !== "VOIDED") {
-          await handleCommissionVoided(
-            commission.id,
-            new Date(commission.voided_at ?? Date.now())
-          );
-          totalVoidedSynced++;
-        }
-      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[reconcile] ${aff.email}: ${msg}`);
@@ -367,6 +308,7 @@ export async function GET(req: NextRequest) {
     created: totalCreated,
     paidSynced: totalPaidSynced,
     voidedSynced: totalVoidedSynced,
+    missingVoided: totalMissingVoided,
     classificationFlipped,
     classificationRepriced,
     errors,

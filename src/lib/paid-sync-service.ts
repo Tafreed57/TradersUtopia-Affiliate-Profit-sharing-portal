@@ -10,8 +10,16 @@ interface PaidEntry {
   paidAt: string;
 }
 
+interface VoidedEntry {
+  rewardfulCommissionId: string;
+  voidedAt: string;
+}
+
+type CommissionStateSnapshot = Pick<RewardfulCommission, "id" | "state"> &
+  Partial<Pick<RewardfulCommission, "paid_at" | "voided_at">>;
+
 function toPaidEntries(
-  commissions: Array<Pick<RewardfulCommission, "id" | "state" | "paid_at">>
+  commissions: CommissionStateSnapshot[]
 ): PaidEntry[] {
   return commissions.flatMap((commission) => {
     if (commission.state !== "paid" || !commission.paid_at) return [];
@@ -19,6 +27,20 @@ function toPaidEntries(
       {
         rewardfulCommissionId: commission.id,
         paidAt: commission.paid_at,
+      },
+    ];
+  });
+}
+
+function toVoidedEntries(
+  commissions: CommissionStateSnapshot[]
+): VoidedEntry[] {
+  return commissions.flatMap((commission) => {
+    if (commission.state !== "voided" || !commission.voided_at) return [];
+    return [
+      {
+        rewardfulCommissionId: commission.id,
+        voidedAt: commission.voided_at,
       },
     ];
   });
@@ -72,13 +94,95 @@ async function applyPaidEntries(
   return { updated };
 }
 
+async function applyVoidedEntries(
+  entries: VoidedEntry[]
+): Promise<{ updated: number }> {
+  if (entries.length === 0) {
+    return { updated: 0 };
+  }
+
+  const byVoidedAt = new Map<string, string[]>();
+  for (const entry of entries) {
+    const rcids = byVoidedAt.get(entry.voidedAt) ?? [];
+    rcids.push(entry.rewardfulCommissionId);
+    byVoidedAt.set(entry.voidedAt, rcids);
+  }
+
+  let updated = 0;
+  const affectedAffiliateIds = new Set<string>();
+
+  for (const [voidedAtStr, rewardfulCommissionIds] of byVoidedAt) {
+    const events = await prisma.commissionEvent.findMany({
+      where: { rewardfulCommissionId: { in: rewardfulCommissionIds } },
+      select: { id: true, affiliateId: true },
+    });
+    if (events.length === 0) continue;
+
+    for (const event of events) {
+      affectedAffiliateIds.add(event.affiliateId);
+    }
+
+    const result = await prisma.commissionSplit.updateMany({
+      where: {
+        eventId: { in: events.map((event) => event.id) },
+        status: { not: "VOIDED" },
+      },
+      data: {
+        status: "VOIDED",
+        voidedAt: new Date(voidedAtStr),
+      },
+    });
+    updated += result.count;
+  }
+
+  if (updated > 0) {
+    await clearLifetimeStatsCacheForUsers([...affectedAffiliateIds]);
+  }
+
+  return { updated };
+}
+
+export async function syncCommissionStatesFromCommissions(
+  commissions: CommissionStateSnapshot[]
+): Promise<{
+  paidFetched: number;
+  paidUpdated: number;
+  voidedFetched: number;
+  voidedUpdated: number;
+}> {
+  const paidEntries = toPaidEntries(commissions);
+  const voidedEntries = toVoidedEntries(commissions);
+  const { updated: paidUpdated } = await applyPaidEntries(paidEntries);
+  const { updated: voidedUpdated } = await applyVoidedEntries(voidedEntries);
+
+  return {
+    paidFetched: paidEntries.length,
+    paidUpdated,
+    voidedFetched: voidedEntries.length,
+    voidedUpdated,
+  };
+}
+
 export async function syncPaidHistoryFromCommissions(
-  commissions: Array<Pick<RewardfulCommission, "id" | "state" | "paid_at">>
+  commissions: CommissionStateSnapshot[]
 ): Promise<{ fetched: number; updated: number }> {
-  const fetched = commissions.filter((commission) => commission.state === "paid")
-    .length;
-  const { updated } = await applyPaidEntries(toPaidEntries(commissions));
-  return { fetched, updated };
+  const { paidFetched, paidUpdated } = await syncCommissionStatesFromCommissions(
+    commissions
+  );
+  return { fetched: paidFetched, updated: paidUpdated };
+}
+
+export async function syncCommissionMissingUpstream(
+  rewardfulCommissionId: string,
+  voidedAt: Date
+): Promise<number> {
+  const { updated } = await applyVoidedEntries([
+    {
+      rewardfulCommissionId,
+      voidedAt: voidedAt.toISOString(),
+    },
+  ]);
+  return updated;
 }
 
 export async function syncPaidHistoryForAffiliate(

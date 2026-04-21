@@ -115,7 +115,7 @@ export async function handleCommissionVoided(
       affiliateId: true,
       currency: true,
       splits: {
-        where: { status: { in: ["EARNED", "PAID", "PENDING"] } },
+        where: { status: { not: "VOIDED" } },
         select: { id: true, role: true, cutAmount: true },
       },
     },
@@ -130,7 +130,7 @@ export async function handleCommissionVoided(
 
   // Notify the affiliate (not teachers — keep it simple).
   const affiliateSplit = event.splits.find((s) => s.role === "AFFILIATE");
-  if (affiliateSplit) {
+  if (affiliateSplit && affiliateSplit.cutAmount.gt(0)) {
     const sym = event.currency.toUpperCase() === "CAD" ? "CA$" : "US$";
     await createNotification({
       userId: event.affiliateId,

@@ -48,6 +48,7 @@ export async function GET(
       canBeTeacher: true,
       ratesLocked: true,
       rewardfulAffiliateId: true,
+      rewardfulEmail: true,
       preferredCurrency: true,
       createdAt: true,
     },
