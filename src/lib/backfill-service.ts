@@ -1,4 +1,5 @@
 import { processConversion } from "@/lib/commission-engine";
+import { syncPaidHistoryFromCommissions } from "@/lib/paid-sync-service";
 import { prisma } from "@/lib/prisma";
 import * as rewardful from "@/lib/rewardful";
 import type { RewardfulCommission } from "@/lib/rewardful";
@@ -9,7 +10,9 @@ import type { RewardfulCommission } from "@/lib/rewardful";
  * Pulls every commission from the upstream service for this user's affiliate
  * ID and feeds each one through `processConversion` with
  * `skipAttendanceCheck: true` — historical dates have no attendance records,
- * and per product decision all historical rows are treated as earned.
+ * and per product decision all historical rows are treated as earned. Any
+ * upstream historical rows already marked paid are then synced to local PAID
+ * immediately so affiliates do not temporarily see their whole history as unpaid.
  *
  * Idempotent via the `idempotencyKey @unique` constraint inside
  * `processConversion` (keyed as `{rewardfulCommissionId}:aff:{id}` and
@@ -137,6 +140,8 @@ export async function runBackfill(userId: string): Promise<{
         failed++;
       }
     }
+
+    await syncPaidHistoryFromCommissions(commissions);
 
     if (failed > 0) {
       await prisma.user.update({

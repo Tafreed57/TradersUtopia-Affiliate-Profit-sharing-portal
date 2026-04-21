@@ -1,3 +1,4 @@
+import { clearLifetimeStatsCacheForUsers } from "@/lib/commission-cache";
 import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
 
@@ -7,11 +8,12 @@ import { prisma } from "@/lib/prisma";
  */
 export async function syncCommissionPaid(
   rewardfulCommissionId: string,
-  paidAt: Date
+  paidAt: Date,
+  opts: { bustCache?: boolean } = {}
 ): Promise<number> {
   const event = await prisma.commissionEvent.findUnique({
     where: { rewardfulCommissionId },
-    select: { id: true },
+    select: { id: true, affiliateId: true },
   });
   if (!event) return 0;
 
@@ -19,6 +21,9 @@ export async function syncCommissionPaid(
     where: { eventId: event.id, status: "EARNED" },
     data: { status: "PAID", paidAt },
   });
+  if (res.count > 0 && opts.bustCache !== false) {
+    await clearLifetimeStatsCacheForUsers([event.affiliateId]);
+  }
   return res.count;
 }
 
@@ -51,6 +56,7 @@ export async function handleCommissionPaid(
     where: { id: { in: event.splits.map((s) => s.id) } },
     data: { status: "PAID", paidAt },
   });
+  await clearLifetimeStatsCacheForUsers([event.affiliateId]);
 
   // Aggregate teacher cuts per teacher then notify once each.
   const byTeacher = new Map<string, { teacherId: string; cut: number }>();
@@ -120,6 +126,7 @@ export async function handleCommissionVoided(
     where: { id: { in: event.splits.map((s) => s.id) } },
     data: { status: "VOIDED", voidedAt },
   });
+  await clearLifetimeStatsCacheForUsers([event.affiliateId]);
 
   // Notify the affiliate (not teachers — keep it simple).
   const affiliateSplit = event.splits.find((s) => s.role === "AFFILIATE");

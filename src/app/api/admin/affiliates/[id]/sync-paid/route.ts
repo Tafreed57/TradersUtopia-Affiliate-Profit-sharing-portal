@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth";
 
 import { authOptions } from "@/lib/auth-options";
 import { prisma } from "@/lib/prisma";
-import { listCommissions } from "@/lib/rewardful";
+import { syncPaidHistoryForAffiliate } from "@/lib/paid-sync-service";
 
 /**
  * POST /api/admin/affiliates/:id/sync-paid
@@ -13,8 +13,6 @@ import { listCommissions } from "@/lib/rewardful";
  * flips matching EARNED splits to PAID. Useful for debugging a single
  * affiliate's state without scanning the entire paid-commission list.
  */
-const MAX_PAGES = 50;
-
 export const maxDuration = 120;
 
 export async function POST(
@@ -41,54 +39,14 @@ export async function POST(
     );
   }
 
-  let page = 1;
-  let totalFetched = 0;
-  let totalUpdated = 0;
-
-  while (page <= MAX_PAGES) {
-    const resp = await listCommissions({
-      state: "paid",
-      limit: 100,
-      page,
-      affiliate_id: user.rewardfulAffiliateId,
-    });
-    const items = resp.data ?? [];
-    totalFetched += items.length;
-
-    // Batch by paid_at — many commissions share a timestamp, so the
-    // updateMany per timestamp collapses ~100 calls per page to ~1–2.
-    const byPaidAt = new Map<string, string[]>();
-    for (const item of items) {
-      if (!item.paid_at) continue;
-      const arr = byPaidAt.get(item.paid_at) ?? [];
-      arr.push(item.id);
-      byPaidAt.set(item.paid_at, arr);
-    }
-
-    for (const [paidAtStr, rcids] of byPaidAt) {
-      const events = await prisma.commissionEvent.findMany({
-        where: { rewardfulCommissionId: { in: rcids } },
-        select: { id: true },
-      });
-      if (events.length === 0) continue;
-      const result = await prisma.commissionSplit.updateMany({
-        where: {
-          eventId: { in: events.map((e) => e.id) },
-          status: "EARNED",
-        },
-        data: { status: "PAID", paidAt: new Date(paidAtStr) },
-      });
-      totalUpdated += result.count;
-    }
-
-    if (!resp.pagination.next_page) break;
-    page++;
-  }
+  const { fetched, updated } = await syncPaidHistoryForAffiliate(
+    user.rewardfulAffiliateId
+  );
 
   return NextResponse.json({
     ok: true,
     email: user.email,
-    fetched: totalFetched,
-    updated: totalUpdated,
+    fetched,
+    updated,
   });
 }

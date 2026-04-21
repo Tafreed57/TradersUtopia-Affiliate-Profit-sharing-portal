@@ -6,7 +6,7 @@ import { z } from "zod";
 import { authOptions } from "@/lib/auth-options";
 import { runBackfill } from "@/lib/backfill-service";
 import { prisma } from "@/lib/prisma";
-import { listCommissions } from "@/lib/rewardful";
+import { syncPaidHistoryForAffiliate } from "@/lib/paid-sync-service";
 
 /**
  * POST /api/admin/test-setup
@@ -134,50 +134,9 @@ export async function POST(req: NextRequest) {
   // EARNED splits to PAID. Affiliate-scoped inside the loop so we don't
   // clobber other test users' data during rapid cycles.
   if (body.runSyncPaid) {
-    let page = 1;
-    let totalFetched = 0;
-    let totalUpdated = 0;
-    const MAX_PAGES = 50;
-
-    while (page <= MAX_PAGES) {
-      const resp = await listCommissions({
-        state: "paid",
-        limit: 100,
-        page,
-        affiliate_id: user.rewardfulAffiliateId,
-      });
-      const items = resp.data ?? [];
-      totalFetched += items.length;
-
-      const byPaidAt = new Map<string, string[]>();
-      for (const item of items) {
-        if (!item.paid_at) continue;
-        const arr = byPaidAt.get(item.paid_at) ?? [];
-        arr.push(item.id);
-        byPaidAt.set(item.paid_at, arr);
-      }
-
-      for (const [paidAtStr, rcids] of byPaidAt) {
-        const events = await prisma.commissionEvent.findMany({
-          where: { rewardfulCommissionId: { in: rcids } },
-          select: { id: true },
-        });
-        if (events.length === 0) continue;
-        const result = await prisma.commissionSplit.updateMany({
-          where: {
-            eventId: { in: events.map((e) => e.id) },
-            status: "EARNED",
-          },
-          data: { status: "PAID", paidAt: new Date(paidAtStr) },
-        });
-        totalUpdated += result.count;
-      }
-
-      if (!resp.pagination.next_page) break;
-      page++;
-    }
-
-    steps.syncPaid = { fetched: totalFetched, updated: totalUpdated };
+    steps.syncPaid = await syncPaidHistoryForAffiliate(
+      user.rewardfulAffiliateId
+    );
   }
 
   // Step 4: backdate attendance. One row per day for the past N days.
