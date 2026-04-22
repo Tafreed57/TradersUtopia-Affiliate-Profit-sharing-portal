@@ -1,4 +1,3 @@
-import { Prisma } from "@prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { z } from "zod";
@@ -6,6 +5,7 @@ import { z } from "zod";
 import { authOptions } from "@/lib/auth-options";
 import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
+import { activateTeacherStudentRelationship } from "@/lib/teacher-student-relationships";
 
 const schema = z.object({
   action: z.enum(["approve", "reject"]),
@@ -16,17 +16,6 @@ const schema = z.object({
  * PATCH /api/admin/teacher-proposals/:id
  *
  * Admin approves or rejects a pending teacher-student proposal.
- *
- * On approve:
- *   - status → ACTIVE (atomic: updateMany guards on PENDING)
- *   - Depth-2 TeacherStudent rows auto-created for the student's own active students
- *   - Retroactive TEACHER CommissionSplit rows created for the student's EARNED
- *     historical events (capped at each event's current ceoCut)
- *   - Teacher + student notified
- *
- * On reject:
- *   - status → REJECTED (atomic)
- *   - Teacher notified
  */
 export async function PATCH(
   req: NextRequest,
@@ -62,201 +51,62 @@ export async function PATCH(
       );
     }
 
-    const newStatus = action === "approve" ? "ACTIVE" : "REJECTED";
-
-    const updated = await prisma.teacherStudent.updateMany({
-      where: { id, status: "PENDING" },
-      data: {
-        status: newStatus,
-        reviewedAt: new Date(),
-        reviewedById: session.user.id,
-      },
-    });
-
-    if (updated.count === 0) {
-      return NextResponse.json(
-        { error: "Proposal was already processed by another request" },
-        { status: 409 }
-      );
-    }
-
-    if (action === "approve") {
-      // Auto-create depth-2 TeacherStudent rows for the student's own active
-      // students. Derivative — no separate proposal needed. teacherCut=0;
-      // admin can adjust per student via rate tools.
-      // Filter self-pair: if student already teaches the teacher, skip that pair.
-      const studentsOfStudent = await prisma.teacherStudent.findMany({
-        where: {
-          teacherId: proposal.studentId,
-          status: "ACTIVE",
-          depth: 1,
-          NOT: { studentId: proposal.teacherId },
-        },
-        select: { studentId: true },
-      });
-
-      if (studentsOfStudent.length > 0) {
-        // Partition existing rows (resurrect) vs new (create) so previously
-        // cascaded-then-deactivated depth-2 rows come back to life on re-approve.
-        const sosIds = studentsOfStudent.map((s) => s.studentId);
-        const existing = await prisma.teacherStudent.findMany({
-          where: { teacherId: proposal.teacherId, studentId: { in: sosIds } },
-          select: { studentId: true },
-        });
-        const existingIds = new Set(existing.map((r) => r.studentId));
-        const toCreate = sosIds.filter((id) => !existingIds.has(id));
-        const toResurrect = sosIds.filter((id) => existingIds.has(id));
-        const now = new Date();
-
-        if (toResurrect.length > 0) {
-          await prisma.teacherStudent.updateMany({
-            where: {
-              teacherId: proposal.teacherId,
-              studentId: { in: toResurrect },
-            },
-            data: {
-              status: "ACTIVE",
-              depth: 2,
-              reviewedAt: now,
-              reviewedById: session.user.id,
-            },
-          });
-        }
-        if (toCreate.length > 0) {
-          await prisma.teacherStudent.createMany({
-            data: toCreate.map((sid) => ({
-              teacherId: proposal.teacherId,
-              studentId: sid,
-              depth: 2,
-              teacherCut: 0,
-              status: "ACTIVE" as const,
-              reviewedAt: now,
-              reviewedById: session.user.id,
-            })),
-          });
-        }
-      }
-
-      // Retroactive TEACHER splits for the student's EARNED historical events.
-      // These were processed before the relationship existed, so no teacher
-      // split was created at the time. Teacher cut = fullAmount × % / 100,
-      // capped at each event's current ceoCut.
-      const historicalEvents = await prisma.commissionEvent.findMany({
-        where: {
-          affiliateId: proposal.studentId,
-          splits: { some: { role: "AFFILIATE", status: "EARNED" } },
-        },
-        select: {
-          id: true,
-          rewardfulCommissionId: true,
-          fullAmount: true,
-          ceoCut: true,
-          splits: {
-            where: { role: "TEACHER", recipientId: proposal.teacherId },
-            select: { id: true },
-          },
+    if (action === "reject") {
+      await prisma.teacherStudent.update({
+        where: { id },
+        data: {
+          status: "REJECTED",
+          reviewedAt: new Date(),
+          reviewedById: session.user.id,
         },
       });
 
-      const teacherCutPct = proposal.teacherCut.toNumber();
-      if (historicalEvents.length > 0 && teacherCutPct > 0) {
-        const toProcess = historicalEvents
-          .filter((e) => e.splits.length === 0)
-          .map((e) => {
-            const full = e.fullAmount.toNumber();
-            const ceo = e.ceoCut.toNumber();
-            const cut = Math.min(
-              Number(((full * teacherCutPct) / 100).toFixed(2)),
-              ceo
-            );
-            return { event: e, teacherCutAmount: cut };
-          })
-          .filter(({ teacherCutAmount }) => teacherCutAmount > 0);
-
-        // Per-event $transaction mirroring admin/teacher-student: if a
-        // concurrent process wins the split-insert race (P2002), that single
-        // event's tx rolls back and we continue with the remaining events.
-        // Bulk createMany would fail the whole batch AFTER the proposal has
-        // already flipped to ACTIVE, leaving subsequent retries blocked by the
-        // "Proposal is already active" 409 and the backfill permanently
-        // incomplete (Codex catch).
-        for (const { event, teacherCutAmount } of toProcess) {
-          const ceoAfter = Number(
-            (event.ceoCut.toNumber() - teacherCutAmount).toFixed(2)
-          );
-          try {
-            await prisma.$transaction([
-              prisma.commissionSplit.create({
-                data: {
-                  eventId: event.id,
-                  recipientId: proposal.teacherId,
-                  role: "TEACHER" as const,
-                  depth: proposal.depth,
-                  cutPercent: proposal.teacherCut,
-                  cutAmount: teacherCutAmount,
-                  status: "EARNED" as const,
-                  forfeitedToCeo: false,
-                  forfeitureReason: null,
-                  idempotencyKey: event.rewardfulCommissionId
-                    ? `${event.rewardfulCommissionId}:teacher:${proposal.teacherId}`
-                    : `evt:${event.id}:teacher:${proposal.teacherId}`,
-                },
-              }),
-              prisma.commissionEvent.update({
-                where: { id: event.id },
-                data: { ceoCut: ceoAfter },
-              }),
-            ]);
-          } catch (err) {
-            if (
-              err instanceof Prisma.PrismaClientKnownRequestError &&
-              err.code === "P2002"
-            ) {
-              // Concurrent inserter already created this event's teacher split.
-              // Their tx already debited ceoCut; ours is a no-op. Continue.
-              continue;
-            }
-            throw err;
-          }
-        }
-      }
-    }
-
-    const studentLabel = proposal.student.name || proposal.student.email;
-    const teacherLabel = proposal.teacher.name || proposal.teacher.email;
-    if (action === "approve") {
-      await createNotification({
-        userId: proposal.teacherId,
-        type: "STUDENT_PROPOSAL_APPROVED",
-        title: "Student Proposal Approved",
-        body: `${studentLabel} has been added as your student at ${proposal.teacherCut.toString()}% cut. Commissions will now flow.`,
-        data: { studentId: proposal.studentId, href: "/students" },
-      });
-      await createNotification({
-        userId: proposal.studentId,
-        type: "NEW_STUDENT_LINKED",
-        title: "You've been added to a teacher",
-        body: `${teacherLabel} is now earning a cut from your commissions.`,
-        data: { teacherId: proposal.teacherId, href: "/students" },
-      });
-      await createNotification({
-        userId: proposal.teacherId,
-        type: "NEW_STUDENT_LINKED",
-        title: "New student linked",
-        body: `${studentLabel} is now your student.`,
-        data: { studentId: proposal.studentId, href: "/students" },
-      });
-    } else {
       await createNotification({
         userId: proposal.teacherId,
         type: "STUDENT_PROPOSAL_REJECTED",
         title: "Student Proposal Rejected",
-        body: `Your proposal to add ${studentLabel} as a student was not approved.${reviewNote ? ` Note: ${reviewNote}` : ""}`,
+        body: `Your proposal to add ${proposal.student.name || proposal.student.email} as a student was not approved.${reviewNote ? ` Note: ${reviewNote}` : ""}`,
         data: { studentId: proposal.studentId, reviewNote: reviewNote ?? null },
       });
+
+      return NextResponse.json({ ok: true, status: "REJECTED" });
     }
 
-    return NextResponse.json({ ok: true, status: newStatus });
+    const activation = await activateTeacherStudentRelationship({
+      teacherId: proposal.teacherId,
+      studentId: proposal.studentId,
+      teacherCut: proposal.teacherCut.toNumber(),
+      actorId: session.user.id,
+      origin: proposal.createdVia,
+      historicalBackfill: "UNPAID_ONLY",
+    });
+
+    const studentLabel = proposal.student.name || proposal.student.email;
+    const teacherLabel = proposal.teacher.name || proposal.teacher.email;
+
+    await createNotification({
+      userId: proposal.teacherId,
+      type: "STUDENT_PROPOSAL_APPROVED",
+      title: "Student Proposal Approved",
+      body: `${studentLabel} has been added as your student at ${proposal.teacherCut.toString()}% cut.${activation.historicalBackfillCreated > 0 ? ` ${activation.historicalBackfillCreated} unpaid commission${activation.historicalBackfillCreated === 1 ? "" : "s"} were also brought under your history.` : ""}`,
+      data: { studentId: proposal.studentId, href: "/students" },
+    });
+    await createNotification({
+      userId: proposal.studentId,
+      type: "NEW_STUDENT_LINKED",
+      title: "You've been added to a teacher",
+      body: `${teacherLabel} is now earning a cut from your commissions.`,
+      data: { teacherId: proposal.teacherId, href: "/students" },
+    });
+    await createNotification({
+      userId: proposal.teacherId,
+      type: "NEW_STUDENT_LINKED",
+      title: "New student linked",
+      body: `${studentLabel} is now your student.`,
+      data: { studentId: proposal.studentId, href: "/students" },
+    });
+
+    return NextResponse.json({ ok: true, status: "ACTIVE" });
   } catch (err) {
     if (err instanceof z.ZodError) {
       return NextResponse.json(

@@ -15,8 +15,8 @@ const schema = z.object({
 /**
  * POST /api/students/propose
  *
- * Teacher proposes a student relationship. Creates a TeacherStudent row
- * with status=PENDING. Admin receives a notification to review.
+ * Teacher proposes a brand-new student relationship. Archived relationships
+ * are restored through a separate request flow so admin can review the gap.
  */
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions);
@@ -37,8 +37,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Gate: only users admin has granted teacher access can self-propose.
-    // Admin users override the flag (admin can do anything).
     const proposer = await prisma.user.findUnique({
       where: { id: teacherId },
       select: { canBeTeacher: true },
@@ -50,17 +48,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Verify the proposed student exists
     const student = await prisma.user.findUnique({
       where: { id: studentId },
       select: { id: true, name: true, email: true },
     });
-
     if (!student) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    // Check for existing relationship (any status)
     const existing = await prisma.teacherStudent.findUnique({
       where: { teacherId_studentId: { teacherId, studentId } },
     });
@@ -78,13 +73,23 @@ export async function POST(req: NextRequest) {
           { status: 409 }
         );
       }
-      // REJECTED or DEACTIVATED — re-proposal allowed. Atomic guard ensures
-      // status hasn't changed between the read above and this write.
+      if (existing.status === "DEACTIVATED") {
+        return NextResponse.json(
+          {
+            error:
+              "This student already has archived history under you. Use the previous students section to request a return so admin can review missed commissions first.",
+            requiresRestoreRequest: true,
+            relationshipId: existing.id,
+          },
+          { status: 409 }
+        );
+      }
+
       const updated = await prisma.teacherStudent.updateMany({
         where: {
           teacherId,
           studentId,
-          status: { in: ["REJECTED", "DEACTIVATED"] },
+          status: "REJECTED",
         },
         data: {
           teacherCut: proposedCut,
@@ -111,7 +116,6 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Notify ALL admins.
     const adminWhere = adminUserWhereOr();
     if (adminWhere) {
       const adminUsers = await prisma.user.findMany({

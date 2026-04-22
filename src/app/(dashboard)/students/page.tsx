@@ -6,9 +6,12 @@ import {
   ChevronDown,
   ChevronRight,
   DollarSign,
+  History,
   Plus,
   RefreshCw,
+  RotateCcw,
   Send,
+  UserMinus,
   Users,
 } from "lucide-react";
 import { useCallback, useState } from "react";
@@ -48,6 +51,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useCurrency } from "@/providers/currency-provider";
 
 interface Student {
+  relationshipId: string;
+  relationshipSequence: number;
   id: string;
   name: string | null;
   email: string;
@@ -77,20 +82,43 @@ interface DirectStudent extends Student {
   subStudents: Student[];
 }
 
+interface PreviousStudent extends Student {
+  archiveId: string;
+  archivedAt: string;
+  archivedByRole: "ADMIN" | "TEACHER" | "SYSTEM";
+  archiveReason: string | null;
+  snapshotUnpaidCad: number;
+  snapshotDueCad: number;
+  snapshotPendingCad: number;
+  snapshotPaidCad: number;
+  snapshotCommissionCount: number;
+  snapshotNextDueAt: string | null;
+  pendingRestoreRequest: {
+    id: string;
+    createdAt: string;
+    requestNote: string | null;
+  } | null;
+}
+
 interface GrandTotals {
   totalUnpaidCad: number;
   totalDueCad: number;
   totalPendingCad: number;
   directUnpaidCad: number;
   indirectUnpaidCad: number;
+  archivedUnpaidCad: number;
+  activeUnpaidCad: number;
   totalPaidCad: number;
+  archivedPaidCad: number;
 }
 
 interface StudentsResponse {
   directStudents: DirectStudent[];
   orphanedSubStudents?: Student[];
+  previousStudents?: PreviousStudent[];
   grandTotals: GrandTotals;
   isTeacher: boolean;
+  hasArchivedStudents: boolean;
   canBeTeacher: boolean;
   canProposeRates: boolean;
 }
@@ -124,6 +152,9 @@ interface DetailAttendance {
 
 interface StudentDetailResponse {
   student: { id: string; name: string | null; email: string; image: string | null };
+  relationshipId: string;
+  relationshipSequence: number;
+  depth: number;
   teacherCutPercent: number;
   teacherUnpaidCad: number;
   teacherDueCad: number;
@@ -168,6 +199,17 @@ function formatShortDate(iso: string) {
   });
 }
 
+function formatArchiveActor(role: PreviousStudent["archivedByRole"]) {
+  switch (role) {
+    case "ADMIN":
+      return "admin";
+    case "TEACHER":
+      return "you";
+    default:
+      return "the system";
+  }
+}
+
 function StudentDetailSheet({
   student,
   viewerId,
@@ -184,9 +226,24 @@ function StudentDetailSheet({
   // absolute cached view of the student). Two viewers sharing a browser
   // would serve each other's stale data without the viewer key.
   const { data, isLoading } = useQuery<StudentDetailResponse>({
-    queryKey: ["student-detail", viewerId, student?.id],
+    queryKey: [
+      "student-detail",
+      viewerId,
+      student?.id,
+      student?.relationshipId,
+      student?.relationshipSequence,
+    ],
     queryFn: async () => {
-      const res = await fetch(`/api/students/${student!.id}/detail`);
+      const params = new URLSearchParams();
+      if (student?.relationshipId) {
+        params.set("relationshipId", student.relationshipId);
+      }
+      if (student?.relationshipSequence) {
+        params.set("relationshipSequence", String(student.relationshipSequence));
+      }
+      const res = await fetch(
+        `/api/students/${student!.id}/detail?${params.toString()}`
+      );
       if (!res.ok) throw new Error("Failed to fetch");
       return res.json();
     },
@@ -430,7 +487,11 @@ function AddStudentDialog({ onSuccess }: { onSuccess: () => void }) {
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.error ?? "Failed to submit");
+        const error = new Error(err.error ?? "Failed to submit") as Error & {
+          requiresRestoreRequest?: boolean;
+        };
+        error.requiresRestoreRequest = err.requiresRestoreRequest === true;
+        throw error;
       }
       return res.json();
     },
@@ -442,7 +503,15 @@ function AddStudentDialog({ onSuccess }: { onSuccess: () => void }) {
       setCut("");
       onSuccess();
     },
-    onError: (error: Error) => toast.error(error.message),
+    onError: (error: Error & { requiresRestoreRequest?: boolean }) => {
+      if (error.requiresRestoreRequest) {
+        toast.error(
+          "This student already has archived history under you. Use Previous Students to request their return."
+        );
+        return;
+      }
+      toast.error(error.message);
+    },
   });
 
   const handleSubmit = useCallback(() => {
@@ -601,6 +670,195 @@ function AddStudentDialog({ onSuccess }: { onSuccess: () => void }) {
   );
 }
 
+function RemoveStudentDialog({
+  student,
+  open,
+  onOpenChange,
+  onSuccess,
+}: {
+  student: DirectStudent;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSuccess: () => void;
+}) {
+  const [reason, setReason] = useState("");
+
+  const removeMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`/api/students/${student.id}/relationship`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          archiveReason:
+            reason.trim() || "Teacher removed this student from their roster.",
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? "Failed to remove student");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      toast.success(
+        `${student.name ?? student.email} moved to Previous Students. Their payout history will keep progressing there.`
+      );
+      setReason("");
+      onOpenChange(false);
+      onSuccess();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) setReason("");
+        onOpenChange(nextOpen);
+      }}
+    >
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Remove Student From Active Roster</DialogTitle>
+          <DialogDescription>
+            This removes {student.name ?? student.email} from your live roster without
+            erasing the money trail. Existing unpaid, due, pending, and paid progress
+            moves into Previous Students so it can keep updating safely.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4 py-2">
+          <div className="rounded-xl border border-border/50 bg-muted/10 p-4 text-sm">
+            <p className="font-medium">What stays preserved</p>
+            <p className="mt-2 text-muted-foreground">
+              Current unpaid {student.teacherUnpaidCad.toFixed(2)} CAD, paid totals, and
+              future payout-state changes on already-earned commissions.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor={`remove-student-reason-${student.id}`}>Reason (optional)</Label>
+            <Input
+              id={`remove-student-reason-${student.id}`}
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+              placeholder="Explain why this student is being moved out of the active roster."
+            />
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            onClick={() => removeMutation.mutate()}
+            disabled={removeMutation.isPending}
+          >
+            {removeMutation.isPending ? "Removing..." : "Remove Student"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function RequestStudentReturnDialog({
+  student,
+  open,
+  onOpenChange,
+  onSuccess,
+}: {
+  student: PreviousStudent;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSuccess: () => void;
+}) {
+  const [note, setNote] = useState("");
+
+  const requestMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/students/restore-requests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          archiveId: student.archiveId,
+          requestNote: note.trim() || undefined,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? "Failed to request return");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      toast.success(
+        "Return request sent to admin. They will choose whether to grant none, some, or all archived-gap commissions."
+      );
+      setNote("");
+      onOpenChange(false);
+      onSuccess();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) setNote("");
+        onOpenChange(nextOpen);
+      }}
+    >
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Request Student Return</DialogTitle>
+          <DialogDescription>
+            Ask admin to place {student.name ?? student.email} back under your roster.
+            Admin will review what came in while the student was away and can grant
+            none, some, or all of that missed income.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4 py-2">
+          <div className="rounded-xl border border-border/50 bg-muted/10 p-4 text-sm">
+            <p className="font-medium">Current archived totals</p>
+            <p className="mt-2 text-muted-foreground">
+              Unpaid {student.teacherUnpaidCad.toFixed(2)} CAD, paid{" "}
+              {student.teacherPaidCad.toFixed(2)} CAD.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor={`return-note-${student.archiveId}`}>Note for admin (optional)</Label>
+            <Input
+              id={`return-note-${student.archiveId}`}
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+              placeholder="Explain why this student should come back under your roster."
+            />
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            onClick={() => requestMutation.mutate()}
+            disabled={requestMutation.isPending}
+          >
+            {requestMutation.isPending ? "Sending..." : "Send Request"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function StudentsPage() {
   const { format } = useCurrency();
   const queryClient = useQueryClient();
@@ -620,6 +878,7 @@ export default function StudentsPage() {
 
   const directStudents = data?.directStudents ?? [];
   const orphanedSubStudents = data?.orphanedSubStudents ?? [];
+  const previousStudents = data?.previousStudents ?? [];
   const grandTotals = data?.grandTotals;
   // Count both nested sub-students (under a direct parent) AND orphaned ones
   // (depth-2 relationships whose direct-parent link is missing). grandTotals
@@ -629,6 +888,7 @@ export default function StudentsPage() {
   const indirectCount =
     directStudents.reduce((n, s) => n + s.subStudents.length, 0) +
     orphanedSubStudents.length;
+  const previousCount = previousStudents.length;
 
   if (isLoading) {
     return (
@@ -657,7 +917,9 @@ export default function StudentsPage() {
           <h1 className="text-2xl font-bold tracking-tight">Students</h1>
           <p className="text-muted-foreground">
             {data?.isTeacher
-              ? `${directStudents.length} direct student${directStudents.length !== 1 ? "s" : ""}${indirectCount > 0 ? `, ${indirectCount} indirect` : ""}`
+              ? `${directStudents.length} direct student${directStudents.length !== 1 ? "s" : ""}${indirectCount > 0 ? `, ${indirectCount} indirect` : ""}${previousCount > 0 ? `, ${previousCount} previous` : ""}`
+              : previousCount > 0
+              ? `${previousCount} previous student${previousCount === 1 ? "" : "s"} with preserved payout history`
               : data?.canBeTeacher || isAdmin
               ? "Propose students for admin approval"
               : ""}
@@ -672,17 +934,18 @@ export default function StudentsPage() {
         )}
       </div>
 
-      {data?.isTeacher && grandTotals && (
+      {(data?.isTeacher || previousStudents.length > 0) && grandTotals && (
         <GrandTotalSummary
           totals={grandTotals}
           indirectCount={indirectCount}
+          previousCount={previousCount}
           format={format}
           onRefresh={() => refetch()}
           isRefreshing={isFetching}
         />
       )}
 
-      {!data?.isTeacher && directStudents.length === 0 && (
+      {!data?.isTeacher && directStudents.length === 0 && previousStudents.length === 0 && (
         <Card>
           <CardContent className="py-12 text-center">
             <Users className="mx-auto mb-3 h-10 w-10 text-muted-foreground/40" />
@@ -706,6 +969,9 @@ export default function StudentsPage() {
                 format={format}
                 allowRateProposals={data?.canProposeRates || isAdmin}
                 onProposalSubmitted={() =>
+                  queryClient.invalidateQueries({ queryKey: ["students"] })
+                }
+                onStudentArchived={() =>
                   queryClient.invalidateQueries({ queryKey: ["students"] })
                 }
                 onViewDetail={() => setSelectedStudent(student)}
@@ -737,6 +1003,31 @@ export default function StudentsPage() {
           </Card>
         </div>
       )}
+
+      {previousStudents.length > 0 && (
+        <div>
+          <div className="mb-3">
+            <h2 className="text-lg font-semibold">Previous Students</h2>
+            <p className="text-sm text-muted-foreground">
+              Archived students stay here so their already-earned payouts can keep
+              moving from holding to paid, even while they are off your active roster.
+            </p>
+          </div>
+          <div className="space-y-4">
+            {previousStudents.map((student) => (
+              <PreviousStudentCard
+                key={`${student.archiveId}:${student.relationshipSequence}`}
+                student={student}
+                format={format}
+                onViewDetail={() => setSelectedStudent(student)}
+                onRequestSubmitted={() =>
+                  queryClient.invalidateQueries({ queryKey: ["students"] })
+                }
+              />
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -744,17 +1035,19 @@ export default function StudentsPage() {
 function GrandTotalSummary({
   totals,
   indirectCount,
+  previousCount,
   format,
   onRefresh,
   isRefreshing,
 }: {
   totals: GrandTotals;
   indirectCount: number;
+  previousCount: number;
   format: (amount: number, inputCurrency?: "CAD" | "USD") => string;
   onRefresh: () => void;
   isRefreshing: boolean;
 }) {
-  const denom = totals.totalUnpaidCad > 0 ? totals.totalUnpaidCad : 1;
+  const denom = totals.activeUnpaidCad > 0 ? totals.activeUnpaidCad : 1;
   const directPct = Math.min(100, (totals.directUnpaidCad / denom) * 100);
   const indirectPct = Math.min(100, (totals.indirectUnpaidCad / denom) * 100);
   // Hide the "your students' students" bar when there aren't any - showing
@@ -778,6 +1071,10 @@ function GrandTotalSummary({
               {format(totals.totalPendingCad, "CAD")} | Paid{" "}
               {format(totals.totalPaidCad, "CAD")}
             </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Active roster {format(totals.activeUnpaidCad, "CAD")} | Previous students{" "}
+              {format(totals.archivedUnpaidCad, "CAD")}
+            </p>
           </div>
           <Button
             variant="outline"
@@ -792,6 +1089,14 @@ function GrandTotalSummary({
         </div>
 
         <div className="mt-5 space-y-3">
+          {previousCount > 0 && (
+            <div className="rounded-xl border border-border/50 bg-muted/10 px-3 py-2 text-xs text-muted-foreground">
+              {previousCount} previous student{previousCount === 1 ? "" : "s"} still have{" "}
+              {format(totals.archivedUnpaidCad, "CAD")} unpaid and{" "}
+              {format(totals.archivedPaidCad, "CAD")} paid tracked outside your active
+              roster.
+            </div>
+          )}
           <div>
             <div className="flex items-center justify-between text-xs">
               <span className="text-muted-foreground">Your students</span>
@@ -835,6 +1140,7 @@ function StudentCard({
   format,
   allowRateProposals,
   onProposalSubmitted,
+  onStudentArchived,
   onViewDetail,
   onSubStudentClick,
 }: {
@@ -842,6 +1148,7 @@ function StudentCard({
   format: (amount: number, inputCurrency?: "CAD" | "USD") => string;
   allowRateProposals: boolean;
   onProposalSubmitted: () => void;
+  onStudentArchived: () => void;
   onViewDetail: () => void;
   onSubStudentClick: (sub: Student) => void;
 }) {
@@ -849,6 +1156,7 @@ function StudentCard({
     String(student.teacherCutPercent)
   );
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [removeDialogOpen, setRemoveDialogOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const subCount = student.subStudents.length;
   const subUnpaid = student.subStudents.reduce(
@@ -887,11 +1195,19 @@ function StudentCard({
   }, [proposedRate, proposalMutation]);
 
   return (
-    <Card
-      className="cursor-pointer transition-colors hover:bg-accent/30"
-      onClick={onViewDetail}
-    >
-      <CardContent className="pt-6">
+    <>
+      <RemoveStudentDialog
+        student={student}
+        open={removeDialogOpen}
+        onOpenChange={setRemoveDialogOpen}
+        onSuccess={onStudentArchived}
+      />
+
+      <Card
+        className="cursor-pointer transition-colors hover:bg-accent/30"
+        onClick={onViewDetail}
+      >
+        <CardContent className="pt-6">
         <div className="flex items-start gap-3">
           <Avatar className="h-10 w-10">
             <AvatarImage src={student.image ?? undefined} />
@@ -963,7 +1279,7 @@ function StudentCard({
             : ""}
         </div>
 
-        <div className="mt-4 flex items-center justify-between border-t border-border/50 pt-3">
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-3">
             <div className="text-xs text-muted-foreground">
               Your rate:{" "}
               <span className="font-medium text-foreground">
@@ -971,17 +1287,34 @@ function StudentCard({
               </span>
             </div>
 
-            {allowRateProposals && (
+            <div className="flex flex-wrap items-center gap-2">
+              {allowRateProposals && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="gap-1 text-xs"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setDialogOpen(true);
+                  }}
+                >
+                  <Send className="h-3 w-3" />
+                  Propose Rate
+                </Button>
+              )}
               <Button
                 variant="ghost"
                 size="sm"
-                className="gap-1 text-xs"
-                onClick={(e) => { e.stopPropagation(); setDialogOpen(true); }}
+                className="gap-1 text-xs text-error hover:bg-error/10 hover:text-error"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setRemoveDialogOpen(true);
+                }}
               >
-                <Send className="h-3 w-3" />
-                Propose Rate
+                <UserMinus className="h-3 w-3" />
+                Remove
               </Button>
-            )}
+            </div>
             <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
               <DialogContent>
                 <DialogHeader>
@@ -996,9 +1329,9 @@ function StudentCard({
                     Current rate: {student.teacherCutPercent}%
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="rate">New rate (%)</Label>
+                    <Label htmlFor={`rate-${student.id}`}>New rate (%)</Label>
                     <Input
-                      id="rate"
+                      id={`rate-${student.id}`}
                       type="number"
                       min={0}
                       max={100}
@@ -1028,11 +1361,11 @@ function StudentCard({
             </Dialog>
           </div>
 
-        {subCount > 0 && (
-          <div className="mt-3 border-t border-border/50 pt-3">
-            <button
-              type="button"
-              className="flex w-full items-center justify-between gap-2 text-xs text-muted-foreground hover:text-foreground"
+          {subCount > 0 && (
+            <div className="mt-3 border-t border-border/50 pt-3">
+              <button
+                type="button"
+                className="flex w-full items-center justify-between gap-2 text-xs text-muted-foreground hover:text-foreground"
               aria-expanded={expanded}
               onClick={(e) => {
                 e.stopPropagation();
@@ -1066,8 +1399,137 @@ function StudentCard({
             )}
           </div>
         )}
-      </CardContent>
-    </Card>
+        </CardContent>
+      </Card>
+    </>
+  );
+}
+
+function PreviousStudentCard({
+  student,
+  format,
+  onViewDetail,
+  onRequestSubmitted,
+}: {
+  student: PreviousStudent;
+  format: (amount: number, inputCurrency?: "CAD" | "USD") => string;
+  onViewDetail: () => void;
+  onRequestSubmitted: () => void;
+}) {
+  const [requestDialogOpen, setRequestDialogOpen] = useState(false);
+
+  return (
+    <>
+      {!student.pendingRestoreRequest && (
+        <RequestStudentReturnDialog
+          student={student}
+          open={requestDialogOpen}
+          onOpenChange={setRequestDialogOpen}
+          onSuccess={onRequestSubmitted}
+        />
+      )}
+
+      <Card className="border-border/60 bg-muted/10">
+        <CardContent className="pt-6">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex min-w-0 items-start gap-3">
+              <Avatar className="h-10 w-10">
+                <AvatarImage src={student.image ?? undefined} />
+                <AvatarFallback className="bg-primary/10 text-primary text-sm">
+                  {getInitials(student.name, student.email)}
+                </AvatarFallback>
+              </Avatar>
+
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="truncate font-medium">{student.name ?? student.email}</p>
+                  <Badge
+                    variant="default"
+                    className="bg-muted/20 text-muted-foreground border-border/60"
+                  >
+                    Previous student
+                  </Badge>
+                  {student.pendingRestoreRequest && (
+                    <Badge
+                      variant="default"
+                      className="bg-info/15 text-info border-info/30"
+                    >
+                      Return request sent
+                    </Badge>
+                  )}
+                </div>
+                <p className="truncate text-xs text-muted-foreground">{student.email}</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Removed {formatShortDate(student.archivedAt)} by{" "}
+                  {formatArchiveActor(student.archivedByRole)}
+                  {student.archiveReason ? ` - ${student.archiveReason}` : ""}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="outline" size="sm" onClick={onViewDetail}>
+                <History className="mr-1 h-3.5 w-3.5" />
+                View History
+              </Button>
+              {student.pendingRestoreRequest ? (
+                <Button variant="ghost" size="sm" disabled>
+                  <RotateCcw className="mr-1 h-3.5 w-3.5" />
+                  Awaiting Admin
+                </Button>
+              ) : (
+                <Button size="sm" onClick={() => setRequestDialogOpen(true)}>
+                  <RotateCcw className="mr-1 h-3.5 w-3.5" />
+                  Request Return
+                </Button>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-4">
+            <div className="rounded-xl border border-border/50 bg-background/40 p-3">
+              <p className="text-xs text-muted-foreground">Current unpaid</p>
+              <p className="mt-1 text-sm font-semibold text-success">
+                {format(student.teacherUnpaidCad, "CAD")}
+              </p>
+            </div>
+            <div className="rounded-xl border border-border/50 bg-background/40 p-3">
+              <p className="text-xs text-muted-foreground">Due now</p>
+              <p className="mt-1 text-sm font-semibold text-info">
+                {format(student.teacherDueCad, "CAD")}
+              </p>
+            </div>
+            <div className="rounded-xl border border-border/50 bg-background/40 p-3">
+              <p className="text-xs text-muted-foreground">In holding</p>
+              <p className="mt-1 text-sm font-semibold">
+                {format(student.teacherPendingCad, "CAD")}
+              </p>
+            </div>
+            <div className="rounded-xl border border-border/50 bg-background/40 p-3">
+              <p className="text-xs text-muted-foreground">Paid</p>
+              <p className="mt-1 text-sm font-semibold">
+                {format(student.teacherPaidCad, "CAD")}
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-4 rounded-xl border border-border/50 bg-background/40 px-3 py-2 text-xs text-muted-foreground">
+            Snapshot at removal: unpaid {format(student.snapshotUnpaidCad, "CAD")} |
+            paid {format(student.snapshotPaidCad, "CAD")} | {student.snapshotCommissionCount}{" "}
+            commission{student.snapshotCommissionCount === 1 ? "" : "s"}
+            {student.snapshotNextDueAt
+              ? ` | next release ${formatShortDate(student.snapshotNextDueAt)}`
+              : ""}
+          </div>
+
+          {student.pendingRestoreRequest?.requestNote && (
+            <p className="mt-3 text-xs text-muted-foreground">
+              Return note: {student.pendingRestoreRequest.requestNote}
+            </p>
+          )}
+        </CardContent>
+      </Card>
+    </>
   );
 }
 

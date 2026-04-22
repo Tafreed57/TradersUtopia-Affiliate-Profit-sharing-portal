@@ -13,7 +13,7 @@ import { authOptions } from "@/lib/auth-options";
  * Admin drill-down into how the managed affiliate sees one student.
  */
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   {
     params,
   }: {
@@ -26,9 +26,23 @@ export async function GET(
   }
 
   const { id, studentId } = await params;
+  const relationshipId = req.nextUrl.searchParams.get("relationshipId") ?? undefined;
+  const relationshipSequenceParam =
+    req.nextUrl.searchParams.get("relationshipSequence");
+  const relationshipSequence = relationshipSequenceParam
+    ? Number(relationshipSequenceParam)
+    : undefined;
 
   try {
-    return NextResponse.json(await getTeacherStudentDetailData(id, studentId));
+    return NextResponse.json(
+      await getTeacherStudentDetailData(id, studentId, {
+        relationshipId,
+        relationshipSequence:
+          relationshipSequence !== undefined && Number.isFinite(relationshipSequence)
+            ? relationshipSequence
+            : undefined,
+      })
+    );
   } catch (error) {
     if (error instanceof AffiliatePortalDataError) {
       return NextResponse.json(

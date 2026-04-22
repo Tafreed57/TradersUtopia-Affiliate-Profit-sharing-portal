@@ -5,7 +5,7 @@ import { linkRewardfulAffiliateWithTimeout } from "@/lib/auth-rewardful-link";
 import { getCadToUsdRate } from "@/lib/currency";
 import { prisma } from "@/lib/prisma";
 import * as rewardful from "@/lib/rewardful";
-import { getTeacherStudentSplitStatsOne } from "@/lib/rewardful-student-stats";
+import { getTeacherRelationshipEpisodeSummary } from "@/lib/teacher-student-relationships";
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const CACHE_VERSION = 7;
@@ -428,6 +428,120 @@ export async function getAffiliateLifetimeStatsData(userId: string) {
   }
 }
 
+function teacherEpisodeKey(relationshipId: string, relationshipSequence: number) {
+  return `${relationshipId}:${relationshipSequence}`;
+}
+
+function emptyTeacherEpisodeSummary() {
+  return {
+    paid: new Decimal(0),
+    unpaid: new Decimal(0),
+    due: new Decimal(0),
+    pending: new Decimal(0),
+    count: 0,
+    nextDueAt: null as Date | null,
+  };
+}
+
+async function getTeacherEpisodeSummaries(
+  teacherId: string,
+  episodes: Array<{ relationshipId: string; relationshipSequence: number }>
+) {
+  const uniqueEpisodes = Array.from(
+    new Map(
+      episodes.map((episode) => [
+        teacherEpisodeKey(episode.relationshipId, episode.relationshipSequence),
+        episode,
+      ])
+    ).values()
+  );
+  const summaryByKey = new Map(
+    uniqueEpisodes.map((episode) => [
+      teacherEpisodeKey(episode.relationshipId, episode.relationshipSequence),
+      emptyTeacherEpisodeSummary(),
+    ])
+  );
+
+  if (uniqueEpisodes.length === 0) {
+    return summaryByKey;
+  }
+
+  const [splits, rate] = await Promise.all([
+    prisma.commissionSplit.findMany({
+      where: {
+        role: "TEACHER",
+        recipientId: teacherId,
+        teacherStudentId: {
+          in: uniqueEpisodes.map((episode) => episode.relationshipId),
+        },
+        status: { in: ["EARNED", "PAID"] },
+      },
+      select: {
+        teacherStudentId: true,
+        teacherStudentSequence: true,
+        cutAmount: true,
+        status: true,
+        event: {
+          select: {
+            currency: true,
+            upstreamState: true,
+            upstreamDueAt: true,
+          },
+        },
+      },
+    }),
+    getCadToUsdRate(),
+  ]);
+
+  const cadToUsd = new Decimal(rate?.rate.toString() ?? "0.74");
+  const allowedKeys = new Set(summaryByKey.keys());
+
+  for (const split of splits) {
+    if (!split.teacherStudentId || split.teacherStudentSequence === null) {
+      continue;
+    }
+
+    const key = teacherEpisodeKey(
+      split.teacherStudentId,
+      split.teacherStudentSequence
+    );
+    if (!allowedKeys.has(key)) {
+      continue;
+    }
+
+    const summary = summaryByKey.get(key);
+    if (!summary) {
+      continue;
+    }
+
+    const cad =
+      split.event.currency === "CAD"
+        ? new Decimal(split.cutAmount.toString())
+        : new Decimal(split.cutAmount.toString()).div(cadToUsd);
+
+    summary.count += 1;
+    if (split.status === "PAID") {
+      summary.paid = summary.paid.add(cad);
+      continue;
+    }
+
+    summary.unpaid = summary.unpaid.add(cad);
+    if (split.event.upstreamState === "due") {
+      summary.due = summary.due.add(cad);
+    } else {
+      summary.pending = summary.pending.add(cad);
+      if (
+        split.event.upstreamDueAt &&
+        (!summary.nextDueAt || split.event.upstreamDueAt < summary.nextDueAt)
+      ) {
+        summary.nextDueAt = split.event.upstreamDueAt;
+      }
+    }
+  }
+
+  return summaryByKey;
+}
+
 export async function getTeacherStudentsData(teacherId: string) {
   const me = await prisma.user.findUnique({
     where: { id: teacherId },
@@ -438,28 +552,55 @@ export async function getTeacherStudentsData(teacherId: string) {
     throw new AffiliatePortalDataError(404, "User not found");
   }
 
-  const relationships = await prisma.teacherStudent.findMany({
-    where: { teacherId, status: "ACTIVE" },
-    include: {
-      student: {
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          image: true,
-          commissionPercent: true,
-          initialCommissionPercent: true,
-          recurringCommissionPercent: true,
-          status: true,
+  const [relationships, archivedRelationships] = await Promise.all([
+    prisma.teacherStudent.findMany({
+      where: { teacherId, status: "ACTIVE" },
+      include: {
+        student: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            image: true,
+            commissionPercent: true,
+            initialCommissionPercent: true,
+            recurringCommissionPercent: true,
+            status: true,
+          },
         },
       },
-    },
-    orderBy: [{ depth: "asc" }, { createdAt: "asc" }],
-  });
+      orderBy: [{ depth: "asc" }, { createdAt: "asc" }],
+    }),
+    prisma.teacherStudentArchive.findMany({
+      where: { teacherId, showInPreviousStudents: true },
+      include: {
+        student: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            image: true,
+            commissionPercent: true,
+            initialCommissionPercent: true,
+            recurringCommissionPercent: true,
+            status: true,
+          },
+        },
+        restoreRequests: {
+          where: { status: "PENDING" },
+          orderBy: { createdAt: "desc" },
+          take: 1,
+          select: { id: true, createdAt: true, requestNote: true },
+        },
+      },
+      orderBy: { archivedAt: "desc" },
+    }),
+  ]);
 
-  if (relationships.length === 0) {
+  if (relationships.length === 0 && archivedRelationships.length === 0) {
     return {
       isTeacher: false,
+      hasArchivedStudents: false,
       canBeTeacher: me.canBeTeacher,
       canProposeRates: me.canProposeRates,
       grandTotals: {
@@ -468,18 +609,35 @@ export async function getTeacherStudentsData(teacherId: string) {
         totalPendingCad: 0,
         directUnpaidCad: 0,
         indirectUnpaidCad: 0,
+        archivedUnpaidCad: 0,
+        activeUnpaidCad: 0,
         totalPaidCad: 0,
+        archivedPaidCad: 0,
       },
       directStudents: [],
       orphanedSubStudents: [],
+      previousStudents: [],
     };
   }
 
-  const directRelationships = relationships.filter((relationship) => relationship.depth === 1);
-  const depthTwoRelationships = relationships.filter((relationship) => relationship.depth === 2);
-  const directStudentIds = directRelationships.map((relationship) => relationship.studentId);
-  const depthTwoStudentIds = depthTwoRelationships.map((relationship) => relationship.studentId);
-  const allStudentIds = [...directStudentIds, ...depthTwoStudentIds];
+  const directRelationships = relationships.filter(
+    (relationship) => relationship.depth === 1
+  );
+  const depthTwoRelationships = relationships.filter(
+    (relationship) => relationship.depth === 2
+  );
+  const directStudentIds = directRelationships.map(
+    (relationship) => relationship.studentId
+  );
+  const depthTwoStudentIds = depthTwoRelationships.map(
+    (relationship) => relationship.studentId
+  );
+  const archivedStudentIds = archivedRelationships.map(
+    (relationship) => relationship.studentId
+  );
+  const allStudentIds = Array.from(
+    new Set([...directStudentIds, ...depthTwoStudentIds, ...archivedStudentIds])
+  );
 
   const parentByDepthTwoStudent = new Map<string, string>();
   if (depthTwoStudentIds.length > 0 && directStudentIds.length > 0) {
@@ -504,109 +662,41 @@ export async function getTeacherStudentsData(teacherId: string) {
   const monthStartStr = monthStart.toISOString().slice(0, 10);
   const monthEndStr = monthEnd.toISOString().slice(0, 10);
 
-  const [teacherSplits, rate] = await Promise.all([
-    prisma.commissionSplit.findMany({
+  const [summaryByEpisode, attendanceSummaries] = await Promise.all([
+    getTeacherEpisodeSummaries(teacherId, [
+      ...relationships.map((relationship) => ({
+        relationshipId: relationship.id,
+        relationshipSequence: relationship.activationSequence,
+      })),
+      ...archivedRelationships.map((archive) => ({
+        relationshipId: archive.teacherStudentId,
+        relationshipSequence: archive.activationSequence,
+      })),
+    ]),
+    prisma.attendance.groupBy({
+      by: ["userId"],
       where: {
-        role: "TEACHER",
-        recipientId: teacherId,
-        event: { affiliateId: { in: allStudentIds } },
+        userId: { in: allStudentIds },
+        date: { gte: monthStartStr, lte: monthEndStr },
       },
-      select: {
-        cutAmount: true,
-        status: true,
-        event: {
-          select: {
-            affiliateId: true,
-            currency: true,
-            upstreamState: true,
-            upstreamDueAt: true,
-          },
-        },
-      },
+      _count: true,
     }),
-    getCadToUsdRate(),
   ]);
-
-  const cadToUsd = new Decimal(rate?.rate.toString() ?? "0.74");
-
-  type Summary = {
-    paid: Decimal;
-    unpaid: Decimal;
-    due: Decimal;
-    pending: Decimal;
-    count: number;
-    nextDueAt: Date | null;
-  };
-
-  const summaryByStudent = new Map<string, Summary>();
-  for (const split of teacherSplits) {
-    const studentId = split.event.affiliateId;
-    const previous = summaryByStudent.get(studentId) ?? {
-      paid: new Decimal(0),
-      unpaid: new Decimal(0),
-      due: new Decimal(0),
-      pending: new Decimal(0),
-      count: 0,
-      nextDueAt: null,
-    };
-
-    const native = new Decimal(split.cutAmount.toString());
-    const cad =
-      split.event.currency === "CAD" ? native : native.div(cadToUsd);
-
-    if (split.status === "PAID") {
-      previous.paid = previous.paid.add(cad);
-      previous.count += 1;
-    } else if (split.status === "EARNED") {
-      previous.unpaid = previous.unpaid.add(cad);
-      if (split.event.upstreamState === "due") {
-        previous.due = previous.due.add(cad);
-      } else {
-        previous.pending = previous.pending.add(cad);
-      }
-      if (
-        split.event.upstreamDueAt &&
-        split.event.upstreamState !== "due" &&
-        (!previous.nextDueAt || split.event.upstreamDueAt < previous.nextDueAt)
-      ) {
-        previous.nextDueAt = split.event.upstreamDueAt;
-      }
-      previous.count += 1;
-    } else if (split.status !== "PENDING") {
-      previous.count += 1;
-    }
-
-    summaryByStudent.set(studentId, previous);
-  }
-
-  const attendanceSummaries = await prisma.attendance.groupBy({
-    by: ["userId"],
-    where: {
-      userId: { in: allStudentIds },
-      date: { gte: monthStartStr, lte: monthEndStr },
-    },
-    _count: true,
-  });
 
   const attendanceMap = new Map(
     attendanceSummaries.map((summary) => [summary.userId, summary._count])
   );
-
   const fetchedAt = new Date().toISOString();
 
-  function buildStudent(
-    relationship: (typeof relationships)[number]
-  ) {
-    const summary = summaryByStudent.get(relationship.studentId) ?? {
-      paid: new Decimal(0),
-      unpaid: new Decimal(0),
-      due: new Decimal(0),
-      pending: new Decimal(0),
-      count: 0,
-      nextDueAt: null,
-    };
+  function buildActiveStudent(relationship: (typeof relationships)[number]) {
+    const summary =
+      summaryByEpisode.get(
+        teacherEpisodeKey(relationship.id, relationship.activationSequence)
+      ) ?? emptyTeacherEpisodeSummary();
 
     return {
+      relationshipId: relationship.id,
+      relationshipSequence: relationship.activationSequence,
       id: relationship.student.id,
       name: relationship.student.name,
       email: relationship.student.email,
@@ -632,14 +722,14 @@ export async function getTeacherStudentsData(teacherId: string) {
     };
   }
 
-  type BuiltStudent = ReturnType<typeof buildStudent>;
+  type BuiltStudent = ReturnType<typeof buildActiveStudent>;
 
   const subStudentsByParent = new Map<string, BuiltStudent[]>();
   const orphanedSubStudents: BuiltStudent[] = [];
 
   for (const relationship of depthTwoRelationships) {
     const parent = parentByDepthTwoStudent.get(relationship.studentId);
-    const builtStudent = buildStudent(relationship);
+    const builtStudent = buildActiveStudent(relationship);
 
     if (!parent) {
       console.warn(
@@ -655,41 +745,65 @@ export async function getTeacherStudentsData(teacherId: string) {
   }
 
   const directStudents = directRelationships.map((relationship) => ({
-    ...buildStudent(relationship),
+    ...buildActiveStudent(relationship),
     subStudents: subStudentsByParent.get(relationship.studentId) ?? [],
   }));
+
+  const previousStudents = archivedRelationships.map((archive) => {
+    const summary =
+      summaryByEpisode.get(
+        teacherEpisodeKey(archive.teacherStudentId, archive.activationSequence)
+      ) ?? emptyTeacherEpisodeSummary();
+
+    return {
+      archiveId: archive.id,
+      relationshipId: archive.teacherStudentId,
+      relationshipSequence: archive.activationSequence,
+      id: archive.student.id,
+      name: archive.student.name,
+      email: archive.student.email,
+      image: archive.student.image,
+      commissionPercent: archive.student.commissionPercent.toNumber(),
+      initialCommissionPercent:
+        archive.student.initialCommissionPercent.toNumber(),
+      recurringCommissionPercent:
+        archive.student.recurringCommissionPercent.toNumber(),
+      status: archive.student.status,
+      depth: archive.depth,
+      teacherCutPercent: archive.teacherCut.toNumber(),
+      teacherUnpaidCad: summary.unpaid.toDecimalPlaces(2).toNumber(),
+      teacherDueCad: summary.due.toDecimalPlaces(2).toNumber(),
+      teacherPendingCad: summary.pending.toDecimalPlaces(2).toNumber(),
+      teacherPaidCad: summary.paid.toDecimalPlaces(2).toNumber(),
+      nextDueAt: summary.nextDueAt?.toISOString() ?? null,
+      conversionCount: summary.count,
+      attendanceDaysThisMonth: attendanceMap.get(archive.studentId) ?? 0,
+      dataStale: false,
+      dataReason: "ok" as const,
+      fetchedAt,
+      archivedAt: archive.archivedAt.toISOString(),
+      archivedByRole: archive.archivedByRole,
+      archiveReason: archive.archiveReason,
+      snapshotUnpaidCad: archive.snapshotUnpaidCad.toNumber(),
+      snapshotDueCad: archive.snapshotDueCad.toNumber(),
+      snapshotPendingCad: archive.snapshotPendingCad.toNumber(),
+      snapshotPaidCad: archive.snapshotPaidCad.toNumber(),
+      snapshotCommissionCount: archive.snapshotCommissionCount,
+      snapshotNextDueAt: archive.snapshotNextDueAt?.toISOString() ?? null,
+      pendingRestoreRequest: archive.restoreRequests[0]
+        ? {
+            id: archive.restoreRequests[0].id,
+            createdAt: archive.restoreRequests[0].createdAt.toISOString(),
+            requestNote: archive.restoreRequests[0].requestNote,
+          }
+        : null,
+    };
+  });
 
   const directUnpaidCad = directStudents.reduce(
     (sum, student) => sum + student.teacherUnpaidCad,
     0
   );
-  const totalDueCad =
-    directStudents.reduce(
-      (sum, student) =>
-        sum +
-        student.teacherDueCad +
-        student.subStudents.reduce(
-          (subTotal, subStudent) => subTotal + subStudent.teacherDueCad,
-          0
-        ),
-      0
-    ) +
-    orphanedSubStudents.reduce((sum, student) => sum + student.teacherDueCad, 0);
-  const totalPendingCad =
-    directStudents.reduce(
-      (sum, student) =>
-        sum +
-        student.teacherPendingCad +
-        student.subStudents.reduce(
-          (subTotal, subStudent) => subTotal + subStudent.teacherPendingCad,
-          0
-        ),
-      0
-    ) +
-    orphanedSubStudents.reduce(
-      (sum, student) => sum + student.teacherPendingCad,
-      0
-    );
   const indirectUnpaidCad =
     directStudents.reduce(
       (sum, student) =>
@@ -704,7 +818,46 @@ export async function getTeacherStudentsData(teacherId: string) {
       (sum, student) => sum + student.teacherUnpaidCad,
       0
     );
-  const totalPaidCad =
+  const archivedUnpaidCad = previousStudents.reduce(
+    (sum, student) => sum + student.teacherUnpaidCad,
+    0
+  );
+  const activeDueCad =
+    directStudents.reduce(
+      (sum, student) =>
+        sum +
+        student.teacherDueCad +
+        student.subStudents.reduce(
+          (subTotal, subStudent) => subTotal + subStudent.teacherDueCad,
+          0
+        ),
+      0
+    ) +
+    orphanedSubStudents.reduce((sum, student) => sum + student.teacherDueCad, 0);
+  const activePendingCad =
+    directStudents.reduce(
+      (sum, student) =>
+        sum +
+        student.teacherPendingCad +
+        student.subStudents.reduce(
+          (subTotal, subStudent) => subTotal + subStudent.teacherPendingCad,
+          0
+        ),
+      0
+    ) +
+    orphanedSubStudents.reduce(
+      (sum, student) => sum + student.teacherPendingCad,
+      0
+    );
+  const archivedDueCad = previousStudents.reduce(
+    (sum, student) => sum + student.teacherDueCad,
+    0
+  );
+  const archivedPendingCad = previousStudents.reduce(
+    (sum, student) => sum + student.teacherPendingCad,
+    0
+  );
+  const activePaidCad =
     directStudents.reduce(
       (sum, student) =>
         sum +
@@ -719,35 +872,124 @@ export async function getTeacherStudentsData(teacherId: string) {
       (sum, student) => sum + student.teacherPaidCad,
       0
     );
+  const archivedPaidCad = previousStudents.reduce(
+    (sum, student) => sum + student.teacherPaidCad,
+    0
+  );
 
   return {
-    isTeacher: true,
+    isTeacher: relationships.length > 0,
+    hasArchivedStudents: previousStudents.length > 0,
     canBeTeacher: me.canBeTeacher,
     canProposeRates: me.canProposeRates,
     grandTotals: {
-      totalUnpaidCad: roundMoney(directUnpaidCad + indirectUnpaidCad),
-      totalDueCad: roundMoney(totalDueCad),
-      totalPendingCad: roundMoney(totalPendingCad),
+      totalUnpaidCad: roundMoney(
+        directUnpaidCad + indirectUnpaidCad + archivedUnpaidCad
+      ),
+      totalDueCad: roundMoney(activeDueCad + archivedDueCad),
+      totalPendingCad: roundMoney(activePendingCad + archivedPendingCad),
       directUnpaidCad: roundMoney(directUnpaidCad),
       indirectUnpaidCad: roundMoney(indirectUnpaidCad),
-      totalPaidCad: roundMoney(totalPaidCad),
+      archivedUnpaidCad: roundMoney(archivedUnpaidCad),
+      activeUnpaidCad: roundMoney(directUnpaidCad + indirectUnpaidCad),
+      totalPaidCad: roundMoney(activePaidCad + archivedPaidCad),
+      archivedPaidCad: roundMoney(archivedPaidCad),
     },
     directStudents,
     orphanedSubStudents,
+    previousStudents,
   };
 }
 
 export async function getTeacherStudentDetailData(
   teacherId: string,
-  studentId: string
+  studentId: string,
+  input?: {
+    relationshipId?: string;
+    relationshipSequence?: number;
+  }
 ) {
-  const relationship = await prisma.teacherStudent.findFirst({
-    where: { teacherId, studentId, status: "ACTIVE" },
-    select: { depth: true, teacherCut: true },
-  });
+  let relationshipContext:
+    | {
+        relationshipId: string;
+        relationshipSequence: number;
+        depth: number;
+        teacherCut: Prisma.Decimal;
+      }
+    | undefined;
 
-  if (!relationship) {
-    throw new AffiliatePortalDataError(404, "Not found");
+  if (input?.relationshipId && input.relationshipSequence) {
+    const [relationship, archive] = await Promise.all([
+      prisma.teacherStudent.findFirst({
+        where: {
+          id: input.relationshipId,
+          teacherId,
+          studentId,
+        },
+        select: {
+          id: true,
+          activationSequence: true,
+          depth: true,
+          teacherCut: true,
+        },
+      }),
+      prisma.teacherStudentArchive.findFirst({
+        where: {
+          teacherStudentId: input.relationshipId,
+          activationSequence: input.relationshipSequence,
+          teacherId,
+          studentId,
+        },
+        select: {
+          teacherStudentId: true,
+          activationSequence: true,
+          depth: true,
+          teacherCut: true,
+        },
+      }),
+    ]);
+
+    if (
+      relationship &&
+      relationship.activationSequence === input.relationshipSequence
+    ) {
+      relationshipContext = {
+        relationshipId: relationship.id,
+        relationshipSequence: relationship.activationSequence,
+        depth: relationship.depth,
+        teacherCut: relationship.teacherCut,
+      };
+    } else if (archive) {
+      relationshipContext = {
+        relationshipId: archive.teacherStudentId,
+        relationshipSequence: archive.activationSequence,
+        depth: archive.depth,
+        teacherCut: archive.teacherCut,
+      };
+    }
+  }
+
+  if (!relationshipContext) {
+    const activeRelationship = await prisma.teacherStudent.findFirst({
+      where: { teacherId, studentId, status: "ACTIVE" },
+      select: {
+        id: true,
+        activationSequence: true,
+        depth: true,
+        teacherCut: true,
+      },
+    });
+
+    if (!activeRelationship) {
+      throw new AffiliatePortalDataError(404, "Not found");
+    }
+
+    relationshipContext = {
+      relationshipId: activeRelationship.id,
+      relationshipSequence: activeRelationship.activationSequence,
+      depth: activeRelationship.depth,
+      teacherCut: activeRelationship.teacherCut,
+    };
   }
 
   const COMMISSION_LIMIT = 200;
@@ -756,7 +998,8 @@ export async function getTeacherStudentDetailData(
   const splitWhere: Prisma.CommissionSplitWhereInput = {
     role: "TEACHER",
     recipientId: teacherId,
-    event: { affiliateId: studentId },
+    teacherStudentId: relationshipContext.relationshipId,
+    teacherStudentSequence: relationshipContext.relationshipSequence,
     status: { not: "PENDING" },
   };
 
@@ -808,7 +1051,11 @@ export async function getTeacherStudentDetailData(
         submittedAt: true,
       },
     }),
-    getTeacherStudentSplitStatsOne(teacherId, studentId),
+    getTeacherRelationshipEpisodeSummary(
+      teacherId,
+      relationshipContext.relationshipId,
+      relationshipContext.relationshipSequence
+    ),
     prisma.commissionSplit.count({ where: splitWhere }),
     prisma.attendance.count({ where: { userId: studentId } }),
   ]);
@@ -819,16 +1066,18 @@ export async function getTeacherStudentDetailData(
 
   return {
     student,
-    depth: relationship.depth,
-    teacherCutPercent: relationship.teacherCut.toNumber(),
+    relationshipId: relationshipContext.relationshipId,
+    relationshipSequence: relationshipContext.relationshipSequence,
+    depth: relationshipContext.depth,
+    teacherCutPercent: relationshipContext.teacherCut.toNumber(),
     teacherUnpaidCad: teacherSplitStats.teacherUnpaidCad,
     teacherDueCad: teacherSplitStats.teacherDueCad,
     teacherPendingCad: teacherSplitStats.teacherPendingCad,
     teacherPaidCad: teacherSplitStats.teacherPaidCad,
     nextDueAt: teacherSplitStats.nextDueAt,
-    dataStale: teacherSplitStats.stale,
-    dataReason: teacherSplitStats.reason,
-    fetchedAt: teacherSplitStats.fetchedAt,
+    dataStale: false,
+    dataReason: "ok",
+    fetchedAt: new Date().toISOString(),
     commissionTotal,
     attendanceTotal,
     commissionHasMore: commissionTotal > splits.length,

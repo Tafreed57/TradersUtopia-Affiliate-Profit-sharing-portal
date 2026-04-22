@@ -15,8 +15,11 @@ import {
   LockOpen,
   Percent,
   RefreshCw,
+  RotateCcw,
   Save,
   Shield,
+  UserMinus,
+  UserPlus,
   UserX,
   Users,
 } from "lucide-react";
@@ -27,6 +30,10 @@ import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 
 import { AdminPromoCodes } from "@/components/admin/admin-promo-codes";
+import {
+  RestoreGapApprovalDialog,
+  type RestoreGapPreview,
+} from "@/components/admin/restore-gap-approval-dialog";
 import {
   EarningsSummaryCard,
   type EarningsSummaryData,
@@ -198,6 +205,8 @@ interface AttendanceResponse {
 }
 
 interface Student {
+  relationshipId: string;
+  relationshipSequence: number;
   id: string;
   name: string | null;
   email: string;
@@ -221,21 +230,52 @@ interface DirectStudent extends Student {
   subStudents: Student[];
 }
 
+interface PreviousStudent extends Student {
+  archiveId: string;
+  archivedAt: string;
+  archivedByRole: "ADMIN" | "TEACHER" | "SYSTEM";
+  archiveReason: string | null;
+  snapshotUnpaidCad: number;
+  snapshotDueCad: number;
+  snapshotPendingCad: number;
+  snapshotPaidCad: number;
+  snapshotCommissionCount: number;
+  snapshotNextDueAt: string | null;
+  pendingRestoreRequest: {
+    id: string;
+    createdAt: string;
+    requestNote: string | null;
+  } | null;
+}
+
 interface GrandTotals {
   totalUnpaidCad: number;
   totalDueCad: number;
   totalPendingCad: number;
   directUnpaidCad: number;
   indirectUnpaidCad: number;
+  archivedUnpaidCad: number;
+  activeUnpaidCad: number;
   totalPaidCad: number;
+  archivedPaidCad: number;
 }
 
 interface StudentsResponse {
   directStudents: DirectStudent[];
   orphanedSubStudents?: Student[];
+  previousStudents?: PreviousStudent[];
   grandTotals: GrandTotals;
   isTeacher: boolean;
+  hasArchivedStudents: boolean;
   canBeTeacher: boolean;
+  canProposeRates: boolean;
+}
+
+interface UserSearchResult {
+  id: string;
+  name: string | null;
+  email: string;
+  image: string | null;
 }
 
 interface DetailCommission {
@@ -266,6 +306,9 @@ interface StudentDetailResponse {
     email: string;
     image: string | null;
   };
+  relationshipId: string;
+  relationshipSequence: number;
+  depth: number;
   teacherCutPercent: number;
   teacherUnpaidCad: number;
   teacherDueCad: number;
@@ -388,6 +431,17 @@ function getInitials(name: string | null, email: string) {
   return email[0]?.toUpperCase() ?? "A";
 }
 
+function formatArchiveActor(role: PreviousStudent["archivedByRole"]) {
+  switch (role) {
+    case "ADMIN":
+      return "admin";
+    case "TEACHER":
+      return "teacher";
+    default:
+      return "system";
+  }
+}
+
 function getMonthWindow(selectedMonth: string) {
   const [year, month] = selectedMonth.split("-").map(Number);
   const from = `${year}-${String(month).padStart(2, "0")}-01`;
@@ -470,11 +524,21 @@ function StudentDetailSheet({
       affiliateId,
       "student-detail",
       student?.id,
+      student?.relationshipId,
+      student?.relationshipSequence,
     ],
-    queryFn: async () =>
-      fetchJson(
-        `/api/admin/affiliates/${affiliateId}/students/${student!.id}/detail`
-      ),
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (student?.relationshipId) {
+        params.set("relationshipId", student.relationshipId);
+      }
+      if (student?.relationshipSequence) {
+        params.set("relationshipSequence", String(student.relationshipSequence));
+      }
+      return fetchJson(
+        `/api/admin/affiliates/${affiliateId}/students/${student!.id}/detail?${params.toString()}`
+      );
+    },
     enabled: !!student && !!adminId,
     retry: false,
   });
@@ -691,14 +755,463 @@ function StudentDetailSheet({
   );
 }
 
+function AdminPairStudentDialog({
+  teacherId,
+  previousStudents,
+  onRestoreInstead,
+  onSuccess,
+}: {
+  teacherId: string;
+  previousStudents: PreviousStudent[];
+  onRestoreInstead: (student: PreviousStudent) => void;
+  onSuccess: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState<UserSearchResult | null>(null);
+  const [teacherCut, setTeacherCut] = useState("");
+
+  const { data: searchResults, isFetching } = useQuery<{ data: UserSearchResult[] }>({
+    queryKey: ["admin-pair-student-search", teacherId, search],
+    queryFn: async () =>
+      fetchJson(`/api/users/search?q=${encodeURIComponent(search)}`),
+    enabled: open && search.length >= 2,
+    retry: false,
+  });
+
+  const pairMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch(`/api/admin/teacher-student`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          teacherId,
+          studentId: selected!.id,
+          teacherCut: Number(teacherCut),
+        }),
+      });
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        const error = new Error(payload.error ?? "Failed to add student") as Error & {
+          requiresRestoreReview?: boolean;
+          relationshipId?: string;
+        };
+        error.requiresRestoreReview = payload.requiresRestoreReview === true;
+        error.relationshipId = payload.relationshipId;
+        throw error;
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      toast.success("Student linked successfully");
+      setOpen(false);
+      setSearch("");
+      setSelected(null);
+      setTeacherCut("");
+      onSuccess();
+    },
+    onError: (error: Error & { requiresRestoreReview?: boolean; relationshipId?: string }) => {
+      if (error.requiresRestoreReview) {
+        const archivedMatch = previousStudents.find(
+          (student) => student.relationshipId === error.relationshipId
+        );
+        if (archivedMatch) {
+          setOpen(false);
+          setSearch("");
+          setSelected(null);
+          setTeacherCut("");
+          toast.error(
+            "This student already has archived history here. Review the restore options instead."
+          );
+          onRestoreInstead(archivedMatch);
+          return;
+        }
+      }
+      toast.error(error.message);
+    },
+  });
+
+  const reset = () => {
+    setSearch("");
+    setSelected(null);
+    setTeacherCut("");
+  };
+
+  return (
+    <>
+      <Button size="sm" className="gap-2" onClick={() => setOpen(true)}>
+        <UserPlus className="h-4 w-4" />
+        Add Student
+      </Button>
+
+      <Dialog
+        open={open}
+        onOpenChange={(nextOpen) => {
+          setOpen(nextOpen);
+          if (!nextOpen) reset();
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add Student To This Affiliate</DialogTitle>
+            <DialogDescription>
+              Search for a portal user and set the teacher share that this managed
+              affiliate should receive.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            {!selected ? (
+              <div className="space-y-2">
+                <Label>Search by name or email</Label>
+                <Input
+                  placeholder="Type at least 2 characters..."
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  autoFocus
+                />
+                {search.length >= 2 && (
+                  <div className="max-h-48 overflow-y-auto rounded-md border border-border">
+                    {isFetching ? (
+                      <div className="p-3 text-sm text-muted-foreground">Searching...</div>
+                    ) : !searchResults?.data.length ? (
+                      <div className="p-3 text-sm text-muted-foreground">No users found</div>
+                    ) : (
+                      searchResults.data.map((user) => (
+                        <button
+                          key={user.id}
+                          type="button"
+                          onClick={() => setSelected(user)}
+                          className="flex w-full items-center gap-3 px-3 py-2 text-left transition-colors hover:bg-accent"
+                        >
+                          <Avatar className="h-7 w-7">
+                            <AvatarImage src={user.image ?? undefined} />
+                            <AvatarFallback className="text-xs">
+                              {getInitials(user.name, user.email)}
+                            </AvatarFallback>
+                          </Avatar>
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium">
+                              {user.name ?? user.email}
+                            </p>
+                            {user.name && (
+                              <p className="truncate text-xs text-muted-foreground">
+                                {user.email}
+                              </p>
+                            )}
+                          </div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex items-center gap-3 rounded-xl border border-border/50 p-3">
+                  <Avatar className="h-9 w-9">
+                    <AvatarImage src={selected.image ?? undefined} />
+                    <AvatarFallback className="text-xs">
+                      {getInitials(selected.name, selected.email)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">
+                      {selected.name ?? selected.email}
+                    </p>
+                    {selected.name && (
+                      <p className="truncate text-xs text-muted-foreground">
+                        {selected.email}
+                      </p>
+                    )}
+                  </div>
+                  <Button variant="ghost" size="sm" onClick={() => setSelected(null)}>
+                    Change
+                  </Button>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="admin-student-teacher-cut">Teacher share (%)</Label>
+                  <Input
+                    id="admin-student-teacher-cut"
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={0.5}
+                    value={teacherCut}
+                    onChange={(event) => setTeacherCut(event.target.value)}
+                    placeholder="e.g. 15"
+                    autoFocus
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    If this student has archived history under this affiliate already, the
+                    system will route you into the restore flow instead so gap income can
+                    be reviewed first.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => pairMutation.mutate()}
+              disabled={!selected || !teacherCut || pairMutation.isPending}
+            >
+              {pairMutation.isPending ? "Saving..." : "Add Student"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+function ArchiveStudentDialog({
+  student,
+  open,
+  onOpenChange,
+  onSuccess,
+}: {
+  student: DirectStudent | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSuccess: () => void;
+}) {
+  const [archiveReason, setArchiveReason] = useState("");
+  const [showInPreviousStudents, setShowInPreviousStudents] = useState(true);
+
+  const archiveMutation = useMutation({
+    mutationFn: async () => {
+      if (!student) throw new Error("No student selected");
+      return fetchJson(`/api/admin/teacher-student/${student.relationshipId}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          archiveReason:
+            archiveReason.trim() || "Admin removed this student from the active roster.",
+          showInPreviousStudents,
+        }),
+      });
+    },
+    onSuccess: () => {
+      toast.success(
+        showInPreviousStudents
+          ? "Student moved to Previous Students with history preserved."
+          : "Student removed from the active roster without showing in the previous-students list."
+      );
+      setArchiveReason("");
+      setShowInPreviousStudents(true);
+      onOpenChange(false);
+      onSuccess();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) {
+          setArchiveReason("");
+          setShowInPreviousStudents(true);
+        }
+        onOpenChange(nextOpen);
+      }}
+    >
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Remove Student From Active Roster</DialogTitle>
+          <DialogDescription>
+            Safely archive this student relationship. Existing payout progress stays
+            intact, and you can choose whether the archive remains visible in the
+            previous-students section.
+          </DialogDescription>
+        </DialogHeader>
+
+        {student && (
+          <div className="space-y-4 py-2">
+            <div className="rounded-xl border border-border/50 bg-muted/10 p-4 text-sm">
+              <p className="font-medium">{student.name ?? student.email}</p>
+              <p className="mt-2 text-muted-foreground">
+                Current unpaid {student.teacherUnpaidCad.toFixed(2)} CAD, paid{" "}
+                {student.teacherPaidCad.toFixed(2)} CAD.
+              </p>
+            </div>
+
+            <div className="rounded-xl border border-border/50 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <p className="font-medium">Show in previous students</p>
+                  <p className="text-sm text-muted-foreground">
+                    Leave this on if the teacher should still see the archived record and
+                    request a future return from the portal.
+                  </p>
+                </div>
+                <Switch
+                  checked={showInPreviousStudents}
+                  onCheckedChange={setShowInPreviousStudents}
+                />
+              </div>
+              {!showInPreviousStudents && (
+                <p className="mt-3 text-xs text-warning">
+                  This archive will be hidden from the teacher-facing previous-students
+                  list and from this workspace list.
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="archive-student-reason">Reason (optional)</Label>
+              <Input
+                id="archive-student-reason"
+                value={archiveReason}
+                onChange={(event) => setArchiveReason(event.target.value)}
+                placeholder="Explain why this student is being removed."
+              />
+            </div>
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            onClick={() => archiveMutation.mutate()}
+            disabled={archiveMutation.isPending || !student}
+          >
+            {archiveMutation.isPending ? "Removing..." : "Remove Student"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ManagedPreviousStudentCard({
+  student,
+  format,
+  onViewDetail,
+  onRestore,
+}: {
+  student: PreviousStudent;
+  format: (amount: number, inputCurrency?: "CAD" | "USD") => string;
+  onViewDetail: (student: Student) => void;
+  onRestore: (student: PreviousStudent) => void;
+}) {
+  return (
+    <Card className="overflow-hidden border-border/60 bg-muted/10">
+      <CardContent className="p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex min-w-0 items-start gap-3">
+            <Avatar className="h-10 w-10">
+              <AvatarImage src={student.image ?? undefined} />
+              <AvatarFallback className="bg-primary/10 text-sm text-primary">
+                {getInitials(student.name, student.email)}
+              </AvatarFallback>
+            </Avatar>
+
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="truncate font-medium">{student.name ?? student.email}</p>
+                <Badge
+                  variant="default"
+                  className="bg-muted/20 text-muted-foreground border-border/60"
+                >
+                  Previous student
+                </Badge>
+                {student.pendingRestoreRequest && (
+                  <Badge
+                    variant="default"
+                    className="bg-info/15 text-info border-info/30"
+                  >
+                    Teacher requested return
+                  </Badge>
+                )}
+              </div>
+              <p className="truncate text-xs text-muted-foreground">{student.email}</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Removed {formatShortDate(student.archivedAt)} by{" "}
+                {formatArchiveActor(student.archivedByRole)}
+                {student.archiveReason ? ` - ${student.archiveReason}` : ""}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => onViewDetail(student)}>
+              View
+            </Button>
+            <Button size="sm" onClick={() => onRestore(student)}>
+              <RotateCcw className="mr-1 h-3.5 w-3.5" />
+              Restore
+            </Button>
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-4">
+          <div className="rounded-xl border border-border/50 bg-background/40 p-3">
+            <p className="text-xs text-muted-foreground">Current unpaid</p>
+            <p className="mt-1 font-semibold text-success">
+              {format(student.teacherUnpaidCad, "CAD")}
+            </p>
+          </div>
+          <div className="rounded-xl border border-border/50 bg-background/40 p-3">
+            <p className="text-xs text-muted-foreground">Due now</p>
+            <p className="mt-1 font-semibold text-info">
+              {format(student.teacherDueCad, "CAD")}
+            </p>
+          </div>
+          <div className="rounded-xl border border-border/50 bg-background/40 p-3">
+            <p className="text-xs text-muted-foreground">In holding</p>
+            <p className="mt-1 font-semibold">
+              {format(student.teacherPendingCad, "CAD")}
+            </p>
+          </div>
+          <div className="rounded-xl border border-border/50 bg-background/40 p-3">
+            <p className="text-xs text-muted-foreground">Paid</p>
+            <p className="mt-1 font-semibold">
+              {format(student.teacherPaidCad, "CAD")}
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-4 rounded-xl border border-border/50 bg-background/40 px-3 py-2 text-xs text-muted-foreground">
+          Snapshot at removal: unpaid {format(student.snapshotUnpaidCad, "CAD")} |
+          paid {format(student.snapshotPaidCad, "CAD")} | {student.snapshotCommissionCount}{" "}
+          commission{student.snapshotCommissionCount === 1 ? "" : "s"}
+          {student.snapshotNextDueAt
+            ? ` | next release ${formatShortDate(student.snapshotNextDueAt)}`
+            : ""}
+        </div>
+
+        {student.pendingRestoreRequest?.requestNote && (
+          <p className="mt-3 text-xs text-muted-foreground">
+            Teacher note: {student.pendingRestoreRequest.requestNote}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function ManagedStudentCard({
   student,
   format,
   onViewDetail,
+  onArchive,
 }: {
   student: DirectStudent;
   format: (amount: number, inputCurrency?: "CAD" | "USD") => string;
   onViewDetail: (student: Student) => void;
+  onArchive: (student: DirectStudent) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const subCount = student.subStudents.length;
@@ -735,9 +1248,20 @@ function ManagedStudentCard({
             </p>
           </div>
 
-          <Button variant="outline" size="sm" onClick={() => onViewDetail(student)}>
-            View
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => onViewDetail(student)}>
+              View
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-error hover:bg-error/10 hover:text-error"
+              onClick={() => onArchive(student)}
+            >
+              <UserMinus className="mr-1 h-3.5 w-3.5" />
+              Remove
+            </Button>
+          </div>
         </div>
 
         <div className="mt-4 grid gap-3 sm:grid-cols-4">
@@ -880,6 +1404,8 @@ export function ManagedAffiliateWorkspace({
   });
   const [today] = useState(() => new Date().toLocaleDateString("en-CA"));
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
+  const [studentToArchive, setStudentToArchive] = useState<DirectStudent | null>(null);
+  const [studentToRestore, setStudentToRestore] = useState<PreviousStudent | null>(null);
   const [newInitialRate, setNewInitialRate] = useState("");
   const [newRecurringRate, setNewRecurringRate] = useState("");
   const [rateReason, setRateReason] = useState("");
@@ -935,6 +1461,16 @@ export function ManagedAffiliateWorkspace({
     enabled: !!adminId,
     queryFn: async () =>
       fetchJson(`/api/admin/affiliates/${affiliateId}/students`),
+    retry: false,
+  });
+
+  const restorePreviewQuery = useQuery<RestoreGapPreview>({
+    queryKey: [...workspaceKey, "restore-preview", studentToRestore?.archiveId],
+    enabled: !!adminId && !!studentToRestore?.archiveId,
+    queryFn: async () =>
+      fetchJson(
+        `/api/admin/teacher-student/restore-preview?archiveId=${studentToRestore!.archiveId}`
+      ),
     retry: false,
   });
 
@@ -1007,6 +1543,39 @@ export function ManagedAffiliateWorkspace({
       toast.success(
         `Synced ${result.fetched} commission${result.fetched === 1 ? "" : "s"} and flipped ${result.updated} split${result.updated === 1 ? "" : "s"} to paid.`
       );
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const restoreStudentMutation = useMutation({
+    mutationFn: async ({
+      backfillMode,
+      selectedEventIds,
+      reviewNote,
+    }: {
+      backfillMode: "NONE" | "ALL" | "CUSTOM";
+      selectedEventIds: string[];
+      reviewNote: string;
+    }) => {
+      if (!studentToRestore) {
+        throw new Error("No archived student selected");
+      }
+      return fetchJson(`/api/admin/teacher-student/restore`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          archiveId: studentToRestore.archiveId,
+          backfillMode,
+          selectedEventIds,
+          reviewNote: reviewNote || undefined,
+        }),
+      });
+    },
+    onSuccess: () => {
+      invalidateWorkspace();
+      queryClient.invalidateQueries({ queryKey: ["admin-teacher-restore-requests"] });
+      setStudentToRestore(null);
+      toast.success("Student restored successfully");
     },
     onError: (error: Error) => toast.error(error.message),
   });
@@ -1128,13 +1697,18 @@ export function ManagedAffiliateWorkspace({
     commissionsQuery.error instanceof Error ? commissionsQuery.error.message : null;
 
   const studentsData = studentsQuery.data;
+  const studentGrandTotals = studentsData?.grandTotals;
   const directStudentCount = studentsData?.directStudents.length ?? 0;
   const orphanedSubStudents = studentsData?.orphanedSubStudents ?? [];
+  const previousStudents = studentsData?.previousStudents ?? [];
   const indirectStudentCount =
     (studentsData?.directStudents.reduce(
       (count, student) => count + student.subStudents.length,
       0
     ) ?? 0) + orphanedSubStudents.length;
+  const previousStudentCount = previousStudents.length;
+  const totalVisibleStudents =
+    directStudentCount + indirectStudentCount + previousStudentCount;
   const lastAttendance = attendanceQuery.data?.data[0] ?? null;
   const attendanceDates = new Set(attendanceQuery.data?.data.map((row) => row.date) ?? []);
   const firstDayOfMonth = new Date(monthWindow.year, monthWindow.month - 1, 1).getDay();
@@ -1195,6 +1769,37 @@ export function ManagedAffiliateWorkspace({
         student={selectedStudent}
         onClose={() => setSelectedStudent(null)}
         format={format}
+      />
+      <ArchiveStudentDialog
+        student={studentToArchive}
+        open={!!studentToArchive}
+        onOpenChange={(open) => {
+          if (!open) setStudentToArchive(null);
+        }}
+        onSuccess={invalidateWorkspace}
+      />
+      <RestoreGapApprovalDialog
+        open={!!studentToRestore}
+        onOpenChange={(open) => {
+          if (!open) setStudentToRestore(null);
+        }}
+        preview={restorePreviewQuery.data ?? null}
+        pending={restorePreviewQuery.isFetching || restoreStudentMutation.isPending}
+        title="Restore Student to Active Roster"
+        description={
+          studentToRestore
+            ? `Choose whether this affiliate should receive none, some, or all archived-gap income before ${studentToRestore.name ?? studentToRestore.email} becomes active under them again.`
+            : "Review the archived gap and choose what should be granted back before the student returns."
+        }
+        submitLabel="Restore Student"
+        format={format}
+        onSubmit={({ backfillMode, selectedEventIds, reviewNote }) =>
+          restoreStudentMutation.mutate({
+            backfillMode,
+            selectedEventIds,
+            reviewNote,
+          })
+        }
       />
 
       <div className="space-y-6">
@@ -1981,71 +2586,142 @@ export function ManagedAffiliateWorkspace({
                   <Skeleton key={index} className="h-44 w-full" />
                 ))}
               </div>
-            ) : !studentsData?.isTeacher && !studentsData?.canBeTeacher ? (
-              <Card>
-                <CardContent className="py-12 text-center">
-                  <Users className="mx-auto mb-3 h-10 w-10 text-muted-foreground/40" />
-                  <p className="text-muted-foreground">
-                    This affiliate does not currently have teacher access or active
-                    students.
-                  </p>
-                </CardContent>
-              </Card>
             ) : (
               <>
                 <Card className="border-border/60">
                   <CardContent className="pt-6">
                     <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                       <div>
-                        <p className="text-xs uppercase tracking-wide text-muted-foreground">
-                          Teacher Summary
-                        </p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                            Teacher Summary
+                          </p>
+                          <InfoTip>
+                            This mirrors the teacher-facing student area, but adds
+                            admin-only archive and restore controls so you can safely
+                            move students without losing payout history.
+                          </InfoTip>
+                        </div>
                         <p className="mt-1 text-3xl font-bold tracking-tight text-success">
-                          {format(studentsData?.grandTotals.totalUnpaidCad ?? 0, "CAD")}
+                          {format(studentGrandTotals?.totalUnpaidCad ?? 0, "CAD")}
+                        </p>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          Due now {format(studentGrandTotals?.totalDueCad ?? 0, "CAD")} |
+                          In holding {format(studentGrandTotals?.totalPendingCad ?? 0, "CAD")} |
+                          Paid {format(studentGrandTotals?.totalPaidCad ?? 0, "CAD")}
                         </p>
                         <p className="mt-1 text-xs text-muted-foreground">
-                          {format(studentsData?.grandTotals.totalPaidCad ?? 0, "CAD")}{" "}
-                          lifetime paid beneath this affiliate
+                          Active roster {format(studentGrandTotals?.activeUnpaidCad ?? 0, "CAD")} |
+                          Previous students {format(studentGrandTotals?.archivedUnpaidCad ?? 0, "CAD")}
                         </p>
                       </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => studentsQuery.refetch()}
-                        disabled={studentsQuery.isFetching}
-                        className="gap-2 self-start"
-                      >
-                        <RefreshCw
-                          className={`h-3 w-3 ${studentsQuery.isFetching ? "animate-spin" : ""}`}
+                      <div className="flex flex-wrap gap-2 self-start">
+                        <AdminPairStudentDialog
+                          teacherId={affiliateId}
+                          previousStudents={previousStudents}
+                          onRestoreInstead={setStudentToRestore}
+                          onSuccess={invalidateWorkspace}
                         />
-                        {studentsQuery.isFetching ? "Refreshing..." : "Refresh"}
-                      </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => studentsQuery.refetch()}
+                          disabled={studentsQuery.isFetching}
+                          className="gap-2"
+                        >
+                          <RefreshCw
+                            className={`h-3 w-3 ${studentsQuery.isFetching ? "animate-spin" : ""}`}
+                          />
+                          {studentsQuery.isFetching ? "Refreshing..." : "Refresh"}
+                        </Button>
+                      </div>
                     </div>
 
-                    <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                    <div className="mt-5 grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+                      <div className="rounded-xl border border-border/50 bg-muted/20 p-3">
+                        <p className="text-xs text-muted-foreground">Total unpaid</p>
+                        <p className="mt-1 text-lg font-semibold text-success">
+                          {format(studentGrandTotals?.totalUnpaidCad ?? 0, "CAD")}
+                        </p>
+                      </div>
+                      <div className="rounded-xl border border-border/50 bg-muted/20 p-3">
+                        <p className="text-xs text-muted-foreground">Due now</p>
+                        <p className="mt-1 text-lg font-semibold text-info">
+                          {format(studentGrandTotals?.totalDueCad ?? 0, "CAD")}
+                        </p>
+                      </div>
+                      <div className="rounded-xl border border-border/50 bg-muted/20 p-3">
+                        <p className="text-xs text-muted-foreground">In holding</p>
+                        <p className="mt-1 text-lg font-semibold">
+                          {format(studentGrandTotals?.totalPendingCad ?? 0, "CAD")}
+                        </p>
+                      </div>
                       <div className="rounded-xl border border-border/50 bg-muted/20 p-3">
                         <p className="text-xs text-muted-foreground">Direct unpaid</p>
                         <p className="mt-1 text-lg font-semibold">
-                          {format(studentsData?.grandTotals.directUnpaidCad ?? 0, "CAD")}
+                          {format(studentGrandTotals?.directUnpaidCad ?? 0, "CAD")}
                         </p>
                       </div>
                       <div className="rounded-xl border border-border/50 bg-muted/20 p-3">
-                        <p className="text-xs text-muted-foreground">
-                          Indirect unpaid
-                        </p>
+                        <p className="text-xs text-muted-foreground">Indirect unpaid</p>
                         <p className="mt-1 text-lg font-semibold">
-                          {format(
-                            studentsData?.grandTotals.indirectUnpaidCad ?? 0,
-                            "CAD"
-                          )}
+                          {format(studentGrandTotals?.indirectUnpaidCad ?? 0, "CAD")}
                         </p>
                       </div>
                       <div className="rounded-xl border border-border/50 bg-muted/20 p-3">
-                        <p className="text-xs text-muted-foreground">Active students</p>
+                        <p className="text-xs text-muted-foreground">Previous unpaid</p>
                         <p className="mt-1 text-lg font-semibold">
-                          {directStudentCount + indirectStudentCount}
+                          {format(studentGrandTotals?.archivedUnpaidCad ?? 0, "CAD")}
                         </p>
                       </div>
+                    </div>
+
+                    <div className="mt-4 grid gap-3 md:grid-cols-4">
+                      <div className="rounded-xl border border-border/50 bg-background/40 p-3">
+                        <p className="text-xs text-muted-foreground">Visible students</p>
+                        <p className="mt-1 text-lg font-semibold">
+                          {totalVisibleStudents}
+                        </p>
+                      </div>
+                      <div className="rounded-xl border border-border/50 bg-background/40 p-3">
+                        <p className="text-xs text-muted-foreground">Direct students</p>
+                        <p className="mt-1 text-lg font-semibold">
+                          {directStudentCount}
+                        </p>
+                      </div>
+                      <div className="rounded-xl border border-border/50 bg-background/40 p-3">
+                        <p className="text-xs text-muted-foreground">Indirect students</p>
+                        <p className="mt-1 text-lg font-semibold">
+                          {indirectStudentCount}
+                        </p>
+                      </div>
+                      <div className="rounded-xl border border-border/50 bg-background/40 p-3">
+                        <p className="text-xs text-muted-foreground">Previous students</p>
+                        <p className="mt-1 text-lg font-semibold">
+                          {previousStudentCount}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                      <Badge
+                        variant="default"
+                        className="bg-muted/20 text-muted-foreground border-border/60"
+                      >
+                        Teacher proposals {studentsData?.canProposeRates ? "enabled" : "disabled"}
+                      </Badge>
+                      <Badge
+                        variant="default"
+                        className="bg-muted/20 text-muted-foreground border-border/60"
+                      >
+                        Teacher self-serve access {studentsData?.canBeTeacher ? "enabled" : "disabled"}
+                      </Badge>
+                      {previousStudentCount > 0 && (
+                        <span>
+                          Previous students keep moving from holding to paid even while
+                          they are off the live roster.
+                        </span>
+                      )}
                     </div>
                   </CardContent>
                 </Card>
@@ -2071,20 +2747,57 @@ export function ManagedAffiliateWorkspace({
                     <CardContent className="py-12 text-center">
                       <Users className="mx-auto mb-3 h-10 w-10 text-muted-foreground/40" />
                       <p className="text-muted-foreground">
-                        No active students are linked under this affiliate yet.
+                        {previousStudentCount > 0
+                          ? "No active students are linked right now. Archived payout history is still tracked below."
+                          : "No active students are linked under this affiliate yet."}
                       </p>
                     </CardContent>
                   </Card>
                 ) : (
                   <div className="space-y-4">
+                    <div>
+                      <h3 className="text-lg font-semibold">Active Students</h3>
+                      <p className="text-sm text-muted-foreground">
+                        These are the live student relationships currently contributing
+                        to this affiliate&apos;s teacher totals.
+                      </p>
+                    </div>
                     {studentsData?.directStudents.map((student) => (
                       <ManagedStudentCard
-                        key={student.id}
+                        key={`${student.relationshipId}:${student.relationshipSequence}`}
                         student={student}
                         format={format}
                         onViewDetail={setSelectedStudent}
+                        onArchive={setStudentToArchive}
                       />
                     ))}
+                  </div>
+                )}
+
+                {previousStudentCount > 0 && (
+                  <div className="space-y-4">
+                    <div>
+                      <h3 className="flex items-center gap-2 text-lg font-semibold">
+                        <History className="h-4 w-4 text-muted-foreground" />
+                        Previous Students
+                      </h3>
+                      <p className="text-sm text-muted-foreground">
+                        Archived students stay here so already-earned payouts keep
+                        progressing safely. Restoring one lets you choose whether to
+                        grant none, some, or all missed-gap income.
+                      </p>
+                    </div>
+                    <div className="space-y-4">
+                      {previousStudents.map((student) => (
+                        <ManagedPreviousStudentCard
+                          key={`${student.archiveId}:${student.relationshipSequence}`}
+                          student={student}
+                          format={format}
+                          onViewDetail={setSelectedStudent}
+                          onRestore={setStudentToRestore}
+                        />
+                      ))}
+                    </div>
                   </div>
                 )}
               </>

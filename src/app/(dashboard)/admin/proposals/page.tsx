@@ -1,11 +1,15 @@
 "use client";
 
-import { Check, Clock, Users, X } from "lucide-react";
+import { Check, Clock, RotateCcw, Users, X } from "lucide-react";
 import { useSession } from "next-auth/react";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
+import {
+  RestoreGapApprovalDialog,
+  type RestoreGapPreview,
+} from "@/components/admin/restore-gap-approval-dialog";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -20,6 +24,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { useCurrency } from "@/providers/currency-provider";
 
 interface Proposal {
   id: string;
@@ -43,6 +48,21 @@ interface TeacherProposal {
   student: { id: string; name: string | null; email: string; image: string | null };
 }
 
+interface TeacherRestoreRequest {
+  id: string;
+  createdAt: string;
+  requestNote: string | null;
+  requestedBy: {
+    id: string;
+    name: string | null;
+    email: string;
+    image: string | null;
+  };
+  teacher: { id: string; name: string | null; email: string; image: string | null };
+  student: { id: string; name: string | null; email: string; image: string | null };
+  preview: RestoreGapPreview | null;
+}
+
 function getInitials(name: string | null, email: string) {
   if (name) {
     return name
@@ -56,9 +76,15 @@ function getInitials(name: string | null, email: string) {
 }
 
 export default function ProposalsPage() {
+  const { format } = useCurrency();
   const queryClient = useQueryClient();
   const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
   const [teacherReviewNotes, setTeacherReviewNotes] = useState<Record<string, string>>({});
+  const [restoreReviewNotes, setRestoreReviewNotes] = useState<Record<string, string>>(
+    {}
+  );
+  const [selectedRestoreRequest, setSelectedRestoreRequest] =
+    useState<TeacherRestoreRequest | null>(null);
   // Scope by adminId so account-switching in the same browser doesn't leak
   // cached data across admins. Prefix invalidations still match.
   const { data: session } = useSession();
@@ -80,6 +106,17 @@ export default function ProposalsPage() {
       enabled: !!adminId,
       queryFn: async () => {
         const res = await fetch("/api/admin/teacher-proposals");
+        if (!res.ok) throw new Error("Failed to fetch");
+        return res.json();
+      },
+    });
+
+  const { data: restoreRequestsData, isLoading: restoreRequestsLoading } =
+    useQuery<{ data: TeacherRestoreRequest[] }>({
+      queryKey: ["admin-teacher-restore-requests", adminId],
+      enabled: !!adminId,
+      queryFn: async () => {
+        const res = await fetch("/api/admin/teacher-restore-requests");
         if (!res.ok) throw new Error("Failed to fetch");
         return res.json();
       },
@@ -150,21 +187,260 @@ export default function ProposalsPage() {
     onError: (error: Error) => toast.error(error.message),
   });
 
+  const restoreRequestMutation = useMutation({
+    mutationFn: async ({
+      id,
+      action,
+      reviewNote,
+      backfillMode,
+      selectedEventIds,
+    }: {
+      id: string;
+      action: "approve" | "reject";
+      reviewNote?: string;
+      backfillMode?: "NONE" | "ALL" | "CUSTOM";
+      selectedEventIds?: string[];
+    }) => {
+      const res = await fetch(`/api/admin/teacher-restore-requests/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          action === "approve"
+            ? {
+                action,
+                reviewNote,
+                backfillMode,
+                selectedEventIds,
+              }
+            : { action, reviewNote }
+        ),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? "Failed to process restore request");
+      }
+      return res.json();
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["admin-teacher-restore-requests"] });
+      queryClient.invalidateQueries({ queryKey: ["students"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-affiliate-workspace"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-affiliates"] });
+
+      if (variables.action === "approve") {
+        setSelectedRestoreRequest(null);
+        toast.success("Student return approved");
+      } else {
+        toast.success("Student return request rejected");
+      }
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
   const pendingProposals =
     data?.data.filter((p) => p.status === "PENDING") ?? [];
   const reviewedProposals =
     data?.data.filter((p) => p.status !== "PENDING") ?? [];
 
   const pendingTeacherProposals = teacherProposalsData?.data ?? [];
+  const pendingRestoreRequests = restoreRequestsData?.data ?? [];
 
   return (
     <div className="space-y-8">
+      <RestoreGapApprovalDialog
+        open={!!selectedRestoreRequest}
+        onOpenChange={(open) => {
+          if (!open) setSelectedRestoreRequest(null);
+        }}
+        preview={selectedRestoreRequest?.preview ?? null}
+        pending={restoreRequestMutation.isPending}
+        title="Approve Student Return"
+        description={
+          selectedRestoreRequest
+            ? `Choose how much archived-gap income to grant back before ${selectedRestoreRequest.student.name ?? selectedRestoreRequest.student.email} returns under ${selectedRestoreRequest.teacher.name ?? selectedRestoreRequest.teacher.email}.`
+            : "Review the archived-gap earnings before restoring the student."
+        }
+        submitLabel="Approve Return"
+        format={format}
+        onSubmit={({ backfillMode, selectedEventIds, reviewNote }) => {
+          if (!selectedRestoreRequest) return;
+          restoreRequestMutation.mutate({
+            id: selectedRestoreRequest.id,
+            action: "approve",
+            reviewNote,
+            backfillMode,
+            selectedEventIds,
+          });
+        }}
+      />
+
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Proposals</h1>
         <p className="text-muted-foreground">
           Review teacher-student relationships and rate change proposals
         </p>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-lg">
+            <RotateCcw className="h-5 w-5 text-primary" />
+            Student Return Requests ({pendingRestoreRequests.length})
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {restoreRequestsLoading || !adminId ? (
+            <div className="space-y-3">
+              {Array.from({ length: 2 }).map((_, index) => (
+                <Skeleton key={index} className="h-32 w-full" />
+              ))}
+            </div>
+          ) : pendingRestoreRequests.length === 0 ? (
+            <p className="py-4 text-center text-muted-foreground">
+              No pending student return requests
+            </p>
+          ) : (
+            <div className="space-y-4">
+              {pendingRestoreRequests.map((request) => {
+                const preview = request.preview;
+
+                return (
+                  <div
+                    key={request.id}
+                    className="space-y-4 rounded-lg border border-border/50 p-4"
+                  >
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
+                      <div className="flex min-w-0 flex-1 items-center gap-3">
+                        <Avatar className="h-9 w-9 shrink-0">
+                          <AvatarImage src={request.teacher.image ?? undefined} />
+                          <AvatarFallback className="text-xs">
+                            {getInitials(request.teacher.name, request.teacher.email)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium">
+                            {request.teacher.name ?? request.teacher.email}
+                          </p>
+                          <p className="text-xs text-muted-foreground">Teacher</p>
+                        </div>
+                      </div>
+
+                      <div className="text-sm text-muted-foreground lg:self-center">
+                        wants to bring back
+                      </div>
+
+                      <div className="flex min-w-0 flex-1 items-center gap-3">
+                        <Avatar className="h-9 w-9 shrink-0">
+                          <AvatarImage src={request.student.image ?? undefined} />
+                          <AvatarFallback className="text-xs">
+                            {getInitials(request.student.name, request.student.email)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium">
+                            {request.student.name ?? request.student.email}
+                          </p>
+                          <p className="text-xs text-muted-foreground">Student</p>
+                        </div>
+                      </div>
+
+                      <Badge
+                        variant="default"
+                        className="bg-primary/15 text-primary border-primary/30 shrink-0"
+                      >
+                        {preview
+                          ? `${preview.gap.grantableCount} grantable item${
+                              preview.gap.grantableCount === 1 ? "" : "s"
+                            }`
+                          : "Awaiting preview"}
+                      </Badge>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <div className="rounded-xl border border-border/50 bg-muted/20 p-3">
+                        <p className="text-xs text-muted-foreground">Removed</p>
+                        <p className="mt-1 font-medium">
+                          {preview ? new Date(preview.archivedAt).toLocaleDateString("en-US", {
+                              month: "short",
+                              day: "numeric",
+                              year: "numeric",
+                            }) : "Loading..."}
+                        </p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {preview?.archiveReason ?? "No removal note"}
+                        </p>
+                      </div>
+                      <div className="rounded-xl border border-border/50 bg-muted/20 p-3">
+                        <p className="text-xs text-muted-foreground">Snapshot at removal</p>
+                        <p className="mt-1 font-medium">
+                          {preview ? format(preview.snapshot.teacherUnpaidCad, "CAD") : "-"}
+                        </p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Paid {preview ? format(preview.snapshot.teacherPaidCad, "CAD") : "-"}
+                        </p>
+                      </div>
+                      <div className="rounded-xl border border-border/50 bg-muted/20 p-3">
+                        <p className="text-xs text-muted-foreground">Missed while archived</p>
+                        <p className="mt-1 font-medium">
+                          {preview ? format(preview.gap.grantableCad, "CAD") : "-"}
+                        </p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {preview?.gap.totalCount ?? 0} total archived-gap commission
+                          {(preview?.gap.totalCount ?? 0) === 1 ? "" : "s"}
+                        </p>
+                      </div>
+                    </div>
+
+                    {request.requestNote && (
+                      <p className="text-sm text-muted-foreground">
+                        Teacher note: {request.requestNote}
+                      </p>
+                    )}
+
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                      <Input
+                        placeholder="Rejection note (optional)"
+                        value={restoreReviewNotes[request.id] ?? ""}
+                        onChange={(event) =>
+                          setRestoreReviewNotes((current) => ({
+                            ...current,
+                            [request.id]: event.target.value,
+                          }))
+                        }
+                        className="flex-1"
+                      />
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="text-error border-error/30 hover:bg-error/10"
+                        onClick={() =>
+                          restoreRequestMutation.mutate({
+                            id: request.id,
+                            action: "reject",
+                            reviewNote: restoreReviewNotes[request.id],
+                          })
+                        }
+                        disabled={restoreRequestMutation.isPending}
+                      >
+                        <X className="mr-1 h-3 w-3" />
+                        Reject
+                      </Button>
+                      <Button
+                        size="sm"
+                        onClick={() => setSelectedRestoreRequest(request)}
+                        disabled={restoreRequestMutation.isPending || !preview}
+                      >
+                        <Check className="mr-1 h-3 w-3" />
+                        Review Return
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Teacher-Student Proposals */}
       <Card>

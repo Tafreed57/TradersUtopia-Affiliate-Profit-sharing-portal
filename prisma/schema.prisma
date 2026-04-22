@@ -99,6 +99,11 @@ model User {
   sessions             Session[]
   teacherRelations     TeacherStudent[]      @relation("StudentRelation")
   studentRelations     TeacherStudent[]      @relation("TeacherRelation")
+  archivedTeacherRelations TeacherStudentArchive[] @relation("TeacherArchiveRelation")
+  archivedStudentRelations TeacherStudentArchive[] @relation("StudentArchiveRelation")
+  archivedByActions    TeacherStudentArchive[] @relation("TeacherStudentArchivedBy")
+  restoreRequestsMade  TeacherStudentRestoreRequest[] @relation("TeacherStudentRestoreRequestedBy")
+  restoreRequestsReviewed TeacherStudentRestoreRequest[] @relation("TeacherStudentRestoreReviewedBy")
 
   @@index([email])
   @@index([rewardfulAffiliateId])
@@ -113,18 +118,83 @@ model TeacherStudent {
   teacherCut   Decimal              @default(0) @db.Decimal(5, 2)
   status       TeacherStudentStatus @default(ACTIVE)
   createdVia   RelationshipOrigin   @default(SELF_PROPOSAL)
+  activationSequence Int            @default(1)
+  activatedAt  DateTime             @default(now())
+  deactivatedAt DateTime?
   reviewedAt   DateTime?
   reviewedById String?
   createdAt    DateTime             @default(now())
   updatedAt    DateTime             @default(now()) @updatedAt
   student      User                 @relation("StudentRelation", fields: [studentId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   teacher      User                 @relation("TeacherRelation", fields: [teacherId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  archives     TeacherStudentArchive[]
+  restoreRequests TeacherStudentRestoreRequest[]
+  teacherSplits CommissionSplit[]   @relation("TeacherStudentEpisode")
 
   @@unique([teacherId, studentId])
   @@index([teacherId])
   @@index([studentId])
   @@index([teacherId, status])
   @@index([status])
+}
+
+model TeacherStudentArchive {
+  id                    String                         @id @default(cuid())
+  teacherStudentId      String
+  activationSequence    Int
+  teacherId             String
+  studentId             String
+  depth                 Int                           @default(1)
+  teacherCut            Decimal                       @db.Decimal(5, 2)
+  archivedAt            DateTime                      @default(now())
+  archivedById          String?
+  archivedByRole        TeacherStudentArchiveActorRole @default(ADMIN)
+  archiveReason         String?
+  showInPreviousStudents Boolean                      @default(true)
+  snapshotUnpaidCad     Decimal                       @db.Decimal(12, 2)
+  snapshotDueCad        Decimal                       @db.Decimal(12, 2)
+  snapshotPendingCad    Decimal                       @db.Decimal(12, 2)
+  snapshotPaidCad       Decimal                       @db.Decimal(12, 2)
+  snapshotCommissionCount Int                         @default(0)
+  snapshotNextDueAt     DateTime?
+  createdAt             DateTime                      @default(now())
+  updatedAt             DateTime                      @updatedAt
+  teacherStudent        TeacherStudent                @relation(fields: [teacherStudentId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  teacher               User                          @relation("TeacherArchiveRelation", fields: [teacherId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  student               User                          @relation("StudentArchiveRelation", fields: [studentId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  archivedBy            User?                         @relation("TeacherStudentArchivedBy", fields: [archivedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  restoreRequests       TeacherStudentRestoreRequest[]
+
+  @@unique([teacherStudentId, activationSequence])
+  @@index([teacherId, showInPreviousStudents])
+  @@index([studentId])
+  @@index([archivedAt])
+}
+
+model TeacherStudentRestoreRequest {
+  id              String                     @id @default(cuid())
+  teacherStudentId String
+  archiveId       String
+  requestedById   String
+  status          TeacherStudentRestoreStatus @default(PENDING)
+  requestNote     String?
+  reviewNote      String?
+  backfillMode    TeacherStudentBackfillMode?
+  grantedEventIds Json?
+  grantedCount    Int                        @default(0)
+  grantedAmountCad Decimal                   @default(0) @db.Decimal(12, 2)
+  createdAt       DateTime                   @default(now())
+  reviewedAt      DateTime?
+  reviewedById    String?
+  updatedAt       DateTime                   @updatedAt
+  teacherStudent  TeacherStudent             @relation(fields: [teacherStudentId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  archive         TeacherStudentArchive      @relation(fields: [archiveId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  requestedBy     User                       @relation("TeacherStudentRestoreRequestedBy", fields: [requestedById], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  reviewedBy      User?                      @relation("TeacherStudentRestoreReviewedBy", fields: [reviewedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([status])
+  @@index([teacherStudentId, status])
+  @@index([archiveId, status])
 }
 
 model Commission {
@@ -197,6 +267,9 @@ model CommissionSplit {
   event            CommissionEvent  @relation(fields: [eventId], references: [id], onDelete: Cascade)
   recipientId      String
   recipient        User             @relation("recipientSplits", fields: [recipientId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  teacherStudentId String?
+  teacherStudentSequence Int?
+  teacherStudent   TeacherStudent?  @relation("TeacherStudentEpisode", fields: [teacherStudentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   role             CommissionRole
   depth            Int?
   cutPercent       Decimal          @db.Decimal(5, 2)
@@ -214,6 +287,7 @@ model CommissionSplit {
   @@index([recipientId])
   @@index([status])
   @@index([paidAt])
+  @@index([teacherStudentId, teacherStudentSequence])
 }
 
 model CommissionRateAudit {
@@ -426,6 +500,24 @@ enum TeacherStudentStatus {
   ACTIVE
   REJECTED
   DEACTIVATED
+}
+
+enum TeacherStudentArchiveActorRole {
+  ADMIN
+  TEACHER
+  SYSTEM
+}
+
+enum TeacherStudentRestoreStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum TeacherStudentBackfillMode {
+  NONE
+  ALL
+  CUSTOM
 }
 
 enum RewardfulBackfillStatus {

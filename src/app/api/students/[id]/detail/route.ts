@@ -14,7 +14,7 @@ import { authOptions } from "@/lib/auth-options";
  * student's attendance records. Auth requires an active teacher relationship.
  */
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const session = await getServerSession(authOptions);
@@ -23,10 +23,22 @@ export async function GET(
   }
 
   const { id: studentId } = await params;
+  const relationshipId = req.nextUrl.searchParams.get("relationshipId") ?? undefined;
+  const relationshipSequenceParam =
+    req.nextUrl.searchParams.get("relationshipSequence");
+  const relationshipSequence = relationshipSequenceParam
+    ? Number(relationshipSequenceParam)
+    : undefined;
 
   try {
     return NextResponse.json(
-      await getTeacherStudentDetailData(session.user.id, studentId)
+      await getTeacherStudentDetailData(session.user.id, studentId, {
+        relationshipId,
+        relationshipSequence:
+          relationshipSequence !== undefined && Number.isFinite(relationshipSequence)
+            ? relationshipSequence
+            : undefined,
+      })
     );
   } catch (error) {
     if (error instanceof AffiliatePortalDataError) {
