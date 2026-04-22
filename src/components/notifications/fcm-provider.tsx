@@ -13,15 +13,45 @@ import {
  * FCM Provider — handles token registration and foreground message display.
  * Mount once in the dashboard layout.
  */
+function getOrCreatePushDeviceId() {
+  if (typeof window === "undefined") return null;
+
+  const storageKey = "tu.push.device-id";
+
+  try {
+    const existing = window.localStorage.getItem(storageKey);
+    if (existing) return existing;
+
+    const created =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    window.localStorage.setItem(storageKey, created);
+    return created;
+  } catch (error) {
+    console.error("Failed to persist push device ID:", error);
+    return null;
+  }
+}
+
 async function registerToken() {
   const token = await requestNotificationPermission();
   if (!token) return;
+
+  const deviceId = getOrCreatePushDeviceId();
 
   try {
     await fetch("/api/notifications/register-token", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token, platform: "web" }),
+      body: JSON.stringify({
+        token,
+        platform: "web",
+        deviceId,
+        userAgent:
+          typeof navigator !== "undefined" ? navigator.userAgent : undefined,
+      }),
     });
   } catch (err) {
     console.error("Failed to register FCM token:", err);

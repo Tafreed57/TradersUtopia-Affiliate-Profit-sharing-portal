@@ -27,6 +27,17 @@ export async function syncAffiliateCommissionCatalog(args: {
   affiliateId: string;
   rewardfulAffiliateId: string;
 }): Promise<AffiliateSyncResult> {
+  try {
+    await rewardful.disableAffiliateCommissionNotificationEmails(
+      args.rewardfulAffiliateId
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(
+      `[syncAffiliateCommissionCatalog] failed to enforce upstream email policy for ${args.rewardfulAffiliateId}: ${msg}`
+    );
+  }
+
   const commissions = await rewardful.listAllCommissionsForAffiliate(
     args.rewardfulAffiliateId
   );

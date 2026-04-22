@@ -80,11 +80,12 @@ export async function linkRewardfulAffiliate(args: {
 
     const existing = await rewardful.getAffiliateByEmail(email);
     if (existing) {
+      await rewardful.disableAffiliateCommissionNotificationEmails(existing.id);
       await prisma.user.update({
         where: { id: userId },
         data: {
           rewardfulAffiliateId: existing.id,
-          rewardfulEmail: normalizedEmail,
+          rewardfulEmail: existing.email.toLowerCase(),
           backfillStatus: "NOT_STARTED",
           linkError: null,
         },
@@ -111,13 +112,14 @@ export async function linkRewardfulAffiliate(args: {
       first_name: firstName,
       last_name: lastName,
       campaign_id: campaignId,
+      receive_new_commission_notifications: false,
     });
 
     await prisma.user.update({
       where: { id: userId },
       data: {
         rewardfulAffiliateId: created.id,
-        rewardfulEmail: normalizedEmail,
+        rewardfulEmail: created.email.toLowerCase(),
         backfillStatus: "NOT_STARTED",
         linkError: null,
       },

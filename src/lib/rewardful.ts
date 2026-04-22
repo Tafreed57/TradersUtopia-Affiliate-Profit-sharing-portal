@@ -64,6 +64,7 @@ export interface RewardfulAffiliate {
   first_name: string;
   last_name: string;
   state: string;
+  receive_new_commission_notifications?: boolean;
   visitors: number;
   leads: number;
   conversions: number;
@@ -293,17 +294,70 @@ export async function createAffiliate(data: {
    *  a non-empty fallback (e.g. "-") for single-name profiles. */
   last_name: string;
   campaign_id?: string;
+  receive_new_commission_notifications?: boolean;
 }) {
-  const body: Record<string, string> = {
+  const body: Record<string, string | boolean> = {
     email: data.email,
     first_name: data.first_name,
     last_name: data.last_name,
   };
   if (data.campaign_id) body.campaign_id = data.campaign_id;
+  if (typeof data.receive_new_commission_notifications === "boolean") {
+    body.receive_new_commission_notifications =
+      data.receive_new_commission_notifications;
+  }
   return request<RewardfulAffiliate>("/affiliates", {
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+export async function updateAffiliate(
+  affiliateId: string,
+  data: {
+    email?: string;
+    first_name?: string;
+    last_name?: string;
+    state?: string;
+    campaign_id?: string;
+    paypal_email?: string;
+    wise_email?: string;
+    receive_new_commission_notifications?: boolean;
+  }
+) {
+  return request<RewardfulAffiliate>(`/affiliates/${affiliateId}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function disableAffiliateCommissionNotificationEmails(
+  affiliateId: string
+) {
+  try {
+    return await updateAffiliate(affiliateId, {
+      receive_new_commission_notifications: false,
+    });
+  } catch (error) {
+    const missingLastName =
+      error instanceof RewardfulApiError &&
+      error.status === 422 &&
+      error.body.includes("Last name can't be blank");
+
+    if (!missingLastName) {
+      throw error;
+    }
+
+    // Some legacy upstream affiliates were created without a usable last name.
+    // Rewardful rejects even preference-only updates for those records unless
+    // we resend a non-empty name payload.
+    const affiliate = await getAffiliate(affiliateId);
+    return updateAffiliate(affiliateId, {
+      first_name: affiliate.first_name?.trim() || "-",
+      last_name: affiliate.last_name?.trim() || "-",
+      receive_new_commission_notifications: false,
+    });
+  }
 }
 
 export async function listCommissions(params?: {

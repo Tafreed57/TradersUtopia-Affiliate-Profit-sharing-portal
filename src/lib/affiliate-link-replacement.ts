@@ -66,6 +66,10 @@ export async function replaceAffiliateLink(args: {
     throw new Error("Could not find that affiliate account.");
   }
 
+  await rewardful.disableAffiliateCommissionNotificationEmails(
+    targetAffiliate.id
+  );
+
   if (user.rewardfulAffiliateId === targetAffiliate.id) {
     throw new Error("This user is already linked to that affiliate account.");
   }

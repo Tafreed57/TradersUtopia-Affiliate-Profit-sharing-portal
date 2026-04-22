@@ -5,6 +5,7 @@ import {
   Bell,
   CheckCircle,
   Clock,
+  Info,
   RefreshCw,
   Search,
   Shield,
@@ -37,6 +38,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 interface Affiliate {
   id: string;
@@ -101,6 +108,16 @@ interface TestNotificationResponse {
   sentPush: boolean;
 }
 
+interface AdminDiagnosticsResponse {
+  linkedAccounts: number;
+  accountsWithLinkIssues: number;
+  usersWithPushTokens: number;
+  totalDeviceTokenRows: number;
+  legacyDeviceTokenRows: number;
+  usersWithMultipleTokens: number;
+  currentAdminDeviceTokens: number;
+}
+
 export default function AdminPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -145,6 +162,16 @@ export default function AdminPage() {
     queryFn: async () => {
       const res = await fetch("/api/admin/teacher-proposals");
       if (!res.ok) throw new Error("Failed to fetch");
+      return res.json();
+    },
+  });
+
+  const { data: diagnosticsData } = useQuery<AdminDiagnosticsResponse>({
+    queryKey: ["admin-diagnostics", adminId],
+    enabled: !!adminId,
+    queryFn: async () => {
+      const res = await fetch("/api/admin/diagnostics");
+      if (!res.ok) throw new Error("Failed to fetch diagnostics");
       return res.json();
     },
   });
@@ -256,7 +283,8 @@ export default function AdminPage() {
   const totalPending = pendingProposals.length + pendingTeacherProposals.length;
 
   return (
-    <div className="space-y-6">
+    <TooltipProvider>
+      <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
           <Shield className="h-6 w-6 text-primary" />
@@ -363,10 +391,104 @@ export default function AdminPage() {
       {/* Admin Tools */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">Admin Tools</CardTitle>
+          <CardTitle className="text-base">Diagnostics & Recovery</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="flex items-center justify-between">
+          <div className="rounded-xl border border-border/50 bg-muted/20 px-4 py-3">
+            <p className="text-sm font-medium">Normal operation is automatic</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Linking, history import, commission-state sync, and upstream commission-email suppression now run automatically. The controls below are for diagnostics, one-time historical repairs, or delivery testing.
+            </p>
+          </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="rounded-xl border border-border/50 bg-background/40 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                  Push-Ready Users
+                </p>
+                <Tooltip>
+                  <TooltipTrigger className="inline-flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground">
+                      <Info className="h-3.5 w-3.5" />
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    Users with at least one registered push endpoint.
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+              <p className="mt-2 text-2xl font-semibold">
+                {diagnosticsData?.usersWithPushTokens ?? "—"}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {diagnosticsData?.totalDeviceTokenRows ?? 0} total device token row
+                {(diagnosticsData?.totalDeviceTokenRows ?? 0) === 1 ? "" : "s"}
+              </p>
+            </div>
+            <div className="rounded-xl border border-border/50 bg-background/40 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                  Multi-Token Accounts
+                </p>
+                <Tooltip>
+                  <TooltipTrigger className="inline-flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground">
+                      <Info className="h-3.5 w-3.5" />
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    Accounts with more than one live push token. A single test can fan out to all of them.
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+              <p className="mt-2 text-2xl font-semibold">
+                {diagnosticsData?.usersWithMultipleTokens ?? "—"}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Should trend toward zero as devices re-register
+              </p>
+            </div>
+            <div className="rounded-xl border border-border/50 bg-background/40 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                  Legacy Token Rows
+                </p>
+                <Tooltip>
+                  <TooltipTrigger className="inline-flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground">
+                      <Info className="h-3.5 w-3.5" />
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    Older push registrations created before stable device identity. They are auto-retired on the next registration from that device.
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+              <p className="mt-2 text-2xl font-semibold">
+                {diagnosticsData?.legacyDeviceTokenRows ?? "—"}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Automatic cleanup target
+              </p>
+            </div>
+            <div className="rounded-xl border border-border/50 bg-background/40 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                  Link Issues
+                </p>
+                <Tooltip>
+                  <TooltipTrigger className="inline-flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground">
+                      <Info className="h-3.5 w-3.5" />
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    Affiliates with a stored linking or historical repair error.
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+              <p className="mt-2 text-2xl font-semibold">
+                {diagnosticsData?.accountsWithLinkIssues ?? "—"}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {diagnosticsData?.linkedAccounts ?? 0} linked account
+                {(diagnosticsData?.linkedAccounts ?? 0) === 1 ? "" : "s"} total
+              </p>
+            </div>
+          </div>
+          <div className="mt-4 flex items-center justify-between">
             <div>
               <p className="text-sm font-medium">Backfill Teacher Cuts</p>
               <p className="text-xs text-muted-foreground">
@@ -409,6 +531,19 @@ export default function AdminPage() {
               <p className="text-xs text-muted-foreground">
                 Sends a real notification to your own admin account so you can verify push delivery on this device.
               </p>
+              {typeof diagnosticsData?.currentAdminDeviceTokens === "number" && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  This admin account currently has{" "}
+                  <span className="font-medium text-foreground">
+                    {diagnosticsData.currentAdminDeviceTokens}
+                  </span>{" "}
+                  registered push endpoint
+                  {diagnosticsData.currentAdminDeviceTokens === 1 ? "" : "s"}.
+                  {diagnosticsData.currentAdminDeviceTokens > 1
+                    ? " A single test can fan out to each live endpoint until cleanup finishes."
+                    : ""}
+                </p>
+              )}
             </div>
             <Button
               variant="outline"
@@ -598,6 +733,7 @@ export default function AdminPage() {
           )}
         </CardContent>
       </Card>
-    </div>
+      </div>
+    </TooltipProvider>
   );
 }
