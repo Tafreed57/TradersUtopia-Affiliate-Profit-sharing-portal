@@ -1,4 +1,3 @@
-/* eslint-disable no-undef */
 // Firebase Cloud Messaging Service Worker
 // Handles background push notifications and offline fallback.
 
@@ -59,7 +58,13 @@ firebase.initializeApp({
 const messaging = firebase.messaging();
 
 messaging.onBackgroundMessage((payload) => {
-  const { title, body } = payload.notification || {};
+  // Notification payloads are already displayed automatically by FCM when
+  // the web app is in the background. Calling showNotification() again for
+  // the same payload creates duplicate phone alerts.
+  if (payload.notification?.title) return;
+
+  const title = payload.data?.title;
+  const body = payload.data?.body;
   if (!title) return;
 
   self.registration.showNotification(title, {

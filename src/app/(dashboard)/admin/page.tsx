@@ -5,7 +5,6 @@ import {
   Bell,
   CheckCircle,
   Clock,
-  Info,
   RefreshCw,
   Search,
   Shield,
@@ -38,12 +37,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 
 interface Affiliate {
   id: string;
@@ -243,32 +236,30 @@ export default function AdminPage() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["notifications-page"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-diagnostics"] });
 
       if (data.pushStatus === "SENT") {
-        toast.success(
-          `Test notification sent. ${data.deviceTokenCount} device${data.deviceTokenCount !== 1 ? "s" : ""} registered for this account.`
-        );
         return;
       }
 
       if (data.pushStatus === "SKIPPED_NO_TOKEN") {
         toast(
-          "Test notification was created, but this account does not have any registered devices yet."
+          "No phone or browser is currently saved for alerts on this account."
         );
         return;
       }
 
       if (data.pushStatus === "SKIPPED_NO_MESSAGING") {
         toast.error(
-          "Test notification was created, but push delivery is disabled in the current server runtime."
+          "The test alert was created, but push delivery is disabled on the server right now."
         );
         return;
       }
 
       toast.error(
         data.pushError
-          ? `Test notification failed: ${data.pushError}`
-          : `Test notification ended with status ${data.pushStatus}.`
+          ? `Test alert failed: ${data.pushError}`
+          : `Test alert ended with status ${data.pushStatus}.`
       );
     },
     onError: (error) =>
@@ -281,10 +272,14 @@ export default function AdminPage() {
     proposalsData?.data.filter((p) => p.status === "PENDING") ?? [];
   const pendingTeacherProposals = teacherProposalsData?.data ?? [];
   const totalPending = pendingProposals.length + pendingTeacherProposals.length;
+  const repeatedAlertAccounts = diagnosticsData?.usersWithMultipleTokens ?? 0;
+  const accountsReadyForAlerts = diagnosticsData?.usersWithPushTokens ?? 0;
+  const linkedAccounts = diagnosticsData?.linkedAccounts ?? 0;
+  const linkIssues = diagnosticsData?.accountsWithLinkIssues ?? 0;
+  const currentAdminDeviceTokens = diagnosticsData?.currentAdminDeviceTokens ?? 0;
 
   return (
-    <TooltipProvider>
-      <div className="space-y-6">
+    <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
           <Shield className="h-6 w-6 text-primary" />
@@ -391,109 +386,69 @@ export default function AdminPage() {
       {/* Admin Tools */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">Diagnostics & Recovery</CardTitle>
+          <CardTitle className="text-base">System Status</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="rounded-xl border border-border/50 bg-muted/20 px-4 py-3">
-            <p className="text-sm font-medium">Normal operation is automatic</p>
+            <p className="text-sm font-medium">
+              Most of this runs by itself
+            </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Linking, history import, commission-state sync, and upstream commission-email suppression now run automatically. The controls below are for diagnostics, one-time historical repairs, or delivery testing.
+              Linking accounts, updating paid amounts, and keeping outside
+              commission emails turned off now happen automatically. You
+              normally do not need to use the buttons below unless you are
+              fixing older data or testing alerts.
             </p>
           </div>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             <div className="rounded-xl border border-border/50 bg-background/40 px-4 py-3">
-              <div className="flex items-center gap-2">
-                <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                  Push-Ready Users
-                </p>
-                <Tooltip>
-                  <TooltipTrigger className="inline-flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground">
-                      <Info className="h-3.5 w-3.5" />
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    Users with at least one registered push endpoint.
-                  </TooltipContent>
-                </Tooltip>
-              </div>
+              <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                App Alerts
+              </p>
               <p className="mt-2 text-2xl font-semibold">
-                {diagnosticsData?.usersWithPushTokens ?? "—"}
+                {accountsReadyForAlerts}
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                {diagnosticsData?.totalDeviceTokenRows ?? 0} total device token row
-                {(diagnosticsData?.totalDeviceTokenRows ?? 0) === 1 ? "" : "s"}
+                {accountsReadyForAlerts === 1
+                  ? "1 account can receive app alerts right now."
+                  : `${accountsReadyForAlerts} accounts can receive app alerts right now.`}
               </p>
             </div>
             <div className="rounded-xl border border-border/50 bg-background/40 px-4 py-3">
-              <div className="flex items-center gap-2">
-                <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                  Multi-Token Accounts
-                </p>
-                <Tooltip>
-                  <TooltipTrigger className="inline-flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground">
-                      <Info className="h-3.5 w-3.5" />
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    Accounts with more than one live push token. A single test can fan out to all of them.
-                  </TooltipContent>
-                </Tooltip>
-              </div>
+              <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                Repeated Alerts
+              </p>
               <p className="mt-2 text-2xl font-semibold">
-                {diagnosticsData?.usersWithMultipleTokens ?? "—"}
+                {repeatedAlertAccounts}
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                Should trend toward zero as devices re-register
+                {repeatedAlertAccounts === 0
+                  ? "No accounts are currently expected to get duplicate alerts."
+                  : repeatedAlertAccounts === 1
+                    ? "1 account may still get duplicate alerts until it opens the app again on the device it still uses."
+                    : `${repeatedAlertAccounts} accounts may still get duplicate alerts until they open the app again on the device they still use.`}
               </p>
             </div>
             <div className="rounded-xl border border-border/50 bg-background/40 px-4 py-3">
-              <div className="flex items-center gap-2">
-                <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                  Legacy Token Rows
-                </p>
-                <Tooltip>
-                  <TooltipTrigger className="inline-flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground">
-                      <Info className="h-3.5 w-3.5" />
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    Older push registrations created before stable device identity. They are auto-retired on the next registration from that device.
-                  </TooltipContent>
-                </Tooltip>
-              </div>
+              <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                Linked Accounts
+              </p>
               <p className="mt-2 text-2xl font-semibold">
-                {diagnosticsData?.legacyDeviceTokenRows ?? "—"}
+                {linkIssues}
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                Automatic cleanup target
-              </p>
-            </div>
-            <div className="rounded-xl border border-border/50 bg-background/40 px-4 py-3">
-              <div className="flex items-center gap-2">
-                <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                  Link Issues
-                </p>
-                <Tooltip>
-                  <TooltipTrigger className="inline-flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground">
-                      <Info className="h-3.5 w-3.5" />
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    Affiliates with a stored linking or historical repair error.
-                  </TooltipContent>
-                </Tooltip>
-              </div>
-              <p className="mt-2 text-2xl font-semibold">
-                {diagnosticsData?.accountsWithLinkIssues ?? "—"}
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {diagnosticsData?.linkedAccounts ?? 0} linked account
-                {(diagnosticsData?.linkedAccounts ?? 0) === 1 ? "" : "s"} total
+                {linkIssues === 0
+                  ? `All ${linkedAccounts} linked accounts look healthy.`
+                  : `${linkIssues} linked account${linkIssues === 1 ? "" : "s"} need attention out of ${linkedAccounts}.`}
               </p>
             </div>
           </div>
           <div className="mt-4 flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium">Backfill Teacher Cuts</p>
+              <p className="text-sm font-medium">Fix Missing Teacher Earnings</p>
               <p className="text-xs text-muted-foreground">
-                Creates missing teacher Commission rows for all active relationships.
-                Safe to run multiple times.
+                Rebuilds older teacher earnings that may have been missed.
+                You usually do not need this.
               </p>
             </div>
             <Button
@@ -504,14 +459,15 @@ export default function AdminPage() {
               disabled={backfillMutation.isPending}
             >
               <RefreshCw className={`h-4 w-4 ${backfillMutation.isPending ? "animate-spin" : ""}`} />
-              {backfillMutation.isPending ? "Running…" : "Run Backfill"}
+              {backfillMutation.isPending ? "Running..." : "Fix History"}
             </Button>
           </div>
           <div className="flex items-center justify-between border-t border-border/50 pt-4 mt-1">
             <div>
-              <p className="text-sm font-medium">Sync Paid History</p>
+              <p className="text-sm font-medium">Refresh Paid Amounts</p>
               <p className="text-xs text-muted-foreground">
-                Pulls all paid commissions from upstream and marks them PAID here. One-time baseline sync.
+                Checks older payouts and updates paid amounts here if they are
+                behind. You usually only need this for historical cleanup.
               </p>
             </div>
             <Button
@@ -522,26 +478,21 @@ export default function AdminPage() {
               disabled={syncPaidMutation.isPending}
             >
               <RefreshCw className={`h-4 w-4 ${syncPaidMutation.isPending ? "animate-spin" : ""}`} />
-              {syncPaidMutation.isPending ? "Syncing…" : "Sync Paid"}
+              {syncPaidMutation.isPending ? "Checking..." : "Refresh Paid"}
             </Button>
           </div>
           <div className="flex items-center justify-between border-t border-border/50 pt-4 mt-1">
             <div>
-              <p className="text-sm font-medium">Send Test Notification</p>
+              <p className="text-sm font-medium">Send Test Alert</p>
               <p className="text-xs text-muted-foreground">
-                Sends a real notification to your own admin account so you can verify push delivery on this device.
+                Sends one real alert to your admin account so you can test app
+                notifications on your phone.
               </p>
               {typeof diagnosticsData?.currentAdminDeviceTokens === "number" && (
                 <p className="mt-1 text-xs text-muted-foreground">
-                  This admin account currently has{" "}
-                  <span className="font-medium text-foreground">
-                    {diagnosticsData.currentAdminDeviceTokens}
-                  </span>{" "}
-                  registered push endpoint
-                  {diagnosticsData.currentAdminDeviceTokens === 1 ? "" : "s"}.
-                  {diagnosticsData.currentAdminDeviceTokens > 1
-                    ? " A single test can fan out to each live endpoint until cleanup finishes."
-                    : ""}
+                  {currentAdminDeviceTokens <= 1
+                    ? "This admin account currently has 1 saved device. One test should create one phone alert."
+                    : `This admin account currently has ${currentAdminDeviceTokens} saved devices, so one test may reach more than one place.`}
                 </p>
               )}
             </div>
@@ -553,7 +504,7 @@ export default function AdminPage() {
               disabled={testNotificationMutation.isPending}
             >
               <Bell className="h-4 w-4" />
-              {testNotificationMutation.isPending ? "Sending..." : "Send Test"}
+              {testNotificationMutation.isPending ? "Sending..." : "Send Alert"}
             </Button>
           </div>
         </CardContent>
@@ -733,7 +684,6 @@ export default function AdminPage() {
           )}
         </CardContent>
       </Card>
-      </div>
-    </TooltipProvider>
+    </div>
   );
 }
