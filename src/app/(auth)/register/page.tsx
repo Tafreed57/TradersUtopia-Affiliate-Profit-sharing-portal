@@ -7,6 +7,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { BrandLogo } from "@/components/layout/brand-logo";
 import {
   Card,
   CardContent,
@@ -89,6 +90,9 @@ export default function RegisterPage() {
   return (
     <Card className="border-border/50">
       <CardHeader className="text-center">
+        <div className="mb-3 flex justify-center">
+          <BrandLogo href="/register" className="w-[260px]" priority />
+        </div>
         <CardTitle className="text-2xl font-bold tracking-tight">
           Create Account
         </CardTitle>

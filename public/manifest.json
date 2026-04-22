@@ -1,6 +1,6 @@
 {
   "name": "TradersUtopia Affiliate Portal",
-  "short_name": "TU Portal",
+  "short_name": "TradersUtopia",
   "description": "Track your affiliate commissions and marketing activity",
   "start_url": "/",
   "display": "standalone",

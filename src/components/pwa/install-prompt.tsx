@@ -57,7 +57,7 @@ export function InstallPrompt() {
       <div className="flex items-center gap-3 rounded-lg border bg-card p-3 shadow-lg">
         <Download className="h-5 w-5 shrink-0 text-primary" />
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium">Install TU Portal</p>
+          <p className="text-sm font-medium">Install TradersUtopia</p>
           <p className="text-xs text-muted-foreground">
             Add to your home screen for quick access
           </p>

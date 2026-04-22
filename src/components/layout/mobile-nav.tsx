@@ -17,6 +17,7 @@ import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { useAdmin } from "@/hooks/use-admin";
 import { useIsTeacher } from "@/hooks/use-teacher";
+import { BrandLogo } from "@/components/layout/brand-logo";
 
 const navItems = [
   { href: "/", label: "Dashboard", icon: Home },
@@ -41,13 +42,8 @@ export function MobileNav() {
 
   return (
     <div className="flex h-full flex-col bg-sidebar">
-      <div className="flex h-16 items-center gap-2 border-b border-border/50 px-6">
-        <div className="h-8 w-8 rounded-lg bg-primary flex items-center justify-center">
-          <span className="text-sm font-bold text-primary-foreground">TU</span>
-        </div>
-        <span className="font-semibold text-sidebar-foreground">
-          TradersUtopia
-        </span>
+      <div className="flex h-20 items-center border-b border-border/50 px-5">
+        <BrandLogo priority />
       </div>
 
       <nav className="flex-1 space-y-1 p-4">
