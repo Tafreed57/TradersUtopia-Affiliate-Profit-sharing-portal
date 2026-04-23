@@ -1500,8 +1500,11 @@ export function ManagedAffiliateWorkspace({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updates),
       }),
-    onSuccess: (result) => {
+    onSuccess: (result, updates) => {
       invalidateWorkspace();
+      if ("canBeTeacher" in updates) {
+        queryClient.invalidateQueries({ queryKey: ["students"] });
+      }
       if (result.autoRecalc?.updated) {
         toast.success(
           `Rates saved. ${result.autoRecalc.updated} unpaid commission${

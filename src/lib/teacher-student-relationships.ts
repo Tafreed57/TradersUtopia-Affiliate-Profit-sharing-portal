@@ -260,8 +260,35 @@ async function createArchiveRecordTx(
     cadToUsd,
   });
 
-  return tx.teacherStudentArchive.create({
-    data: {
+  const data = {
+    teacherStudentId: relationship.id,
+    activationSequence: relationship.activationSequence,
+    teacherId: relationship.teacherId,
+    studentId: relationship.studentId,
+    depth: relationship.depth,
+    teacherCut: relationship.teacherCut,
+    archivedAt: now,
+    archivedById,
+    archivedByRole,
+    archiveReason,
+    showInPreviousStudents,
+    snapshotUnpaidCad: summary.teacherUnpaidCad,
+    snapshotDueCad: summary.teacherDueCad,
+    snapshotPendingCad: summary.teacherPendingCad,
+    snapshotPaidCad: summary.teacherPaidCad,
+    snapshotCommissionCount: summary.commissionCount,
+    snapshotNextDueAt: summary.nextDueAt ? new Date(summary.nextDueAt) : null,
+  };
+
+  return tx.teacherStudentArchive.upsert({
+    where: {
+      teacherStudentId_activationSequence: {
+        teacherStudentId: relationship.id,
+        activationSequence: relationship.activationSequence,
+      },
+    },
+    create: data,
+    update: {
       teacherStudentId: relationship.id,
       activationSequence: relationship.activationSequence,
       teacherId: relationship.teacherId,
@@ -896,6 +923,11 @@ export async function getTeacherRelationshipEpisodeSummary(
 export async function archiveTeacherStudentRelationship(
   options: ArchiveRelationshipOptions
 ) {
+  // Fetch external/cache-backed currency data before opening the transaction.
+  // Holding a DB transaction open while waiting on exchange-rate refreshes can
+  // make high-history removals time out and surface as a generic archive error.
+  const cadToUsd = await getCadToUsdDecimal();
+
   return prisma.$transaction(async (tx) => {
     const relationship = await tx.teacherStudent.findUnique({
       where: { id: options.relationshipId },
@@ -922,7 +954,6 @@ export async function archiveTeacherStudentRelationship(
     }
 
     const now = new Date();
-    const cadToUsd = await getCadToUsdDecimal();
     const showInPreviousStudents = options.showInPreviousStudents ?? true;
     const archives = [
       await createArchiveRecordTx(tx, relationship, {
@@ -1039,7 +1070,7 @@ export async function archiveTeacherStudentRelationship(
       archiveId: archives[0].id,
       cascaded,
     };
-  });
+  }, { maxWait: 10_000, timeout: 30_000 });
 }
 
 export async function activateTeacherStudentRelationship(
