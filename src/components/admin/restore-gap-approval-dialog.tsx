@@ -19,7 +19,6 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from "@/components/ui/select";
 
 export type RestoreBackfillMode = "NONE" | "ALL" | "CUSTOM";
@@ -135,6 +134,17 @@ function getArchiveActorLabel(role: RestoreGapPreview["archivedByRole"]) {
       return "teacher action";
     default:
       return "system action";
+  }
+}
+
+function getGrantOptionLabel(mode: RestoreBackfillMode) {
+  switch (mode) {
+    case "ALL":
+      return "Grant all missed commissions";
+    case "CUSTOM":
+      return "Choose specific commissions";
+    default:
+      return "Grant none";
   }
 }
 
@@ -301,7 +311,9 @@ function RestoreGapApprovalDialogPanel({
                 }
               >
                 <SelectTrigger id="restore-grant-mode">
-                  <SelectValue placeholder="Choose what to grant back" />
+                  <span className="flex flex-1 text-left">
+                    {getGrantOptionLabel(backfillMode)}
+                  </span>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="NONE">Grant none</SelectItem>

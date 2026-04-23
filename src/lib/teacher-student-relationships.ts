@@ -698,9 +698,9 @@ async function collectRestoreGapEventsTx(
     studentId: string;
     teacherCut: Prisma.Decimal;
     archivedAt: Date;
-  }
+  },
+  cadToUsd: Decimal
 ) {
-  const cadToUsd = await getCadToUsdDecimal();
   const events = await tx.commissionEvent.findMany({
     where: {
       affiliateId: archive.studentId,
@@ -786,6 +786,7 @@ async function completeRestoreTx(
     backfillMode,
     selectedEventIds,
     requestToUpdate,
+    cadToUsd,
   }: {
     archive: {
       id: string;
@@ -801,12 +802,13 @@ async function completeRestoreTx(
     reviewNote: string | null;
     backfillMode: TeacherStudentBackfillMode;
     selectedEventIds: string[];
+    cadToUsd: Decimal;
     requestToUpdate?: {
       id: string;
     } | null;
   }
 ) {
-  const previews = await collectRestoreGapEventsTx(tx, archive);
+  const previews = await collectRestoreGapEventsTx(tx, archive, cadToUsd);
   const eligibleIds = new Set(
     previews.filter((item) => item.preview.canGrant).map((item) => item.raw.id)
   );
@@ -827,7 +829,6 @@ async function completeRestoreTx(
   });
 
   const chosenIdSet = new Set(chosenIds);
-  const cadToUsd = await getCadToUsdDecimal();
   let grantedCount = 0;
   let grantedAmountCad = new Decimal(0);
 
@@ -1110,7 +1111,8 @@ export async function getRestoreGapPreview(archiveId: string) {
     throw new Error("Archived relationship not found");
   }
 
-  const previews = await collectRestoreGapEventsTx(prisma, archive);
+  const cadToUsd = await getCadToUsdDecimal();
+  const previews = await collectRestoreGapEventsTx(prisma, archive, cadToUsd);
   const gapTotals = previews.reduce(
     (acc, item) => {
       acc.totalCount += 1;
@@ -1234,6 +1236,8 @@ export async function requestTeacherStudentRestore({
 export async function reviewTeacherStudentRestoreRequest(
   options: ReviewRestoreRequestOptions
 ) {
+  const cadToUsd = await getCadToUsdDecimal();
+
   return prisma.$transaction(async (tx) => {
     const request = await tx.teacherStudentRestoreRequest.findUnique({
       where: { id: options.requestId },
@@ -1280,12 +1284,15 @@ export async function reviewTeacherStudentRestoreRequest(
       reviewNote: options.reviewNote ?? null,
       backfillMode: options.backfillMode ?? "NONE",
       selectedEventIds: options.selectedEventIds ?? [],
+      cadToUsd,
       requestToUpdate: { id: request.id },
     });
-  });
+  }, { maxWait: 10_000, timeout: 30_000 });
 }
 
 export async function restoreTeacherStudentDirect(options: DirectRestoreOptions) {
+  const cadToUsd = await getCadToUsdDecimal();
+
   return prisma.$transaction(async (tx) => {
     const archive = await tx.teacherStudentArchive.findUnique({
       where: { id: options.archiveId },
@@ -1301,6 +1308,7 @@ export async function restoreTeacherStudentDirect(options: DirectRestoreOptions)
       reviewNote: options.reviewNote ?? null,
       backfillMode: options.backfillMode,
       selectedEventIds: options.selectedEventIds ?? [],
+      cadToUsd,
     });
-  });
+  }, { maxWait: 10_000, timeout: 30_000 });
 }
