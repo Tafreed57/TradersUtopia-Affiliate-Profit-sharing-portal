@@ -880,6 +880,17 @@ export default function StudentsPage() {
   const orphanedSubStudents = data?.orphanedSubStudents ?? [];
   const previousStudents = data?.previousStudents ?? [];
   const grandTotals = data?.grandTotals;
+  const activeStudents = [
+    ...directStudents,
+    ...directStudents.flatMap((student) => student.subStudents),
+    ...orphanedSubStudents,
+  ];
+  const activeRelationshipById = new Map(
+    activeStudents.map((student) => [student.relationshipId, student])
+  );
+  const returnedArchiveCount = previousStudents.filter((student) =>
+    activeRelationshipById.has(student.relationshipId)
+  ).length;
   // Count both nested sub-students (under a direct parent) AND orphaned ones
   // (depth-2 relationships whose direct-parent link is missing). grandTotals
   // .indirectUnpaidCad aggregates over both, so indirectCount must too —
@@ -917,9 +928,9 @@ export default function StudentsPage() {
           <h1 className="text-2xl font-bold tracking-tight">Students</h1>
           <p className="text-muted-foreground">
             {data?.isTeacher
-              ? `${directStudents.length} direct student${directStudents.length !== 1 ? "s" : ""}${indirectCount > 0 ? `, ${indirectCount} indirect` : ""}${previousCount > 0 ? `, ${previousCount} previous` : ""}`
+              ? `${directStudents.length} direct student${directStudents.length !== 1 ? "s" : ""}${indirectCount > 0 ? `, ${indirectCount} indirect` : ""}${previousCount > 0 ? `, ${previousCount} archived period${previousCount === 1 ? "" : "s"}` : ""}`
               : previousCount > 0
-              ? `${previousCount} previous student${previousCount === 1 ? "" : "s"} with preserved payout history`
+              ? `${previousCount} archived period${previousCount === 1 ? "" : "s"} with preserved payout history`
               : data?.canBeTeacher || isAdmin
               ? "Propose students for admin approval"
               : ""}
@@ -939,6 +950,7 @@ export default function StudentsPage() {
           totals={grandTotals}
           indirectCount={indirectCount}
           previousCount={previousCount}
+          returnedArchiveCount={returnedArchiveCount}
           format={format}
           onRefresh={() => refetch()}
           isRefreshing={isFetching}
@@ -1007,24 +1019,31 @@ export default function StudentsPage() {
       {previousStudents.length > 0 && (
         <div>
           <div className="mb-3">
-            <h2 className="text-lg font-semibold">Previous Students</h2>
+            <h2 className="text-lg font-semibold">Previous Student History</h2>
             <p className="text-sm text-muted-foreground">
-              Archived students stay here so their already-earned payouts can keep
-              moving from holding to paid, even while they are off your active roster.
+              Each card is a closed relationship period. If a student returns, the
+              old period stays here while the current period appears above.
             </p>
           </div>
           <div className="space-y-4">
-            {previousStudents.map((student) => (
-              <PreviousStudentCard
-                key={`${student.archiveId}:${student.relationshipSequence}`}
-                student={student}
-                format={format}
-                onViewDetail={() => setSelectedStudent(student)}
-                onRequestSubmitted={() =>
-                  queryClient.invalidateQueries({ queryKey: ["students"] })
-                }
-              />
-            ))}
+            {previousStudents.map((student) => {
+              const activeRelationship = activeRelationshipById.get(
+                student.relationshipId
+              );
+
+              return (
+                <PreviousStudentCard
+                  key={`${student.archiveId}:${student.relationshipSequence}`}
+                  student={student}
+                  activeRelationship={activeRelationship}
+                  format={format}
+                  onViewDetail={() => setSelectedStudent(student)}
+                  onRequestSubmitted={() =>
+                    queryClient.invalidateQueries({ queryKey: ["students"] })
+                  }
+                />
+              );
+            })}
           </div>
         </div>
       )}
@@ -1036,6 +1055,7 @@ function GrandTotalSummary({
   totals,
   indirectCount,
   previousCount,
+  returnedArchiveCount,
   format,
   onRefresh,
   isRefreshing,
@@ -1043,6 +1063,7 @@ function GrandTotalSummary({
   totals: GrandTotals;
   indirectCount: number;
   previousCount: number;
+  returnedArchiveCount: number;
   format: (amount: number, inputCurrency?: "CAD" | "USD") => string;
   onRefresh: () => void;
   isRefreshing: boolean;
@@ -1072,7 +1093,7 @@ function GrandTotalSummary({
               {format(totals.totalPaidCad, "CAD")}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Active roster {format(totals.activeUnpaidCad, "CAD")} | Previous students{" "}
+              Active roster {format(totals.activeUnpaidCad, "CAD")} | Archived history{" "}
               {format(totals.archivedUnpaidCad, "CAD")}
             </p>
           </div>
@@ -1091,10 +1112,15 @@ function GrandTotalSummary({
         <div className="mt-5 space-y-3">
           {previousCount > 0 && (
             <div className="rounded-xl border border-border/50 bg-muted/10 px-3 py-2 text-xs text-muted-foreground">
-              {previousCount} previous student{previousCount === 1 ? "" : "s"} still have{" "}
+              {previousCount} archived period{previousCount === 1 ? "" : "s"} still have{" "}
               {format(totals.archivedUnpaidCad, "CAD")} unpaid and{" "}
-              {format(totals.archivedPaidCad, "CAD")} paid tracked outside your active
-              roster.
+              {format(totals.archivedPaidCad, "CAD")} paid tracked separately
+              from the active roster
+              {returnedArchiveCount > 0
+                ? `, including ${returnedArchiveCount} period${
+                    returnedArchiveCount === 1 ? "" : "s"
+                  } for student${returnedArchiveCount === 1 ? "" : "s"} who returned.`
+                : "."}
             </div>
           )}
           <div>
@@ -1407,20 +1433,28 @@ function StudentCard({
 
 function PreviousStudentCard({
   student,
+  activeRelationship,
   format,
   onViewDetail,
   onRequestSubmitted,
 }: {
   student: PreviousStudent;
+  activeRelationship?: Student;
   format: (amount: number, inputCurrency?: "CAD" | "USD") => string;
   onViewDetail: () => void;
   onRequestSubmitted: () => void;
 }) {
   const [requestDialogOpen, setRequestDialogOpen] = useState(false);
+  const isActiveAgain = Boolean(activeRelationship);
+  const currentPeriodLabel =
+    activeRelationship &&
+    activeRelationship.relationshipSequence !== student.relationshipSequence
+      ? `Current period #${activeRelationship.relationshipSequence}`
+      : "Current period";
 
   return (
     <>
-      {!student.pendingRestoreRequest && (
+      {!student.pendingRestoreRequest && !isActiveAgain && (
         <RequestStudentReturnDialog
           student={student}
           open={requestDialogOpen}
@@ -1447,8 +1481,16 @@ function PreviousStudentCard({
                     variant="default"
                     className="bg-muted/20 text-muted-foreground border-border/60"
                   >
-                    Previous student
+                    Archived period #{student.relationshipSequence}
                   </Badge>
+                  {isActiveAgain && (
+                    <Badge
+                      variant="default"
+                      className="bg-success/15 text-success border-success/30"
+                    >
+                      Active again
+                    </Badge>
+                  )}
                   {student.pendingRestoreRequest && (
                     <Badge
                       variant="default"
@@ -1464,6 +1506,12 @@ function PreviousStudentCard({
                   {formatArchiveActor(student.archivedByRole)}
                   {student.archiveReason ? ` - ${student.archiveReason}` : ""}
                 </p>
+                {isActiveAgain && (
+                  <p className="mt-1 text-xs text-success">
+                    {currentPeriodLabel} is live above. This card is only the
+                    closed period before removal.
+                  </p>
+                )}
               </div>
             </div>
 
@@ -1477,6 +1525,11 @@ function PreviousStudentCard({
                   <RotateCcw className="mr-1 h-3.5 w-3.5" />
                   Awaiting Admin
                 </Button>
+              ) : isActiveAgain ? (
+                <Button variant="ghost" size="sm" disabled>
+                  <RotateCcw className="mr-1 h-3.5 w-3.5" />
+                  Already Active
+                </Button>
               ) : (
                 <Button size="sm" onClick={() => setRequestDialogOpen(true)}>
                   <RotateCcw className="mr-1 h-3.5 w-3.5" />
@@ -1488,25 +1541,25 @@ function PreviousStudentCard({
 
           <div className="mt-4 grid gap-3 sm:grid-cols-4">
             <div className="rounded-xl border border-border/50 bg-background/40 p-3">
-              <p className="text-xs text-muted-foreground">Current unpaid</p>
+              <p className="text-xs text-muted-foreground">Archive unpaid</p>
               <p className="mt-1 text-sm font-semibold text-success">
                 {format(student.teacherUnpaidCad, "CAD")}
               </p>
             </div>
             <div className="rounded-xl border border-border/50 bg-background/40 p-3">
-              <p className="text-xs text-muted-foreground">Due now</p>
+              <p className="text-xs text-muted-foreground">Archive due now</p>
               <p className="mt-1 text-sm font-semibold text-info">
                 {format(student.teacherDueCad, "CAD")}
               </p>
             </div>
             <div className="rounded-xl border border-border/50 bg-background/40 p-3">
-              <p className="text-xs text-muted-foreground">In holding</p>
+              <p className="text-xs text-muted-foreground">Archive holding</p>
               <p className="mt-1 text-sm font-semibold">
                 {format(student.teacherPendingCad, "CAD")}
               </p>
             </div>
             <div className="rounded-xl border border-border/50 bg-background/40 p-3">
-              <p className="text-xs text-muted-foreground">Paid</p>
+              <p className="text-xs text-muted-foreground">Archive paid</p>
               <p className="mt-1 text-sm font-semibold">
                 {format(student.teacherPaidCad, "CAD")}
               </p>
@@ -1514,13 +1567,22 @@ function PreviousStudentCard({
           </div>
 
           <div className="mt-4 rounded-xl border border-border/50 bg-background/40 px-3 py-2 text-xs text-muted-foreground">
-            Snapshot at removal: unpaid {format(student.snapshotUnpaidCad, "CAD")} |
-            paid {format(student.snapshotPaidCad, "CAD")} | {student.snapshotCommissionCount}{" "}
+            Removal snapshot, not current roster totals: unpaid{" "}
+            {format(student.snapshotUnpaidCad, "CAD")} | paid{" "}
+            {format(student.snapshotPaidCad, "CAD")} | {student.snapshotCommissionCount}{" "}
             commission{student.snapshotCommissionCount === 1 ? "" : "s"}
             {student.snapshotNextDueAt
               ? ` | next release ${formatShortDate(student.snapshotNextDueAt)}`
               : ""}
           </div>
+
+          {isActiveAgain && (
+            <div className="mt-3 rounded-xl border border-success/25 bg-success/10 px-3 py-2 text-xs text-success">
+              History is split by relationship period: this archive shows
+              earnings created before the removal date; new earnings after the
+              return are tracked in the active student card.
+            </div>
+          )}
 
           {student.pendingRestoreRequest?.requestNote && (
             <p className="mt-3 text-xs text-muted-foreground">
