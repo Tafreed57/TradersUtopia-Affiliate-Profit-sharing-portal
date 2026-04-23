@@ -76,6 +76,12 @@ interface Student {
     | "error"
     | "not-linked";
   fetchedAt: string | null;
+  hasArchivedHistory?: boolean;
+  priorPeriodsCount?: number;
+  priorUnpaidCad?: number;
+  priorPaidCad?: number;
+  priorCommissionCount?: number;
+  latestArchivedAt?: string | null;
 }
 
 interface DirectStudent extends Student {
@@ -308,6 +314,23 @@ function StudentDetailSheet({
               Next release {formatShortDate(data.nextDueAt)}
             </p>
           )}
+          {student?.hasArchivedHistory && (
+            <div className="pb-4">
+              <div className="rounded-xl border border-success/25 bg-success/10 px-3 py-2 text-xs text-success">
+                This sheet is showing current period #{student.relationshipSequence}
+                only. Previous periods are still tracked on the Students page.
+                {data?.commissionTotal === 0
+                  ? " No new commissions have landed in this period yet."
+                  : ""}
+                {` Earlier periods still hold ${format(
+                  student.priorUnpaidCad ?? 0,
+                  "CAD"
+                )} unpaid and ${format(student.priorPaidCad ?? 0, "CAD")} paid across ${
+                  student.priorCommissionCount ?? 0
+                } commissions.`}
+              </div>
+            </div>
+          )}
         </SheetHeader>
 
         {isLoading ? (
@@ -330,7 +353,9 @@ function StudentDetailSheet({
             <TabsContent value="commissions" className="flex-1 space-y-2 overflow-y-auto px-4 py-3">
               {!data?.commissions.length ? (
                 <p className="py-8 text-center text-sm text-muted-foreground">
-                  No commissions yet
+                  {student?.hasArchivedHistory
+                    ? "No commissions yet in this relationship period"
+                    : "No commissions yet"}
                 </p>
               ) : (
                 data.commissions.map((c) => {
@@ -880,9 +905,46 @@ export default function StudentsPage() {
   const orphanedSubStudents = data?.orphanedSubStudents ?? [];
   const previousStudents = data?.previousStudents ?? [];
   const grandTotals = data?.grandTotals;
+  const previousStudentsByRelationship = new Map<string, PreviousStudent[]>();
+  for (const previousStudent of previousStudents) {
+    const existing =
+      previousStudentsByRelationship.get(previousStudent.relationshipId) ?? [];
+    existing.push(previousStudent);
+    previousStudentsByRelationship.set(previousStudent.relationshipId, existing);
+  }
+  const enrichStudent = <T extends Student>(student: T): T => {
+    const priorPeriods =
+      previousStudentsByRelationship.get(student.relationshipId) ?? [];
+
+    if (priorPeriods.length === 0) {
+      return student;
+    }
+
+    return {
+      ...student,
+      hasArchivedHistory: true,
+      priorPeriodsCount: priorPeriods.length,
+      priorUnpaidCad: priorPeriods.reduce(
+        (sum, period) => sum + period.teacherUnpaidCad,
+        0
+      ),
+      priorPaidCad: priorPeriods.reduce(
+        (sum, period) => sum + period.teacherPaidCad,
+        0
+      ),
+      priorCommissionCount: priorPeriods.reduce(
+        (sum, period) => sum + period.conversionCount,
+        0
+      ),
+      latestArchivedAt: priorPeriods[0]?.archivedAt ?? null,
+    };
+  };
+  const directStudentsForDisplay = directStudents.map((student) =>
+    enrichStudent(student)
+  );
   const activeStudents = [
-    ...directStudents,
-    ...directStudents.flatMap((student) => student.subStudents),
+    ...directStudentsForDisplay,
+    ...directStudentsForDisplay.flatMap((student) => student.subStudents),
     ...orphanedSubStudents,
   ];
   const activeRelationshipById = new Map(
@@ -897,7 +959,7 @@ export default function StudentsPage() {
   // otherwise a teacher whose only indirect earnings come from orphans would
   // have their sub-students progress bar hidden despite a nonzero total.
   const indirectCount =
-    directStudents.reduce((n, s) => n + s.subStudents.length, 0) +
+    directStudentsForDisplay.reduce((n, s) => n + s.subStudents.length, 0) +
     orphanedSubStudents.length;
   const previousCount = previousStudents.length;
 
@@ -928,7 +990,7 @@ export default function StudentsPage() {
           <h1 className="text-2xl font-bold tracking-tight">Students</h1>
           <p className="text-muted-foreground">
             {data?.isTeacher
-              ? `${directStudents.length} direct student${directStudents.length !== 1 ? "s" : ""}${indirectCount > 0 ? `, ${indirectCount} indirect` : ""}${previousCount > 0 ? `, ${previousCount} archived period${previousCount === 1 ? "" : "s"}` : ""}`
+              ? `${directStudentsForDisplay.length} direct student${directStudentsForDisplay.length !== 1 ? "s" : ""}${indirectCount > 0 ? `, ${indirectCount} indirect` : ""}${previousCount > 0 ? `, ${previousCount} archived period${previousCount === 1 ? "" : "s"}` : ""}`
               : previousCount > 0
               ? `${previousCount} archived period${previousCount === 1 ? "" : "s"} with preserved payout history`
               : data?.canBeTeacher || isAdmin
@@ -957,7 +1019,9 @@ export default function StudentsPage() {
         />
       )}
 
-      {!data?.isTeacher && directStudents.length === 0 && previousStudents.length === 0 && (
+      {!data?.isTeacher &&
+        directStudentsForDisplay.length === 0 &&
+        previousStudents.length === 0 && (
         <Card>
           <CardContent className="py-12 text-center">
             <Users className="mx-auto mb-3 h-10 w-10 text-muted-foreground/40" />
@@ -970,11 +1034,11 @@ export default function StudentsPage() {
         </Card>
       )}
 
-      {directStudents.length > 0 && (
+      {directStudentsForDisplay.length > 0 && (
         <div>
           <h2 className="mb-3 text-lg font-semibold">Your Students</h2>
           <div className="space-y-4">
-            {directStudents.map((student) => (
+            {directStudentsForDisplay.map((student) => (
               <StudentCard
                 key={student.id}
                 student={student}
@@ -1243,12 +1307,27 @@ function StudentCard({
           </Avatar>
 
           <div className="flex-1 min-w-0">
-            <p className="font-medium truncate">
-              {student.name ?? student.email}
-            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="font-medium truncate">
+                {student.name ?? student.email}
+              </p>
+              {student.hasArchivedHistory && (
+                <Badge
+                  variant="default"
+                  className="bg-success/15 text-success border-success/30"
+                >
+                  Current period #{student.relationshipSequence}
+                </Badge>
+              )}
+            </div>
             <p className="text-xs text-muted-foreground truncate">
               {student.email}
             </p>
+            {student.hasArchivedHistory && (
+              <p className="mt-1 text-xs text-success">
+                Returned student. Older earnings stay in Previous Student History.
+              </p>
+            )}
           </div>
 
           {student.dataStale && (
@@ -1304,6 +1383,20 @@ function StudentCard({
             ? ` · next release ${formatShortDate(student.nextDueAt)}`
             : ""}
         </div>
+
+        {student.hasArchivedHistory && (
+          <div className="mt-3 rounded-xl border border-success/25 bg-success/10 px-3 py-2 text-xs text-success">
+            This active card only tracks current period #{student.relationshipSequence}.
+            {student.conversionCount === 0
+              ? ` No new commissions have landed in this period yet. Earlier periods still hold ${format(
+                  student.priorUnpaidCad ?? 0,
+                  "CAD"
+                )} unpaid and ${format(student.priorPaidCad ?? 0, "CAD")} paid across ${
+                  student.priorCommissionCount ?? 0
+                } commissions.`
+              : " Earlier periods are still kept below separately."}
+          </div>
+        )}
 
         <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-3">
             <div className="text-xs text-muted-foreground">
