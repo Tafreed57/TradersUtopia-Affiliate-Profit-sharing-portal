@@ -8,6 +8,8 @@ import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
 import { activateTeacherStudentRelationship } from "@/lib/teacher-student-relationships";
 
+export const maxDuration = 300;
+
 const pairSchema = z.object({
   teacherId: z.string().min(1),
   studentId: z.string().min(1),
@@ -143,8 +145,7 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[admin-pair] failed: ${msg}`);
+    console.error("[admin-pair] failed:", err);
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 }

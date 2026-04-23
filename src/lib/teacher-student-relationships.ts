@@ -1077,8 +1077,12 @@ export async function archiveTeacherStudentRelationship(
 export async function activateTeacherStudentRelationship(
   options: ActivateRelationshipOptions
 ) {
-  return prisma.$transaction((tx) =>
-    activateTeacherStudentRelationshipTx(tx, options)
+  // Historical teacher backfill can touch hundreds of existing events.
+  // Use the same widened window as the archive/restore flows so approval
+  // does not die on Prisma's default 5s interactive transaction timeout.
+  return prisma.$transaction(
+    (tx) => activateTeacherStudentRelationshipTx(tx, options),
+    { maxWait: 10_000, timeout: 180_000 }
   );
 }
 

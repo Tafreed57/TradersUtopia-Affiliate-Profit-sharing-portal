@@ -7,6 +7,8 @@ import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
 import { activateTeacherStudentRelationship } from "@/lib/teacher-student-relationships";
 
+export const maxDuration = 300;
+
 const schema = z.object({
   action: z.enum(["approve", "reject"]),
   reviewNote: z.string().max(500).optional(),
@@ -114,8 +116,7 @@ export async function PATCH(
         { status: 400 }
       );
     }
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[teacher-proposals] patch failed for ${id}: ${msg}`);
+    console.error(`[teacher-proposals] patch failed for ${id}:`, err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
