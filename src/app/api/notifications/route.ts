@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 
 import { authOptions } from "@/lib/auth-options";
+import { sanitizeNotificationCopy } from "@/lib/notification-privacy";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -40,8 +41,21 @@ export async function GET(req: NextRequest) {
     }),
   ]);
 
+  const safeNotifications = notifications.map((notification) => {
+    const copy = sanitizeNotificationCopy(
+      notification.type,
+      notification.title,
+      notification.body
+    );
+    return {
+      ...notification,
+      title: copy.title,
+      body: copy.body,
+    };
+  });
+
   return NextResponse.json({
-    data: notifications,
+    data: safeNotifications,
     unreadCount,
     pagination: {
       page,

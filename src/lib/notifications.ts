@@ -5,6 +5,7 @@ import type {
   PushStatus,
 } from "@prisma/client";
 
+import { sanitizeNotificationCopy } from "@/lib/notification-privacy";
 import { resolveNotificationHref } from "@/lib/notification-links";
 import { prisma } from "@/lib/prisma";
 
@@ -69,20 +70,27 @@ export async function createNotification({
   data,
 }: CreateNotificationParams) {
   const notificationData = normalizeNotificationData(type, data);
+  const copy = sanitizeNotificationCopy(type, title, body);
 
   const notification = await prisma.notification.create({
     data: {
       userId,
       type,
-      title,
-      body,
+      title: copy.title,
+      body: copy.body,
       data: notificationData as Prisma.InputJsonValue,
     },
   });
 
   let pushResult: PushAttemptResult;
   try {
-    pushResult = await sendPush(notification.id, userId, title, body, notificationData);
+    pushResult = await sendPush(
+      notification.id,
+      userId,
+      copy.title,
+      copy.body,
+      notificationData
+    );
   } catch (error) {
     console.error(
       `[notifications] push delivery failed for notification ${notification.id}:`,

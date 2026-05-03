@@ -96,8 +96,8 @@ export async function PATCH(
     await createNotification({
       userId: proposal.studentId,
       type: "NEW_STUDENT_LINKED",
-      title: "You've been added to a teacher",
-      body: `${teacherLabel} is now earning a cut from your commissions.`,
+      title: "Teacher link updated",
+      body: `${teacherLabel} is now listed as one of your teachers.`,
       data: { teacherId: proposal.teacherId, href: "/students" },
     });
     await createNotification({

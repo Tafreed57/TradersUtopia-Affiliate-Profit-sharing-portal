@@ -128,7 +128,7 @@ export async function POST(
         throw new Error("No commission plans found");
       }
 
-      let selectedCampaign = campaign_id
+      const selectedCampaign = campaign_id
         ? campaigns.data.find((c) => c.id === campaign_id)
         : campaigns.data.find((c) => c.default) ?? campaigns.data[0];
 

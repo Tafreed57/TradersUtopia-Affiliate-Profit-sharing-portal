@@ -66,8 +66,8 @@ export async function POST(req: NextRequest) {
     await createNotification({
       userId: archive.student.id,
       type: "NEW_STUDENT_LINKED",
-      title: "You've been added to a teacher",
-      body: `${teacherLabel} is now earning a cut from your commissions.`,
+      title: "Teacher link updated",
+      body: `${teacherLabel} is listed as one of your teachers again.`,
       data: { teacherId: archive.teacher.id, href: "/students" },
     });
 

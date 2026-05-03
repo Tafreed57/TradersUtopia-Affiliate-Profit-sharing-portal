@@ -1,12 +1,11 @@
 "use client";
 
 import { AlertTriangle, CalendarCheck, Clock, Plus } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState, useSyncExternalStore } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -42,6 +41,10 @@ function getLocalDate() {
 
 function getTimezone() {
   return Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+
+function subscribeClientValue() {
+  return () => {};
 }
 
 function formatDate(dateStr: string) {
@@ -136,13 +139,9 @@ export default function AttendancePage() {
     });
   }, [note, submitMutation]);
 
-  // Defer client-only values to avoid SSR hydration mismatch
-  const [today, setToday] = useState("");
-  const [timezone, setTimezone] = useState("");
-  useEffect(() => {
-    setToday(getLocalDate());
-    setTimezone(getTimezone());
-  }, []);
+  // Defer client-only values to avoid SSR hydration mismatch.
+  const today = useSyncExternalStore(subscribeClientValue, getLocalDate, () => "");
+  const timezone = useSyncExternalStore(subscribeClientValue, getTimezone, () => "");
 
   // Build calendar data
   const attendanceDates = new Set(data?.data.map((r) => r.date) ?? []);
