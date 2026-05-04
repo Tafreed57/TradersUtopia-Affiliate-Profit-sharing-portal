@@ -79,17 +79,11 @@ export default function DashboardPage() {
       if (!res.ok) throw new Error("Failed to submit");
       return res.json();
     },
-    onSuccess: (result) => {
+    onSuccess: () => {
       setNote("");
       queryClient.invalidateQueries({ queryKey: ["dashboard-stats"] });
       queryClient.invalidateQueries({ queryKey: ["attendance"] });
-      if (result.reevaluatedCommissions > 0) {
-        toast.success(
-          `Attendance submitted! ${result.reevaluatedCommissions} commission(s) restored.`
-        );
-      } else {
-        toast.success("Attendance submitted");
-      }
+      toast.success("Attendance submitted");
     },
     onError: () => toast.error("Failed to submit attendance"),
   });
@@ -283,7 +277,7 @@ export default function DashboardPage() {
           </CardHeader>
           <CardContent className="space-y-3">
             <p className="text-sm text-muted-foreground">
-              Submit your attendance to stay eligible for commissions.
+              Log today&apos;s marketing activity.
             </p>
             <Input
               placeholder="Activity note (optional)"

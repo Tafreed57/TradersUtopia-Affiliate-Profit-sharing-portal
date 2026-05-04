@@ -91,7 +91,6 @@ export async function syncAffiliateCommissionCatalog(args: {
           campaignName: snapshot.campaignName,
           rawPayload: commission as unknown as Record<string, unknown>,
         },
-        { skipAttendanceCheck: true }
       );
       if (result.success && !result.skipped) {
         created++;

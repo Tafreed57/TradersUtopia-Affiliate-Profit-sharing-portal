@@ -412,6 +412,7 @@ function formatAttendanceTime(iso: string) {
 
 function friendlyForfeitureReason(raw: string | null) {
   if (!raw) return null;
+  if (raw === "No attendance submitted for conversion date") return null;
   if (raw === "rate_not_set") {
     return "Pending until commission rates are configured";
   }
@@ -2057,7 +2058,7 @@ export function ManagedAffiliateWorkspace({
                           </div>
                           <div className="rounded-xl border border-border/50 bg-muted/20 p-3">
                             <p className="text-xs text-muted-foreground">
-                              Started eligibility
+                              Has attendance
                             </p>
                             <p className="mt-1 text-lg font-semibold">
                               {attendanceQuery.data?.hasEverSubmitted ? "Yes" : "No"}
@@ -2463,8 +2464,8 @@ export function ManagedAffiliateWorkspace({
                       This affiliate hasn&apos;t started attendance yet
                     </p>
                     <p className="text-sm text-muted-foreground">
-                      If a commission lands on a day without attendance after
-                      eligibility starts, the affiliate&apos;s cut is forfeited.
+                      Attendance is an activity log only; commissions are not
+                      gated by attendance submissions.
                     </p>
                   </div>
                 </CardContent>

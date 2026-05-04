@@ -216,6 +216,12 @@ function formatArchiveActor(role: PreviousStudent["archivedByRole"]) {
   }
 }
 
+function friendlyForfeitureReason(raw: string | null): string | null {
+  if (!raw) return null;
+  if (raw === "No attendance submitted for conversion date") return null;
+  return raw.replace(/_/g, " ");
+}
+
 function StudentDetailSheet({
   student,
   viewerId,
@@ -403,9 +409,9 @@ function StudentDetailSheet({
                             {c.campaignName}
                           </p>
                         )}
-                        {c.forfeitureReason && (
+                        {friendlyForfeitureReason(c.forfeitureReason) && (
                           <p className="text-xs capitalize text-muted-foreground">
-                            {c.forfeitureReason.replace(/_/g, " ")}
+                            {friendlyForfeitureReason(c.forfeitureReason)}
                           </p>
                         )}
                       </div>

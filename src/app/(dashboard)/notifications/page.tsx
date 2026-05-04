@@ -45,7 +45,7 @@ interface NotificationsResponse {
 
 const TYPE_LABELS: Record<string, string> = {
   CONVERSION_RECEIVED: "Conversion",
-  ATTENDANCE_FORFEITURE_ALERT: "Forfeiture",
+  ATTENDANCE_FORFEITURE_ALERT: "Commission",
   PROMO_CODE_REQUEST_RECEIVED: "Promo Request",
   PROMO_CODE_APPROVED: "Promo Approved",
   PROMO_CODE_REJECTED: "Promo Rejected",

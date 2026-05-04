@@ -4,7 +4,6 @@ import { z } from "zod";
 
 import { getAffiliateAttendanceData } from "@/lib/affiliate-portal-data";
 import { authOptions } from "@/lib/auth-options";
-import { reevaluateCommission } from "@/lib/commission-engine";
 import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
 
@@ -17,8 +16,7 @@ const submitSchema = z.object({
 /**
  * POST /api/attendance
  *
- * Submit an attendance record. After submission, re-evaluate any
- * forfeited commissions for that date in case attendance was late.
+ * Submit an attendance record for marketing activity tracking.
  */
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions);
@@ -52,39 +50,15 @@ export async function POST(req: NextRequest) {
         userId: session.user.id,
         type: "FIRST_ATTENDANCE_RECORDED",
         title: "Attendance started",
-        body: "You've submitted your first attendance. Pending commissions on days you mark attendance will now flow through. Keep marking attendance on days you do marketing.",
+        body: "You've submitted your first attendance. Keep marking attendance on days you do marketing.",
         data: { href: "/attendance" },
       });
-    }
-
-    // Re-evaluate any forfeited commissions for this user — the engine's
-    // ±1-day window handles timezone edges. Pull unique rcids from the
-    // user's FORFEITED AFFILIATE splits.
-    const forfeitedSplits = await prisma.commissionSplit.findMany({
-      where: {
-        role: "AFFILIATE",
-        recipientId: session.user.id,
-        status: "FORFEITED",
-      },
-      select: { event: { select: { rewardfulCommissionId: true } } },
-    });
-
-    const rcids = new Set<string>();
-    for (const s of forfeitedSplits) {
-      if (s.event.rewardfulCommissionId) rcids.add(s.event.rewardfulCommissionId);
-    }
-
-    let reevaluated = 0;
-    for (const rcid of rcids) {
-      const result = await reevaluateCommission(rcid);
-      if (result.updated) reevaluated++;
     }
 
     return NextResponse.json(
       {
         id: attendance.id,
         date: attendance.date,
-        reevaluatedCommissions: reevaluated,
       },
       { status: 201 }
     );

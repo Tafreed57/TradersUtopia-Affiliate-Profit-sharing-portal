@@ -15,15 +15,13 @@ export type RecalcResult =
  *
  * Scope:
  *  - EARNED + PENDING affiliate splits: re-priced.
- *  - FORFEITED: frozen (affiliate earned 0; rate is moot; CEO absorbs is
- *    also rate-independent).
+ *  - FORFEITED: frozen for non-attendance reasons such as deactivation.
  *  - PAID + VOIDED: frozen.
  *
  * Side effects per re-priced split:
  *  - Affiliate split: new cutPercent + cutAmount.
- *    PENDING → EARNED when rate > 0 AND attendance passes the grace/±1-day
- *    rule; PENDING → FORFEITED when rate > 0 but attendance failed; PENDING
- *    stays PENDING when rate is still 0; EARNED stays EARNED.
+ *    PENDING → EARNED when rates are configured; PENDING stays PENDING while
+ *    rates are still unset; EARNED stays EARNED.
  *  - Event.ceoCut recomputed so fullAmount = affiliate + teachers + CEO.
  *  - Teacher splits for the same event flip PENDING → EARNED only when the
  *    affiliate split was promoted to EARNED (rate-independent teacher
@@ -86,7 +84,6 @@ export async function runRecalcPending(
           fullAmount: true,
           ceoCut: true,
           isRecurring: true,
-          conversionDate: true,
         },
       },
     },
@@ -96,7 +93,7 @@ export async function runRecalcPending(
     return { kind: "ok", updated: 0, teacherRowsAffected: 0 };
   }
 
-  // Pre-load teacher cuts + attendance so each per-split decision is cheap.
+  // Pre-load teacher cuts so each per-split decision is cheap.
   const eventIds = splits.map((s) => s.event.id);
   const teacherSplits = await prisma.commissionSplit.findMany({
     where: { eventId: { in: eventIds }, role: "TEACHER" },
@@ -111,37 +108,6 @@ export async function runRecalcPending(
     );
   }
 
-  const allAttendance = await prisma.attendance.findMany({
-    where: { userId: affiliateId },
-    select: { date: true },
-  });
-  const attendanceSet = new Set(allAttendance.map((a) => a.date));
-  const earliestAttendanceDate =
-    allAttendance.length > 0
-      ? allAttendance.reduce(
-          (min, a) => (a.date < min ? a.date : min),
-          allAttendance[0].date
-        )
-      : null;
-
-  function hasAttendanceFor(conversionDate: Date): boolean {
-    const convDateStr = conversionDate.toISOString().slice(0, 10);
-    if (!earliestAttendanceDate || earliestAttendanceDate > convDateStr) {
-      return true;
-    }
-    const d0 = new Date(conversionDate);
-    const prev = new Date(d0);
-    prev.setUTCDate(prev.getUTCDate() - 1);
-    const next = new Date(d0);
-    next.setUTCDate(next.getUTCDate() + 1);
-    return (
-      attendanceSet.has(prev.toISOString().slice(0, 10)) ||
-      attendanceSet.has(convDateStr) ||
-      attendanceSet.has(next.toISOString().slice(0, 10))
-    );
-  }
-
-  const noAttendanceReason = "No attendance submitted for conversion date";
   let updated = 0;
   let teacherRowsAffected = 0;
 
@@ -168,24 +134,12 @@ export async function runRecalcPending(
     let promotedToEarned = false;
 
     if (shouldAttemptPromote) {
-      const hadAttendance = hasAttendanceFor(s.event.conversionDate);
-      if (hadAttendance) {
-        newStatus = "EARNED";
-        newForfeitureReason = null;
-        newForfeitedToCeo = false;
-        finalAffiliateCut = repricedAffiliateCut;
-        finalCeoCut = repricedCeoCut;
-        promotedToEarned = true;
-      } else {
-        // PENDING+rate_not_set but attendance failed: lock it as FORFEITED.
-        // CEO absorbs what the affiliate would have earned (independent of
-        // the rate now because affiliate gets 0).
-        newStatus = "FORFEITED";
-        newForfeitureReason = noAttendanceReason;
-        newForfeitedToCeo = true;
-        finalAffiliateCut = new Decimal(0);
-        finalCeoCut = fullAmount.sub(teacherCutTotal);
-      }
+      newStatus = "EARNED";
+      newForfeitureReason = null;
+      newForfeitedToCeo = false;
+      finalAffiliateCut = repricedAffiliateCut;
+      finalCeoCut = repricedCeoCut;
+      promotedToEarned = true;
     } else {
       // EARNED → re-priced; keeps status. Or PENDING with rate still 0 →
       // stays PENDING, cutAmount updates to reflect "rate × full" which is 0.

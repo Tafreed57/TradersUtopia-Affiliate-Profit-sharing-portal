@@ -9,11 +9,9 @@ import type { RewardfulCommission } from "@/lib/rewardful";
  * Historical commission backfill for a newly linked user.
  *
  * Pulls every commission from the upstream service for this user's affiliate
- * ID and feeds each one through `processConversion` with
- * `skipAttendanceCheck: true` — historical dates have no attendance records,
- * and per product decision all historical rows are treated as earned. Any
- * upstream historical rows already marked paid or voided are then synced
- * immediately so affiliates do not temporarily see stale states.
+ * ID and feeds each one through `processConversion`. Any upstream historical
+ * rows already marked paid or voided are then synced immediately so affiliates
+ * do not temporarily see stale states.
  *
  * Idempotent via the `idempotencyKey @unique` constraint inside
  * `processConversion` (keyed as `{rewardfulCommissionId}:aff:{id}` and
@@ -124,9 +122,7 @@ export async function runBackfill(userId: string): Promise<{
           failed++;
           continue;
         }
-        const result = await processConversion(conversion, {
-          skipAttendanceCheck: true,
-        });
+        const result = await processConversion(conversion);
         if (result.skipped) skipped++;
         else if (result.success) imported++;
         else failed++;

@@ -43,7 +43,7 @@ Click **Commissions** in the sidebar to see your full history. Each row shows:
 |---|---|
 | **Earned** | Counted, waiting to be paid |
 | **Paid** | Money has been sent to you |
-| **Forfeited** | Did not count (see Attendance below) |
+| **Forfeited** | Did not count because the account was not active |
 | **Pending** | Rate setup is still in progress — will convert to Earned once your rate is confirmed |
 | **Voided** | Sale was refunded or charged back |
 
@@ -51,25 +51,15 @@ You can filter by status and date range.
 
 ---
 
-## 4. Attendance — The Most Important New Thing
+## 4. Attendance
 
-This is the biggest change from before. **Commissions are now tied to whether you're actively marketing.**
+Attendance is your activity log for days you are actively marketing.
 
 ### How it works
 
 - On days you do marketing work, go to **Attendance** and submit an attendance record.
-- If a sale comes in on a day you **didn't** submit attendance, your cut is forfeited. (The sale still happens — you just don't earn from it.)
-- There's a **±1 day window** — the portal checks the day before, day of, and day after the sale to account for time zones.
-
-### What about your past commissions?
-
-You're safe. There's a grace rule: the portal does **not** forfeit any commission that came in *before* you submitted your first-ever attendance. Your entire pre-portal history is counted normally.
-
-Once you submit your first attendance, the rule activates from that day forward. So only start submitting when you're actually doing marketing work.
-
-### Forgot a day?
-
-If a sale was marked forfeited and you realize you actually did market that day, submit attendance for that date. The portal will automatically recover any forfeited commissions that now fall inside the attendance window.
+- You can submit multiple attendance records per day.
+- Attendance does not determine whether a commission is paid.
 
 ---
 
@@ -101,7 +91,6 @@ If you're *a* student of someone, nothing in your view changes. Their cut comes 
 The portal sends push notifications for:
 
 - New commissions earned
-- Commissions forfeited (missed attendance)
 - Promo code approved or rejected
 - Payment received
 
@@ -125,11 +114,8 @@ A: Sign out + sign back in. If they still don't appear, contact an admin.
 **Q: A sale got refunded — what happens?**
 A: The commission is automatically marked as **Voided** and you'll get a notification. If it had already been marked Paid, the payout is reversed.
 
-**Q: Why was my commission marked Forfeited?**
-A: You didn't submit attendance for that day (or the day before / day after). This is the attendance rule — submit attendance on marketing days going forward to prevent this.
-
 **Q: Can I submit attendance retroactively?**
-A: Yes — submit for any past date. If a forfeited commission from that date falls back into the window, it recovers automatically.
+A: Yes. Attendance is an activity log, so you can submit records for past marketing days.
 
 **Q: How do I know my teacher or mentor is getting their cut?**
 A: They see their cut separately in their own Students view. It doesn't affect your commission amount, which is already your share only.

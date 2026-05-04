@@ -2,7 +2,7 @@ import type { NotificationType } from "@prisma/client";
 
 const DEFAULT_NOTIFICATION_HREFS: Partial<Record<NotificationType, string>> = {
   CONVERSION_RECEIVED: "/commissions",
-  ATTENDANCE_FORFEITURE_ALERT: "/attendance",
+  ATTENDANCE_FORFEITURE_ALERT: "/commissions",
   PROMO_CODE_REQUEST_RECEIVED: "/promo-codes",
   PROMO_CODE_APPROVED: "/promo-codes",
   PROMO_CODE_REJECTED: "/promo-codes",

@@ -113,18 +113,11 @@ export default function AttendancePage() {
       }
       return res.json();
     },
-    onSuccess: (result) => {
+    onSuccess: () => {
       setNote("");
       queryClient.invalidateQueries({ queryKey: ["attendance"] });
       queryClient.invalidateQueries({ queryKey: ["dashboard-stats"] });
-      if (result.reevaluatedCommissions > 0) {
-        toast.success(
-          `Attendance submitted! ${result.reevaluatedCommissions} commission(s) restored.`
-        );
-        queryClient.invalidateQueries({ queryKey: ["commissions"] });
-      } else {
-        toast.success("Attendance submitted successfully");
-      }
+      toast.success("Attendance submitted successfully");
     },
     onError: (error: Error) => {
       toast.error(error.message);
@@ -160,7 +153,7 @@ export default function AttendancePage() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Attendance</h1>
         <p className="text-muted-foreground">
-          Submit your daily marketing activity to stay eligible for commissions
+          Log your daily marketing activity
         </p>
       </div>
 
@@ -169,16 +162,10 @@ export default function AttendancePage() {
           <CardContent className="flex gap-3 pt-6">
             <AlertTriangle className="mt-0.5 h-5 w-5 flex-shrink-0 text-warning" />
             <div className="space-y-1">
-              <p className="font-semibold">Your eligibility hasn&rsquo;t started yet</p>
+              <p className="font-semibold">No attendance submitted yet</p>
               <p className="text-sm text-muted-foreground">
-                You haven&rsquo;t marked attendance yet. If you don&rsquo;t
-                submit attendance on a day a commission comes in,{" "}
-                <strong className="text-foreground">
-                  you forfeit that commission
-                </strong>{" "}
-                — it goes to the CEO instead of you. Submitting attendance
-                below starts your eligibility from now on. Mark attendance on
-                every day you do marketing.
+                Mark attendance on days you do marketing so your activity
+                history stays complete.
               </p>
             </div>
           </CardContent>

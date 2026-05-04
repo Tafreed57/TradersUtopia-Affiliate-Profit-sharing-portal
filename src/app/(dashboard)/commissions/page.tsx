@@ -69,6 +69,7 @@ function formatConversionDate(iso: string) {
 
 function friendlyForfeitureReason(raw: string | null): string | null {
   if (!raw) return null;
+  if (raw === "No attendance submitted for conversion date") return null;
   if (raw === "rate_not_set") {
     return "Pending until your commission rate is set";
   }

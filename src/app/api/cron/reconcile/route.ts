@@ -178,11 +178,9 @@ export async function GET(req: NextRequest) {
 
           if (user.ratesLocked) {
             // Locked path: flip event.isRecurring for classification
-            // accuracy, but do NOT touch any split. Rewriting FORFEITED
-            // cutPercent here would leak post-lock rates into future
-            // attendance-recovery (reevaluateCommission reads the stored
-            // cutPercent). Pre-lock rate is preserved on all existing
-            // splits. EARNED money is also frozen as intended.
+            // accuracy, but do NOT touch any split. Pre-lock rate is
+            // preserved on all existing splits. EARNED money is also frozen
+            // as intended.
             await prisma.commissionEvent.update({
               where: { id: event.id },
               data: { isRecurring: newIsRecurring },
@@ -191,25 +189,16 @@ export async function GET(req: NextRequest) {
           } else {
             // Unlocked path: full classification repair + re-price.
             //
-            // Path A (EARNED/PENDING): full re-price. New cutAmount reflects
-            // the corrected classification × current rate. Event's ceoCut
+            // EARNED/PENDING: full re-price. New cutAmount reflects the
+            // corrected classification times the current rate. Event's ceoCut
             // recomputed to balance.
             //
-            // Path B (FORFEITED + attendance reason): flag-only. Affiliate
-            // earned 0, CEO absorbed. But the stored cutPercent is what
-            // reevaluateCommission will use later if the affiliate submits
-            // attendance — so if classification is wrong, the eventual
-            // recovery pays the wrong rate. Update cutPercent to track the
-            // corrected classification; leave cutAmount at 0 and
-            // event.ceoCut unchanged (FORFEITED's CEO absorb is rate-
-            // independent).
-            //
-            // Event update (path C) gates on EITHER path having landed.
+            // Event update gates on the split update having landed.
             // The nested-predicate requires an AFFILIATE split with the
-            // new cutPercent AND in an eligible status. If both paths
-            // no-op (e.g. affiliate split is PAID), event update no-ops
-            // too — classification locks with the frozen cutAmount.
-            const [earnedRes, forfeitedRes] = await prisma.$transaction([
+            // new cutPercent AND in an eligible status. If the split update
+            // no-ops (e.g. affiliate split is PAID/VOIDED/FORFEITED), event
+            // update no-ops too, so classification locks with frozen money.
+            const [earnedRes] = await prisma.$transaction([
               prisma.commissionSplit.updateMany({
                 where: {
                   eventId: event.id,
@@ -219,18 +208,6 @@ export async function GET(req: NextRequest) {
                 data: {
                   cutPercent: rateNum,
                   cutAmount: newAffiliateCut.toDecimalPlaces(2).toNumber(),
-                },
-              }),
-              prisma.commissionSplit.updateMany({
-                where: {
-                  eventId: event.id,
-                  role: "AFFILIATE",
-                  status: "FORFEITED",
-                  forfeitureReason:
-                    "No attendance submitted for conversion date",
-                },
-                data: {
-                  cutPercent: rateNum,
                 },
               }),
               prisma.commissionEvent.updateMany({
@@ -249,23 +226,8 @@ export async function GET(req: NextRequest) {
                   ceoCut: newCeoCut.toDecimalPlaces(2).toNumber(),
                 },
               }),
-              prisma.commissionEvent.updateMany({
-                where: {
-                  id: event.id,
-                  splits: {
-                    some: {
-                      role: "AFFILIATE",
-                      status: "FORFEITED",
-                      forfeitureReason:
-                        "No attendance submitted for conversion date",
-                      cutPercent: rateNum,
-                    },
-                  },
-                },
-                data: { isRecurring: newIsRecurring },
-              }),
             ]);
-            totalFlipped = earnedRes.count + forfeitedRes.count;
+            totalFlipped = earnedRes.count;
             earnedRepriced = earnedRes.count;
           }
 
