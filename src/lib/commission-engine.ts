@@ -18,6 +18,11 @@ import Decimal from "decimal.js";
 
 import { hasConfiguredCommissionRates } from "@/lib/commission-rate-config";
 import { resolveCommissionStatus } from "@/lib/commission-status-rules";
+import {
+  buildTeacherSplitCreateInput,
+  mapTeacherRelationToCutInfo,
+  type TeacherCutInfo,
+} from "@/lib/commission-teacher-chain";
 import { TEACHER_CUT_WARN_THRESHOLD } from "@/lib/constants";
 import { prisma } from "@/lib/prisma";
 import type { RewardfulCommissionState } from "@/lib/rewardful";
@@ -42,12 +47,6 @@ export interface WebhookConversion {
   campaignId?: string | null;
   campaignName?: string | null;
   rawPayload: Record<string, unknown>;
-}
-
-interface TeacherCutInfo {
-  teacherId: string;
-  teacherCutPercent: Decimal;
-  depth: number;
 }
 
 interface NotificationItem {
@@ -236,17 +235,15 @@ export async function processConversion(
   });
 
   for (const tc of teacherCuts) {
-    splitData.push({
-      recipient: { connect: { id: tc.teacherId } },
-      role: "TEACHER",
-      depth: tc.depth,
-      cutPercent: tc.teacherCutPercent.toDecimalPlaces(2).toNumber(),
-      cutAmount: tc.amount.toDecimalPlaces(2).toNumber(),
-      status: teacherStatus,
-      forfeitedToCeo: false,
-      forfeitureReason: teacherReason,
-      idempotencyKey: `${conversion.rewardfulCommissionId}:teacher:${tc.teacherId}`,
-    });
+    splitData.push(
+      buildTeacherSplitCreateInput({
+        teacherCut: tc,
+        cutAmount: tc.amount,
+        status: teacherStatus,
+        forfeitureReason: teacherReason,
+        rewardfulCommissionId: conversion.rewardfulCommissionId,
+      })
+    );
   }
 
   try {
@@ -351,13 +348,15 @@ async function getTeacherChain(
 ): Promise<TeacherCutInfo[]> {
   const relations = await prisma.teacherStudent.findMany({
     where: { studentId: affiliateId, status: "ACTIVE" },
-    select: { teacherId: true, teacherCut: true, depth: true },
+    select: {
+      id: true,
+      teacherId: true,
+      teacherCut: true,
+      depth: true,
+      activationSequence: true,
+    },
     orderBy: { depth: "asc" },
   });
 
-  return relations.map((r) => ({
-    teacherId: r.teacherId,
-    teacherCutPercent: new Decimal(r.teacherCut.toString()),
-    depth: r.depth,
-  }));
+  return relations.map(mapTeacherRelationToCutInfo);
 }
