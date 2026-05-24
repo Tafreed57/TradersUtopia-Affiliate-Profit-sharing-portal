@@ -6,15 +6,8 @@ import {
   shapeCompanyPerformancePayload,
 } from "@/lib/company-performance";
 import { prisma } from "@/lib/prisma";
-import * as affiliateBackend from "@/lib/rewardful";
-import type {
-  RewardfulAffiliate,
-  RewardfulCommission,
-} from "@/lib/rewardful";
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
-const AFFILIATE_PAGE_LIMIT = 100;
-const COMMISSION_CONCURRENCY = 4;
 
 interface CompanyPerformanceSource {
   range: CompanyPerformanceRange;
@@ -46,6 +39,13 @@ export interface LeaderboardVisibilityRow {
   updatedAt: string | null;
 }
 
+interface KnownAffiliate {
+  affiliateId: string;
+  userId: string | null;
+  displayName: string;
+  email: string | null;
+}
+
 function isCompanyPerformanceRange(
   value: string | null
 ): value is CompanyPerformanceRange {
@@ -58,110 +58,54 @@ export function normalizeCompanyPerformanceRange(
   return isCompanyPerformanceRange(value) ? value : "month";
 }
 
-function getAffiliateDisplayName(affiliate: RewardfulAffiliate) {
-  const fullName = [affiliate.first_name, affiliate.last_name]
-    .map((part) => part?.trim())
-    .filter(Boolean)
-    .join(" ")
-    .trim();
-
-  if (fullName) return fullName;
-  const emailName = affiliate.email?.split("@")[0]?.trim();
+function getKnownAffiliateDisplayName(input: {
+  affiliateId: string;
+  name?: string | null;
+  email?: string | null;
+  displayName?: string | null;
+}) {
+  const name = input.name?.trim() || input.displayName?.trim();
+  if (name) return name;
+  const emailName = input.email?.split("@")[0]?.trim();
   if (emailName) return emailName;
-  return `Affiliate ${affiliate.id.slice(-6)}`;
+  return `Affiliate ${input.affiliateId.slice(-6)}`;
 }
 
-function getCommissionDate(commission: RewardfulCommission) {
-  return commission.sale?.charged_at ?? commission.created_at ?? null;
-}
-
-function isCommissionInWindow(
-  commission: RewardfulCommission,
-  window: CompanyPerformanceWindow
-) {
-  const rawDate = getCommissionDate(commission);
-  if (!rawDate) return false;
-  const date = new Date(rawDate);
-  if (Number.isNaN(date.getTime())) return false;
-  return date >= window.start && date < window.end;
-}
-
-function getPaidCommissionCents(commission: RewardfulCommission) {
-  if (commission.state !== "paid" && !commission.paid_at) return 0;
-  if (!Number.isFinite(commission.amount) || commission.amount < 0) return 0;
-  return Math.round(commission.amount);
-}
-
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  limit: number,
-  mapper: (item: T) => Promise<R>
-) {
-  const results: R[] = [];
-  let nextIndex = 0;
-
-  async function worker() {
-    while (nextIndex < items.length) {
-      const currentIndex = nextIndex;
-      nextIndex += 1;
-      results[currentIndex] = await mapper(items[currentIndex]);
-    }
-  }
-
-  await Promise.all(
-    Array.from({ length: Math.min(limit, items.length) }, () => worker())
-  );
-  return results;
-}
-
-async function listAllBackendAffiliates() {
-  const affiliates: RewardfulAffiliate[] = [];
-  let page = 1;
-
-  for (let guard = 0; guard < 500; guard += 1) {
-    const response = await affiliateBackend.listAffiliates({
-      page,
-      limit: AFFILIATE_PAGE_LIMIT,
-    });
-    affiliates.push(...response.data);
-
-    const nextPage = response.pagination?.next_page;
-    if (!nextPage || nextPage <= page) break;
-    page = nextPage;
-  }
-
-  return affiliates;
-}
-
-async function syncVisibilityRows(affiliates: RewardfulAffiliate[]) {
+async function syncVisibilityRows(affiliates: KnownAffiliate[]) {
   if (affiliates.length === 0) return new Map<string, boolean>();
 
   const existingRows = await prisma.leaderboardAffiliateVisibility.findMany({
-    where: { affiliateId: { in: affiliates.map((affiliate) => affiliate.id) } },
+    where: {
+      affiliateId: { in: affiliates.map((affiliate) => affiliate.affiliateId) },
+    },
     select: { affiliateId: true, visible: true },
   });
   const existing = new Map(
     existingRows.map((row) => [row.affiliateId, row.visible])
   );
 
-  await mapWithConcurrency(affiliates, 6, (affiliate) =>
-    prisma.leaderboardAffiliateVisibility.upsert({
-        where: { affiliateId: affiliate.id },
+  await prisma.$transaction(
+    affiliates.map((affiliate) =>
+      prisma.leaderboardAffiliateVisibility.upsert({
+        where: { affiliateId: affiliate.affiliateId },
         create: {
-          affiliateId: affiliate.id,
-          affiliateEmail: affiliate.email ?? null,
-          displayName: getAffiliateDisplayName(affiliate),
+          affiliateId: affiliate.affiliateId,
+          affiliateEmail: affiliate.email,
+          displayName: affiliate.displayName,
           visible: true,
         },
         update: {
-          affiliateEmail: affiliate.email ?? null,
-          displayName: getAffiliateDisplayName(affiliate),
+          affiliateEmail: affiliate.email,
+          displayName: affiliate.displayName,
         },
       })
+    )
   );
 
   const refreshedRows = await prisma.leaderboardAffiliateVisibility.findMany({
-    where: { affiliateId: { in: affiliates.map((affiliate) => affiliate.id) } },
+    where: {
+      affiliateId: { in: affiliates.map((affiliate) => affiliate.affiliateId) },
+    },
     select: { affiliateId: true, visible: true },
   });
 
@@ -173,35 +117,125 @@ async function syncVisibilityRows(affiliates: RewardfulAffiliate[]) {
   );
 }
 
+async function listKnownAffiliates(): Promise<KnownAffiliate[]> {
+  const [users, visibilityRows] = await Promise.all([
+    prisma.user.findMany({
+      where: { rewardfulAffiliateId: { not: null } },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        rewardfulAffiliateId: true,
+      },
+      orderBy: { createdAt: "asc" },
+    }),
+    prisma.leaderboardAffiliateVisibility.findMany({
+      select: {
+        affiliateId: true,
+        affiliateEmail: true,
+        displayName: true,
+      },
+    }),
+  ]);
+
+  const byAffiliateId = new Map<string, KnownAffiliate>();
+
+  for (const user of users) {
+    if (!user.rewardfulAffiliateId) continue;
+    byAffiliateId.set(user.rewardfulAffiliateId, {
+      affiliateId: user.rewardfulAffiliateId,
+      userId: user.id,
+      displayName: getKnownAffiliateDisplayName({
+        affiliateId: user.rewardfulAffiliateId,
+        name: user.name,
+        email: user.email,
+      }),
+      email: user.email,
+    });
+  }
+
+  for (const row of visibilityRows) {
+    if (byAffiliateId.has(row.affiliateId)) continue;
+    byAffiliateId.set(row.affiliateId, {
+      affiliateId: row.affiliateId,
+      userId: null,
+      displayName: getKnownAffiliateDisplayName({
+        affiliateId: row.affiliateId,
+        displayName: row.displayName,
+        email: row.affiliateEmail,
+      }),
+      email: row.affiliateEmail,
+    });
+  }
+
+  return Array.from(byAffiliateId.values());
+}
+
 async function buildCompanyPerformanceSource(
   range: CompanyPerformanceRange
 ): Promise<CompanyPerformanceSource> {
   const window = getTorontoReportingWindow(range);
-  const affiliates = await listAllBackendAffiliates();
+  const affiliates = await listKnownAffiliates();
   const visibility = await syncVisibilityRows(affiliates);
+  const userIds = affiliates
+    .map((affiliate) => affiliate.userId)
+    .filter((userId): userId is string => Boolean(userId));
 
-  const rows = await mapWithConcurrency(
-    affiliates,
-    COMMISSION_CONCURRENCY,
-    async (affiliate): Promise<CompanyPerformanceAffiliateInput> => {
-      const commissions =
-        await affiliateBackend.listAllCommissionsForAffiliate(affiliate.id);
-      const inWindow = commissions.filter((commission) =>
-        isCommissionInWindow(commission, window)
-      );
+  const [conversionCounts, paidCommissionSums] =
+    userIds.length === 0
+      ? [[], []]
+      : await Promise.all([
+          prisma.commissionEvent.groupBy({
+            by: ["affiliateId"],
+            where: {
+              affiliateId: { in: userIds },
+              conversionDate: {
+                gte: window.start,
+                lt: window.end,
+              },
+            },
+            _count: { _all: true },
+          }),
+          prisma.commissionSplit.groupBy({
+            by: ["recipientId"],
+            where: {
+              recipientId: { in: userIds },
+              role: "AFFILIATE",
+              status: "PAID",
+              event: {
+                conversionDate: {
+                  gte: window.start,
+                  lt: window.end,
+                },
+              },
+            },
+            _sum: { cutAmount: true },
+          }),
+        ]);
 
-      return {
-        affiliateId: affiliate.id,
-        displayName: getAffiliateDisplayName(affiliate),
-        email: affiliate.email ?? null,
-        conversions: inWindow.length,
-        paidCommissionCents: inWindow.reduce(
-          (sum, commission) => sum + getPaidCommissionCents(commission),
-          0
-        ),
-        visible: visibility.get(affiliate.id) ?? true,
-      };
-    }
+  const conversionsByUserId = new Map(
+    conversionCounts.map((row) => [row.affiliateId, row._count._all])
+  );
+  const paidCentsByUserId = new Map(
+    paidCommissionSums.map((row) => [
+      row.recipientId,
+      Math.round((row._sum.cutAmount?.toNumber() ?? 0) * 100),
+    ])
+  );
+
+  const rows = affiliates.map(
+    (affiliate): CompanyPerformanceAffiliateInput => ({
+      affiliateId: affiliate.affiliateId,
+      displayName: affiliate.displayName,
+      email: affiliate.email,
+      conversions: affiliate.userId
+        ? conversionsByUserId.get(affiliate.userId) ?? 0
+        : 0,
+      paidCommissionCents: affiliate.userId
+        ? paidCentsByUserId.get(affiliate.userId) ?? 0
+        : 0,
+      visible: visibility.get(affiliate.affiliateId) ?? true,
+    })
   );
 
   return {
@@ -328,8 +362,8 @@ export async function getCompanyPerformance({
 export async function getLeaderboardVisibilityRows(): Promise<
   LeaderboardVisibilityRow[]
 > {
-  const affiliates = await listAllBackendAffiliates();
-  const affiliateIds = affiliates.map((affiliate) => affiliate.id);
+  const affiliates = await listKnownAffiliates();
+  const affiliateIds = affiliates.map((affiliate) => affiliate.affiliateId);
   await syncVisibilityRows(affiliates);
 
   const rows = await prisma.leaderboardAffiliateVisibility.findMany({
