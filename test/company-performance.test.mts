@@ -7,6 +7,7 @@ import {
   getTorontoReportingWindow,
   shapeCompanyPerformancePayload,
 } from "../src/lib/company-performance.ts";
+import { firstTimeSignupEventWhere } from "../src/lib/signup-conversions.ts";
 import { planCompleteTeacherStudentRemoval } from "../src/lib/teacher-student-removal.ts";
 
 test("company performance windows use Toronto business time", () => {
@@ -35,6 +36,25 @@ test("monthly conversion comparison uses current and previous Toronto months", (
   assert.equal(windows.current.end.toISOString(), now.toISOString());
   assert.equal(windows.previous.start.toISOString(), "2026-04-01T04:00:00.000Z");
   assert.equal(windows.previous.end.toISOString(), "2026-05-01T04:00:00.000Z");
+});
+
+test("signup conversion filters exclude recurring commission events", () => {
+  const dateFilter = {
+    gte: new Date("2026-05-01T04:00:00.000Z"),
+    lt: new Date("2026-05-24T15:30:00.000Z"),
+  };
+
+  assert.deepEqual(
+    firstTimeSignupEventWhere({
+      affiliateId: { in: ["user_alpha", "user_bravo"] },
+      conversionDate: dateFilter,
+    }),
+    {
+      affiliateId: { in: ["user_alpha", "user_bravo"] },
+      conversionDate: dateFilter,
+      isRecurring: false,
+    }
+  );
 });
 
 test("company performance totals include hidden affiliates while public rows stay private", () => {
@@ -129,4 +149,3 @@ test("complete removal is limited to direct teacher-student links", () => {
     /Only direct student relationships/
   );
 });
-

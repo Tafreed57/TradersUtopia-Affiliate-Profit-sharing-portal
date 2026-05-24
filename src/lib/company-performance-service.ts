@@ -6,9 +6,10 @@ import {
   shapeCompanyPerformancePayload,
 } from "@/lib/company-performance";
 import { prisma } from "@/lib/prisma";
+import { firstTimeSignupEventWhere } from "@/lib/signup-conversions";
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
-const CACHE_VERSION = 2;
+const CACHE_VERSION = 3;
 
 interface CompanyPerformanceSource {
   version: typeof CACHE_VERSION;
@@ -163,13 +164,13 @@ async function buildCompanyPerformanceSource(
       : await Promise.all([
           prisma.commissionEvent.groupBy({
             by: ["affiliateId"],
-            where: {
+            where: firstTimeSignupEventWhere({
               affiliateId: { in: userIds },
               conversionDate: {
                 gte: window.start,
                 lt: window.end,
               },
-            },
+            }),
             _count: { _all: true },
           }),
           prisma.commissionSplit.groupBy({
@@ -178,12 +179,12 @@ async function buildCompanyPerformanceSource(
               recipientId: { in: userIds },
               role: "AFFILIATE",
               status: "PAID",
-              event: {
+              event: firstTimeSignupEventWhere({
                 conversionDate: {
                   gte: window.start,
                   lt: window.end,
                 },
-              },
+              }),
             },
             _sum: { cutAmount: true },
           }),

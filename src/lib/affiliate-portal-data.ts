@@ -6,6 +6,7 @@ import { getTorontoMonthComparisonWindows } from "@/lib/company-performance";
 import { getCadToUsdRate } from "@/lib/currency";
 import { prisma } from "@/lib/prisma";
 import * as rewardful from "@/lib/rewardful";
+import { firstTimeSignupEventWhere } from "@/lib/signup-conversions";
 import { getTeacherRelationshipEpisodeSummary } from "@/lib/teacher-student-relationships";
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -164,23 +165,23 @@ export async function getAffiliateCommissionsData(
     prisma.commissionSplit.count({
       where: {
         ...monthlyConversionWhere,
-        event: {
+        event: firstTimeSignupEventWhere({
           conversionDate: {
             gte: monthWindows.current.start,
             lt: monthWindows.current.end,
           },
-        },
+        }),
       },
     }),
     prisma.commissionSplit.count({
       where: {
         ...monthlyConversionWhere,
-        event: {
+        event: firstTimeSignupEventWhere({
           conversionDate: {
             gte: monthWindows.previous.start,
             lt: monthWindows.previous.end,
           },
-        },
+        }),
       },
     }),
   ]);
