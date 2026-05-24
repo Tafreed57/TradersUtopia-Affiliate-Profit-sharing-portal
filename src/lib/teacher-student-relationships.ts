@@ -9,6 +9,7 @@ import Decimal from "decimal.js";
 
 import { getCadToUsdRate } from "@/lib/currency";
 import { prisma } from "@/lib/prisma";
+import { planCompleteTeacherStudentRemoval } from "@/lib/teacher-student-removal";
 
 type DbClient = Prisma.TransactionClient | typeof prisma;
 
@@ -94,6 +95,12 @@ interface ArchiveRelationshipOptions {
   archivedById: string;
   archivedByRole: TeacherStudentArchiveActorRole;
   showInPreviousStudents?: boolean;
+  archiveReason?: string | null;
+}
+
+interface CompleteRemoveRelationshipOptions {
+  relationshipId: string;
+  removedById: string;
   archiveReason?: string | null;
 }
 
@@ -242,6 +249,7 @@ async function createArchiveRecordTx(
     archivedByRole,
     showInPreviousStudents,
     archiveReason,
+    archiveMode,
     now,
     cadToUsd,
   }: {
@@ -249,6 +257,7 @@ async function createArchiveRecordTx(
     archivedByRole: TeacherStudentArchiveActorRole;
     showInPreviousStudents: boolean;
     archiveReason: string | null;
+    archiveMode?: "SAFE_ARCHIVE" | "COMPLETE_REMOVE";
     now: Date;
     cadToUsd: Decimal;
   }
@@ -270,6 +279,7 @@ async function createArchiveRecordTx(
     archivedAt: now,
     archivedById,
     archivedByRole,
+    archiveMode: archiveMode ?? "SAFE_ARCHIVE",
     archiveReason,
     showInPreviousStudents,
     snapshotUnpaidCad: summary.teacherUnpaidCad,
@@ -298,6 +308,7 @@ async function createArchiveRecordTx(
       archivedAt: now,
       archivedById,
       archivedByRole,
+      archiveMode: archiveMode ?? "SAFE_ARCHIVE",
       archiveReason,
       showInPreviousStudents,
       snapshotUnpaidCad: summary.teacherUnpaidCad,
@@ -1070,6 +1081,102 @@ export async function archiveTeacherStudentRelationship(
       relationshipId: relationship.id,
       archiveId: archives[0].id,
       cascaded,
+    };
+  }, { maxWait: 10_000, timeout: 30_000 });
+}
+
+export async function completeRemoveTeacherStudentRelationship(
+  options: CompleteRemoveRelationshipOptions
+) {
+  const cadToUsd = await getCadToUsdDecimal();
+
+  return prisma.$transaction(async (tx) => {
+    const relationship = await tx.teacherStudent.findUnique({
+      where: { id: options.relationshipId },
+      select: {
+        id: true,
+        teacherId: true,
+        studentId: true,
+        depth: true,
+        teacherCut: true,
+        status: true,
+        createdVia: true,
+        activationSequence: true,
+        activatedAt: true,
+        deactivatedAt: true,
+      },
+    });
+
+    if (!relationship) {
+      throw new Error("Relationship not found");
+    }
+
+    if (relationship.status !== "ACTIVE") {
+      throw new Error("Relationship is not active");
+    }
+
+    if (relationship.depth !== 1) {
+      throw new Error(
+        "Only direct student relationships can be completely removed"
+      );
+    }
+
+    const childLinks = await tx.teacherStudent.findMany({
+      where: {
+        teacherId: relationship.studentId,
+        status: "ACTIVE",
+        depth: 1,
+      },
+      select: { studentId: true },
+    });
+    const childIds = childLinks.map((link) => link.studentId);
+    const activeIndirectRelationships =
+      childIds.length > 0
+        ? await tx.teacherStudent.findMany({
+            where: {
+              teacherId: relationship.teacherId,
+              studentId: { in: childIds },
+              status: "ACTIVE",
+              depth: 2,
+            },
+            select: { id: true, studentId: true },
+          })
+        : [];
+
+    const removalPlan = planCompleteTeacherStudentRemoval({
+      relationship,
+      activeIndirectRelationships,
+    });
+
+    const now = new Date();
+    const archive = await createArchiveRecordTx(tx, relationship, {
+      archivedById: options.removedById,
+      archivedByRole: "ADMIN",
+      archiveMode: "COMPLETE_REMOVE",
+      showInPreviousStudents: false,
+      archiveReason:
+        options.archiveReason ??
+        "Admin completely removed this student from the teacher roster.",
+      now,
+      cadToUsd,
+    });
+
+    await tx.teacherStudent.updateMany({
+      where: { id: { in: removalPlan.relationshipIdsToDeactivate } },
+      data: {
+        status: "DEACTIVATED",
+        deactivatedAt: now,
+        reviewedAt: now,
+        reviewedById: options.removedById,
+      },
+    });
+
+    return {
+      ok: true,
+      relationshipId: relationship.id,
+      archiveId: archive.id,
+      preservedIndirectRelationships:
+        removalPlan.preservedIndirectRelationshipIds.length,
     };
   }, { maxWait: 10_000, timeout: 30_000 });
 }

@@ -5,8 +5,11 @@ import {
   BarChart3,
   CalendarCheck,
   CalendarPlus,
+  CreditCard,
   DollarSign,
   TrendingUp,
+  Trophy,
+  Users,
 } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useState } from "react";
@@ -27,6 +30,7 @@ interface DashboardStats {
   totalEarned: number;
   totalEarnedCurrency: "CAD" | "USD";
   thisMonthEarned: number;
+  paidThisMonth: number;
   commissionCount: number;
   attendanceDaysThisMonth: number;
   recentCommissions: {
@@ -36,6 +40,29 @@ interface DashboardStats {
     status: "EARNED" | "FORFEITED" | "PENDING" | "PAID" | "VOIDED";
     forfeitedToCeo: boolean;
     conversionDate: string;
+  }[];
+}
+
+type PerformanceRange = "today" | "week" | "month";
+
+interface CompanyPerformance {
+  range: PerformanceRange;
+  startsAt: string;
+  endsAt: string;
+  timezoneLabel: string;
+  refreshedAt: string;
+  stale: boolean;
+  totals: {
+    conversions: number;
+    affiliateCount: number;
+    hiddenAffiliateCount: number;
+    visibleAffiliateCount: number;
+  };
+  leaderboard: {
+    rank: number;
+    affiliateId: string;
+    displayName: string;
+    conversions: number;
   }[];
 }
 
@@ -54,6 +81,8 @@ export default function DashboardPage() {
   const { format, currency } = useCurrency();
   const queryClient = useQueryClient();
   const [note, setNote] = useState("");
+  const [performanceRange, setPerformanceRange] =
+    useState<PerformanceRange>("month");
 
   const userId = session?.user?.id;
   const { data: stats, isLoading } = useQuery<DashboardStats>({
@@ -65,6 +94,20 @@ export default function DashboardPage() {
       return res.json();
     },
   });
+
+  const { data: companyPerformance, isLoading: performanceLoading } =
+    useQuery<CompanyPerformance>({
+      queryKey: ["company-performance", userId, performanceRange],
+      enabled: !!userId,
+      queryFn: async () => {
+        const res = await fetch(
+          `/api/company/performance?range=${performanceRange}`
+        );
+        if (!res.ok) throw new Error("Failed to fetch company performance");
+        return res.json();
+      },
+      staleTime: 5 * 60 * 1000,
+    });
 
   const attendanceMutation = useMutation({
     mutationFn: async () => {
@@ -105,7 +148,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Stats Cards */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
@@ -130,7 +173,7 @@ export default function DashboardPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
-              This Month
+              Monthly Commission
             </CardTitle>
             <TrendingUp className="h-4 w-4 text-success" />
           </CardHeader>
@@ -141,6 +184,27 @@ export default function DashboardPage() {
               <>
                 <div className="text-2xl font-bold">
                   {format(stats?.thisMonthEarned ?? 0, "CAD")}
+                </div>
+                <p className="text-xs text-muted-foreground">{currency}</p>
+              </>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              Paid This Month
+            </CardTitle>
+            <CreditCard className="h-4 w-4 text-info" />
+          </CardHeader>
+          <CardContent>
+            {isLoading ? (
+              <Skeleton className="h-8 w-24" />
+            ) : (
+              <>
+                <div className="text-2xl font-bold">
+                  {format(stats?.paidThisMonth ?? 0, "CAD")}
                 </div>
                 <p className="text-xs text-muted-foreground">{currency}</p>
               </>
@@ -197,6 +261,111 @@ export default function DashboardPage() {
 
       <BackfillBanner />
       <RateNotSetBanner />
+
+      <Card>
+        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <Trophy className="h-5 w-5 text-primary" />
+              Company Performance
+            </CardTitle>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {companyPerformance?.timezoneLabel ?? "Toronto time"}
+              {companyPerformance?.stale ? " | cached" : ""}
+            </p>
+          </div>
+          <div className="flex rounded-md border border-border/60 p-1">
+            {(["today", "week", "month"] as const).map((range) => (
+              <Button
+                key={range}
+                variant={performanceRange === range ? "default" : "ghost"}
+                size="sm"
+                className="h-8 px-3 capitalize"
+                onClick={() => setPerformanceRange(range)}
+              >
+                {range === "week" ? "This Week" : range}
+              </Button>
+            ))}
+          </div>
+        </CardHeader>
+        <CardContent>
+          {performanceLoading ? (
+            <div className="grid gap-4 lg:grid-cols-[280px_1fr]">
+              <Skeleton className="h-28 w-full" />
+              <Skeleton className="h-28 w-full" />
+            </div>
+          ) : !companyPerformance ? (
+            <p className="text-sm text-muted-foreground">
+              Company performance is unavailable right now.
+            </p>
+          ) : (
+            <div className="grid gap-4 lg:grid-cols-[280px_1fr]">
+              <div className="rounded-lg border border-border/60 p-4">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Users className="h-4 w-4" />
+                  <span>Company Conversions</span>
+                </div>
+                <p className="mt-3 text-3xl font-bold">
+                  {companyPerformance.totals.conversions.toLocaleString()}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {companyPerformance.totals.affiliateCount.toLocaleString()} affiliates
+                </p>
+              </div>
+
+              <div className="rounded-lg border border-border/60 p-4">
+                <div className="mb-3 flex items-center justify-between">
+                  <p className="text-sm font-medium">Leaderboard</p>
+                  <p className="text-xs text-muted-foreground">
+                    {new Date(companyPerformance.refreshedAt).toLocaleTimeString(
+                      "en-US",
+                      {
+                        hour: "numeric",
+                        minute: "2-digit",
+                        hour12: true,
+                      }
+                    )}
+                  </p>
+                </div>
+                {companyPerformance.leaderboard.length === 0 ? (
+                  <p className="py-6 text-center text-sm text-muted-foreground">
+                    No conversions in this range.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {companyPerformance.leaderboard.slice(0, 5).map((row) => (
+                      <div
+                        key={row.affiliateId}
+                        className="flex items-center justify-between rounded-md border border-border/50 px-3 py-2"
+                      >
+                        <div className="flex min-w-0 items-center gap-3">
+                          <Badge
+                            variant="default"
+                            className="h-7 w-7 justify-center rounded-full bg-primary/10 px-0 text-primary"
+                          >
+                            {row.rank}
+                          </Badge>
+                          <p className="truncate text-sm font-medium">
+                            {row.displayName}
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-sm font-semibold">
+                            {row.conversions.toLocaleString()}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            conversions
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Recent Commissions */}

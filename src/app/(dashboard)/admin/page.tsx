@@ -17,6 +17,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { LeaderboardVisibilityCard } from "@/components/admin/leaderboard-visibility-card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -509,6 +510,8 @@ export default function AdminPage() {
           </div>
         </CardContent>
       </Card>
+
+      <LeaderboardVisibilityCard adminId={adminId} />
 
       {/* Affiliates Table */}
       <Card>

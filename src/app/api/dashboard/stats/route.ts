@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 
 import { authOptions } from "@/lib/auth-options";
+import { getTorontoMonthComparisonWindows } from "@/lib/company-performance";
 import { getCadToUsdRate } from "@/lib/currency";
 import { prisma } from "@/lib/prisma";
 
@@ -18,9 +19,9 @@ export async function GET() {
 
   const userId = session.user.id;
 
-  const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  const monthWindows = getTorontoMonthComparisonWindows();
+  const monthStart = monthWindows.current.start;
+  const monthEnd = monthWindows.current.end;
   const monthStartStr = monthStart.toISOString().slice(0, 10);
   const monthEndStr = monthEnd.toISOString().slice(0, 10);
 
@@ -37,7 +38,12 @@ export async function GET() {
   };
   const perCurrencyMonthWhere = {
     ...perCurrencyTotalWhere,
-    event: { conversionDate: { gte: monthStart, lte: monthEnd } },
+    event: { conversionDate: { gte: monthStart, lt: monthEnd } },
+  };
+  const perCurrencyPaidMonthWhere = {
+    ...affiliateSplitWhere,
+    status: "PAID" as const,
+    paidAt: { gte: monthStart, lt: monthEnd },
   };
 
   const [
@@ -45,6 +51,8 @@ export async function GET() {
     totalCadAgg,
     monthUsdAgg,
     monthCadAgg,
+    paidMonthUsdAgg,
+    paidMonthCadAgg,
     commissionCount,
     attendanceThisMonth,
     recentSplits,
@@ -59,11 +67,19 @@ export async function GET() {
       _sum: { cutAmount: true },
     }),
     prisma.commissionSplit.aggregate({
-      where: { ...perCurrencyMonthWhere, event: { currency: "USD", conversionDate: { gte: monthStart, lte: monthEnd } } },
+      where: { ...perCurrencyMonthWhere, event: { currency: "USD", conversionDate: { gte: monthStart, lt: monthEnd } } },
       _sum: { cutAmount: true },
     }),
     prisma.commissionSplit.aggregate({
-      where: { ...perCurrencyMonthWhere, event: { currency: "CAD", conversionDate: { gte: monthStart, lte: monthEnd } } },
+      where: { ...perCurrencyMonthWhere, event: { currency: "CAD", conversionDate: { gte: monthStart, lt: monthEnd } } },
+      _sum: { cutAmount: true },
+    }),
+    prisma.commissionSplit.aggregate({
+      where: { ...perCurrencyPaidMonthWhere, event: { currency: "USD" } },
+      _sum: { cutAmount: true },
+    }),
+    prisma.commissionSplit.aggregate({
+      where: { ...perCurrencyPaidMonthWhere, event: { currency: "CAD" } },
       _sum: { cutAmount: true },
     }),
 
@@ -105,6 +121,8 @@ export async function GET() {
   const totalCad = totalCadAgg._sum.cutAmount?.toNumber() ?? 0;
   const monthUsd = monthUsdAgg._sum.cutAmount?.toNumber() ?? 0;
   const monthCad = monthCadAgg._sum.cutAmount?.toNumber() ?? 0;
+  const paidMonthUsd = paidMonthUsdAgg._sum.cutAmount?.toNumber() ?? 0;
+  const paidMonthCad = paidMonthCadAgg._sum.cutAmount?.toNumber() ?? 0;
 
   // No HTTP cache header here. `Cache-Control: private, max-age=N` would
   // let the browser HTTP cache reuse this response by URL alone — without
@@ -117,6 +135,7 @@ export async function GET() {
     totalEarned: Math.round((totalCad + toCad(totalUsd)) * 100) / 100,
     totalEarnedCurrency: "CAD" as const,
     thisMonthEarned: Math.round((monthCad + toCad(monthUsd)) * 100) / 100,
+    paidThisMonth: Math.round((paidMonthCad + toCad(paidMonthUsd)) * 100) / 100,
     commissionCount,
     attendanceDaysThisMonth: attendanceThisMonth.length,
     recentCommissions: recentSplits.map((s) => ({

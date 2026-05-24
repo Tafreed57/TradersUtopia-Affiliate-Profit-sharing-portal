@@ -1096,6 +1096,143 @@ function ArchiveStudentDialog({
   );
 }
 
+function CompleteRemoveStudentDialog({
+  student,
+  open,
+  onOpenChange,
+  onSuccess,
+}: {
+  student: DirectStudent | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSuccess: () => void;
+}) {
+  const [archiveReason, setArchiveReason] = useState("");
+  const [confirmText, setConfirmText] = useState("");
+
+  const completeRemoveMutation = useMutation({
+    mutationFn: async () => {
+      if (!student) throw new Error("No student selected");
+      return fetchJson<{
+        preservedIndirectRelationships: number;
+      }>(
+        `/api/admin/teacher-student/${student.relationshipId}/complete-remove`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            archiveReason:
+              archiveReason.trim() ||
+              "Admin completely removed this student from the teacher roster.",
+          }),
+        }
+      );
+    },
+    onSuccess: (result) => {
+      toast.success(
+        result.preservedIndirectRelationships > 0
+          ? `Student removed. ${result.preservedIndirectRelationships} indirect link${result.preservedIndirectRelationships === 1 ? "" : "s"} preserved.`
+          : "Student completely removed from this teacher."
+      );
+      setArchiveReason("");
+      setConfirmText("");
+      onOpenChange(false);
+      onSuccess();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) {
+          setArchiveReason("");
+          setConfirmText("");
+        }
+        onOpenChange(nextOpen);
+      }}
+    >
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Completely Remove Student</DialogTitle>
+          <DialogDescription>
+            This hides the relationship from active and previous-student lists
+            for this teacher. Historical commissions remain recorded, and
+            indirect student links stay active.
+          </DialogDescription>
+        </DialogHeader>
+
+        {student && (
+          <div className="space-y-4 py-2">
+            <div className="rounded-xl border border-error/30 bg-error/10 p-4 text-sm">
+              <p className="font-medium">{student.name ?? student.email}</p>
+              <p className="mt-2 text-muted-foreground">
+                Current unpaid {student.teacherUnpaidCad.toFixed(2)} CAD, paid{" "}
+                {student.teacherPaidCad.toFixed(2)} CAD.
+              </p>
+            </div>
+
+            {student.subStudents.length > 0 && (
+              <div className="rounded-xl border border-border/50 p-4 text-sm">
+                <p className="font-medium">
+                  {student.subStudents.length} indirect link
+                  {student.subStudents.length === 1 ? "" : "s"} stay active
+                </p>
+                <p className="mt-1 text-muted-foreground">
+                  This only removes the direct link between this teacher and
+                  student.
+                </p>
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <Label htmlFor="complete-remove-reason">Reason (optional)</Label>
+              <Input
+                id="complete-remove-reason"
+                value={archiveReason}
+                onChange={(event) => setArchiveReason(event.target.value)}
+                placeholder="Explain why this relationship is being removed."
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="complete-remove-confirm">
+                Type REMOVE to confirm
+              </Label>
+              <Input
+                id="complete-remove-confirm"
+                value={confirmText}
+                onChange={(event) => setConfirmText(event.target.value)}
+                placeholder="REMOVE"
+              />
+            </div>
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            onClick={() => completeRemoveMutation.mutate()}
+            disabled={
+              completeRemoveMutation.isPending ||
+              !student ||
+              confirmText.trim().toUpperCase() !== "REMOVE"
+            }
+          >
+            {completeRemoveMutation.isPending
+              ? "Removing..."
+              : "Complete Remove"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function ManagedPreviousStudentCard({
   student,
   activeRelationship,
@@ -1240,11 +1377,13 @@ function ManagedStudentCard({
   format,
   onViewDetail,
   onArchive,
+  onCompleteRemove,
 }: {
   student: DirectStudent;
   format: (amount: number, inputCurrency?: "CAD" | "USD") => string;
   onViewDetail: (student: Student) => void;
   onArchive: (student: DirectStudent) => void;
+  onCompleteRemove: (student: DirectStudent) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const subCount = student.subStudents.length;
@@ -1281,7 +1420,7 @@ function ManagedStudentCard({
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
             <Button variant="outline" size="sm" onClick={() => onViewDetail(student)}>
               View
             </Button>
@@ -1293,6 +1432,15 @@ function ManagedStudentCard({
             >
               <UserMinus className="mr-1 h-3.5 w-3.5" />
               Remove
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-error/30 text-error hover:bg-error/10 hover:text-error"
+              onClick={() => onCompleteRemove(student)}
+            >
+              <UserX className="mr-1 h-3.5 w-3.5" />
+              Complete Remove
             </Button>
           </div>
         </div>
@@ -1438,6 +1586,8 @@ export function ManagedAffiliateWorkspace({
   const [today] = useState(() => new Date().toLocaleDateString("en-CA"));
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
   const [studentToArchive, setStudentToArchive] = useState<DirectStudent | null>(null);
+  const [studentToCompleteRemove, setStudentToCompleteRemove] =
+    useState<DirectStudent | null>(null);
   const [studentToRestore, setStudentToRestore] = useState<PreviousStudent | null>(null);
   const [newInitialRate, setNewInitialRate] = useState("");
   const [newRecurringRate, setNewRecurringRate] = useState("");
@@ -1822,6 +1972,14 @@ export function ManagedAffiliateWorkspace({
         open={!!studentToArchive}
         onOpenChange={(open) => {
           if (!open) setStudentToArchive(null);
+        }}
+        onSuccess={invalidateWorkspace}
+      />
+      <CompleteRemoveStudentDialog
+        student={studentToCompleteRemove}
+        open={!!studentToCompleteRemove}
+        onOpenChange={(open) => {
+          if (!open) setStudentToCompleteRemove(null);
         }}
         onSuccess={invalidateWorkspace}
       />
@@ -2823,6 +2981,7 @@ export function ManagedAffiliateWorkspace({
                         format={format}
                         onViewDetail={setSelectedStudent}
                         onArchive={setStudentToArchive}
+                        onCompleteRemove={setStudentToCompleteRemove}
                       />
                     ))}
                   </div>

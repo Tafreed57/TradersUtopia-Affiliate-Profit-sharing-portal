@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import Decimal from "decimal.js";
 
 import { linkRewardfulAffiliateWithTimeout } from "@/lib/auth-rewardful-link";
+import { getTorontoMonthComparisonWindows } from "@/lib/company-performance";
 import { getCadToUsdRate } from "@/lib/currency";
 import { prisma } from "@/lib/prisma";
 import * as rewardful from "@/lib/rewardful";
@@ -127,7 +128,15 @@ export async function getAffiliateCommissionsData(
     where.event = { conversionDate: dateFilter };
   }
 
-  const [splits, total] = await Promise.all([
+  const monthWindows = getTorontoMonthComparisonWindows();
+  const monthlyConversionWhere: Prisma.CommissionSplitWhereInput = {
+    role: "AFFILIATE",
+    recipientId: userId,
+    status: { not: "VOIDED" },
+  };
+
+  const [splits, total, currentMonthConversions, previousMonthConversions] =
+    await Promise.all([
     prisma.commissionSplit.findMany({
       where,
       orderBy: { event: { conversionDate: "desc" } },
@@ -152,6 +161,28 @@ export async function getAffiliateCommissionsData(
       },
     }),
     prisma.commissionSplit.count({ where }),
+    prisma.commissionSplit.count({
+      where: {
+        ...monthlyConversionWhere,
+        event: {
+          conversionDate: {
+            gte: monthWindows.current.start,
+            lt: monthWindows.current.end,
+          },
+        },
+      },
+    }),
+    prisma.commissionSplit.count({
+      where: {
+        ...monthlyConversionWhere,
+        event: {
+          conversionDate: {
+            gte: monthWindows.previous.start,
+            lt: monthWindows.previous.end,
+          },
+        },
+      },
+    }),
   ]);
 
   return {
@@ -173,6 +204,11 @@ export async function getAffiliateCommissionsData(
       limit: input.limit,
       total,
       totalPages: Math.ceil(total / input.limit),
+    },
+    monthlyConversionSummary: {
+      currentMonthConversions,
+      previousMonthConversions,
+      timezoneLabel: monthWindows.timezoneLabel,
     },
   };
 }

@@ -149,6 +149,7 @@ model TeacherStudentArchive {
   archivedAt            DateTime                      @default(now())
   archivedById          String?
   archivedByRole        TeacherStudentArchiveActorRole @default(ADMIN)
+  archiveMode           TeacherStudentArchiveMode     @default(SAFE_ARCHIVE)
   archiveReason         String?
   showInPreviousStudents Boolean                      @default(true)
   snapshotUnpaidCad     Decimal                       @db.Decimal(12, 2)
@@ -169,6 +170,31 @@ model TeacherStudentArchive {
   @@index([teacherId, showInPreviousStudents])
   @@index([studentId])
   @@index([archivedAt])
+}
+
+model LeaderboardAffiliateVisibility {
+  id             String   @id @default(cuid())
+  affiliateId    String   @unique
+  affiliateEmail String?
+  displayName    String?
+  visible        Boolean  @default(true)
+  updatedById    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([visible])
+  @@index([affiliateEmail])
+}
+
+model CompanyPerformanceCache {
+  id        String   @id @default(cuid())
+  range     String   @unique
+  payload   Json
+  fetchedAt DateTime @default(now())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([fetchedAt])
 }
 
 model TeacherStudentRestoreRequest {
@@ -506,6 +532,11 @@ enum TeacherStudentArchiveActorRole {
   ADMIN
   TEACHER
   SYSTEM
+}
+
+enum TeacherStudentArchiveMode {
+  SAFE_ARCHIVE
+  COMPLETE_REMOVE
 }
 
 enum TeacherStudentRestoreStatus {

@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowDownUp, DollarSign, Filter } from "lucide-react";
+import { ArrowDownUp, BarChart3, DollarSign, Filter } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSession } from "next-auth/react";
@@ -52,6 +52,11 @@ interface CommissionResponse {
     limit: number;
     total: number;
     totalPages: number;
+  };
+  monthlyConversionSummary: {
+    currentMonthConversions: number;
+    previousMonthConversions: number;
+    timezoneLabel: string;
   };
 }
 
@@ -191,6 +196,41 @@ export default function CommissionsPage() {
       <RateNotSetBanner />
       <LifetimeHeader />
       <EarningsSummary />
+
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-lg">
+            <BarChart3 className="h-5 w-5 text-primary" />
+            Monthly Conversions
+          </CardTitle>
+          <p className="text-xs text-muted-foreground">
+            {data?.monthlyConversionSummary.timezoneLabel ?? "Toronto time"}
+          </p>
+        </CardHeader>
+        <CardContent>
+          {isLoading ? (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Skeleton className="h-20 w-full" />
+              <Skeleton className="h-20 w-full" />
+            </div>
+          ) : (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-lg border border-border/60 p-4">
+                <p className="text-sm text-muted-foreground">This Month</p>
+                <p className="mt-2 text-3xl font-bold">
+                  {data?.monthlyConversionSummary.currentMonthConversions ?? 0}
+                </p>
+              </div>
+              <div className="rounded-lg border border-border/60 p-4">
+                <p className="text-sm text-muted-foreground">Previous Month</p>
+                <p className="mt-2 text-3xl font-bold">
+                  {data?.monthlyConversionSummary.previousMonthConversions ?? 0}
+                </p>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Filters */}
       <Card>
