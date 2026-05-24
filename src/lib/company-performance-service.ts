@@ -8,8 +8,10 @@ import {
 import { prisma } from "@/lib/prisma";
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
+const CACHE_VERSION = 2;
 
 interface CompanyPerformanceSource {
+  version: typeof CACHE_VERSION;
   range: CompanyPerformanceRange;
   startsAt: string;
   endsAt: string;
@@ -41,7 +43,7 @@ export interface LeaderboardVisibilityRow {
 
 interface KnownAffiliate {
   affiliateId: string;
-  userId: string | null;
+  userId: string;
   displayName: string;
   email: string | null;
 }
@@ -118,57 +120,33 @@ async function syncVisibilityRows(affiliates: KnownAffiliate[]) {
 }
 
 async function listKnownAffiliates(): Promise<KnownAffiliate[]> {
-  const [users, visibilityRows] = await Promise.all([
-    prisma.user.findMany({
-      where: { rewardfulAffiliateId: { not: null } },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        rewardfulAffiliateId: true,
-      },
-      orderBy: { createdAt: "asc" },
-    }),
-    prisma.leaderboardAffiliateVisibility.findMany({
-      select: {
-        affiliateId: true,
-        affiliateEmail: true,
-        displayName: true,
-      },
-    }),
-  ]);
+  const users = await prisma.user.findMany({
+    where: { rewardfulAffiliateId: { not: null } },
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      rewardfulAffiliateId: true,
+    },
+    orderBy: { createdAt: "asc" },
+  });
 
-  const byAffiliateId = new Map<string, KnownAffiliate>();
+  return users.flatMap((user) => {
+    if (!user.rewardfulAffiliateId) return [];
 
-  for (const user of users) {
-    if (!user.rewardfulAffiliateId) continue;
-    byAffiliateId.set(user.rewardfulAffiliateId, {
-      affiliateId: user.rewardfulAffiliateId,
-      userId: user.id,
-      displayName: getKnownAffiliateDisplayName({
+    return [
+      {
         affiliateId: user.rewardfulAffiliateId,
-        name: user.name,
+        userId: user.id,
+        displayName: getKnownAffiliateDisplayName({
+          affiliateId: user.rewardfulAffiliateId,
+          name: user.name,
+          email: user.email,
+        }),
         email: user.email,
-      }),
-      email: user.email,
-    });
-  }
-
-  for (const row of visibilityRows) {
-    if (byAffiliateId.has(row.affiliateId)) continue;
-    byAffiliateId.set(row.affiliateId, {
-      affiliateId: row.affiliateId,
-      userId: null,
-      displayName: getKnownAffiliateDisplayName({
-        affiliateId: row.affiliateId,
-        displayName: row.displayName,
-        email: row.affiliateEmail,
-      }),
-      email: row.affiliateEmail,
-    });
-  }
-
-  return Array.from(byAffiliateId.values());
+      },
+    ];
+  });
 }
 
 async function buildCompanyPerformanceSource(
@@ -177,9 +155,7 @@ async function buildCompanyPerformanceSource(
   const window = getTorontoReportingWindow(range);
   const affiliates = await listKnownAffiliates();
   const visibility = await syncVisibilityRows(affiliates);
-  const userIds = affiliates
-    .map((affiliate) => affiliate.userId)
-    .filter((userId): userId is string => Boolean(userId));
+  const userIds = affiliates.map((affiliate) => affiliate.userId);
 
   const [conversionCounts, paidCommissionSums] =
     userIds.length === 0
@@ -228,17 +204,14 @@ async function buildCompanyPerformanceSource(
       affiliateId: affiliate.affiliateId,
       displayName: affiliate.displayName,
       email: affiliate.email,
-      conversions: affiliate.userId
-        ? conversionsByUserId.get(affiliate.userId) ?? 0
-        : 0,
-      paidCommissionCents: affiliate.userId
-        ? paidCentsByUserId.get(affiliate.userId) ?? 0
-        : 0,
+      conversions: conversionsByUserId.get(affiliate.userId) ?? 0,
+      paidCommissionCents: paidCentsByUserId.get(affiliate.userId) ?? 0,
       visible: visibility.get(affiliate.affiliateId) ?? true,
     })
   );
 
   return {
+    version: CACHE_VERSION,
     range,
     startsAt: window.start.toISOString(),
     endsAt: window.end.toISOString(),
@@ -252,6 +225,7 @@ async function buildCompanyPerformanceSource(
 function parseCachedSource(payload: unknown): CompanyPerformanceSource | null {
   if (!payload || typeof payload !== "object") return null;
   const source = payload as Partial<CompanyPerformanceSource>;
+  if (source.version !== CACHE_VERSION) return null;
   if (!isCompanyPerformanceRange(source.range ?? null)) return null;
   if (!Array.isArray(source.affiliates)) return null;
   if (
