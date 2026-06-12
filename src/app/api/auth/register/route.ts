@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { prisma } from "@/lib/prisma";
+import { canClaimUpstreamPlaceholder } from "@/lib/upstream-placeholder-account";
 
 const registerSchema = z.object({
   name: z.string().min(1).max(100),
@@ -19,15 +20,38 @@ export async function POST(req: NextRequest) {
 
     const existing = await prisma.user.findUnique({
       where: { email: normalizedEmail },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        passwordHash: true,
+        rewardfulAffiliateId: true,
+        accounts: { select: { id: true }, take: 1 },
+      },
     });
+
+    const passwordHash = await bcrypt.hash(password, 12);
+
     if (existing) {
+      if (canClaimUpstreamPlaceholder(existing)) {
+        const user = await prisma.user.update({
+          where: { id: existing.id },
+          data: {
+            name,
+            passwordHash,
+            linkError: null,
+          },
+          select: { id: true, email: true, name: true },
+        });
+
+        return NextResponse.json(user, { status: 201 });
+      }
+
       return NextResponse.json(
         { error: "An account with this email already exists" },
         { status: 409 }
       );
     }
-
-    const passwordHash = await bcrypt.hash(password, 12);
 
     const user = await prisma.user.create({
       data: {

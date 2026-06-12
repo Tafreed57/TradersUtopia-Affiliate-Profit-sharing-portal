@@ -6,6 +6,7 @@ import {
   findOrCreatePortalUserForUpstreamAffiliate,
   UpstreamAffiliateLinkError,
 } from "@/lib/admin-upstream-affiliate-link";
+import { syncAffiliateCommissionCatalog } from "@/lib/affiliate-sync-service";
 import { authOptions } from "@/lib/auth-options";
 import { TEACHER_CUT_WARN_THRESHOLD } from "@/lib/constants";
 import { createNotification } from "@/lib/notifications";
@@ -72,7 +73,12 @@ export async function POST(req: NextRequest) {
     const [student, existing] = await Promise.all([
       prisma.user.findUnique({
         where: { id: studentId },
-        select: { id: true, name: true, email: true },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          rewardfulAffiliateId: true,
+        },
       }),
       prisma.teacherStudent.findUnique({
         where: { teacherId_studentId: { teacherId, studentId } },
@@ -111,6 +117,36 @@ export async function POST(req: NextRequest) {
       origin: "ADMIN_PAIR",
       historicalBackfill: "UNPAID_ONLY",
     });
+
+    let historySync:
+      | { status: "SKIPPED"; reason: "NO_LINKED_COMMISSION_ACCOUNT" }
+      | ({
+          status: "COMPLETED";
+        } & Awaited<ReturnType<typeof syncAffiliateCommissionCatalog>>)
+      | { status: "FAILED"; error: string } = {
+      status: "SKIPPED",
+      reason: "NO_LINKED_COMMISSION_ACCOUNT",
+    };
+
+    if (student.rewardfulAffiliateId) {
+      try {
+        const syncResult = await syncAffiliateCommissionCatalog({
+          affiliateId: student.id,
+          rewardfulAffiliateId: student.rewardfulAffiliateId,
+        });
+        historySync = { status: "COMPLETED", ...syncResult };
+      } catch (error) {
+        console.error(
+          `[admin-pair] commission history sync failed for student ${student.id}:`,
+          error
+        );
+        historySync = {
+          status: "FAILED",
+          error:
+            "The relationship was created, but commission history sync failed. Retry syncing this affiliate from the admin panel.",
+        };
+      }
+    }
 
     const [allTeachers, studentOwn] = await Promise.all([
       prisma.teacherStudent.findMany({
@@ -157,6 +193,7 @@ export async function POST(req: NextRequest) {
       ok: true,
       relationshipId: activation.relationship.id,
       historicalBackfillCreated: activation.historicalBackfillCreated,
+      historySync,
       allocationWarning,
       totalAllocated,
     });

@@ -8,6 +8,7 @@ import {
 import Decimal from "decimal.js";
 
 import { getCadToUsdRate } from "@/lib/currency";
+import { UNPAID_HISTORICAL_AFFILIATE_STATUSES } from "@/lib/historical-backfill-rules";
 import { prisma } from "@/lib/prisma";
 import { planCompleteTeacherStudentRemoval } from "@/lib/teacher-student-removal";
 
@@ -437,8 +438,17 @@ async function createUnpaidHistoricalTeacherSplitsTx(
   const historicalEvents = await tx.commissionEvent.findMany({
     where: {
       affiliateId: studentId,
+      upstreamPaidAt: null,
+      upstreamVoidedAt: null,
+      OR: [
+        { upstreamState: null },
+        { upstreamState: { notIn: ["paid", "voided"] } },
+      ],
       splits: {
-        some: { role: "AFFILIATE", status: "EARNED" },
+        some: {
+          role: "AFFILIATE",
+          status: { in: UNPAID_HISTORICAL_AFFILIATE_STATUSES },
+        },
         none: { role: "TEACHER", recipientId: teacherId },
       },
     },
