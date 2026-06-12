@@ -8,6 +8,10 @@ import {
   PROMO_CODE_MIN_LENGTH,
 } from "@/lib/constants";
 import { prisma } from "@/lib/prisma";
+import {
+  formatPromoCodeCreationError,
+  selectPromoCodeCampaign,
+} from "@/lib/promo-code-campaign";
 import * as rewardful from "@/lib/rewardful";
 
 /**
@@ -150,32 +154,22 @@ export async function POST(
     );
   }
 
-  // Mirror the approval-path guard: a campaign without a Stripe coupon
-  // can't actually discount at checkout, so the code would be silently
-  // inert and commissions wouldn't track. Block up-front. Also resolves
-  // the campaign name up-front so the local audit row is populated even
-  // if Rewardful's create response omits the expanded campaign object.
+  // Resolve the campaign name up-front so the local audit row is populated
+  // even if the create response omits the expanded campaign object.
   let resolvedCampaignName: string | null = null;
   try {
     const campaigns = await rewardful.listCampaigns({ limit: 100 });
-    const campaign = campaigns.data.find((c) => c.id === body.campaignId);
-    if (!campaign) {
-      return NextResponse.json(
-        { error: "Campaign not found" },
-        { status: 404 }
-      );
-    }
-    if (!campaign.stripe_coupon_id) {
-      return NextResponse.json(
-        {
-          error:
-            "Campaign has no Stripe coupon configured. Configure it in the upstream campaign settings before creating a promo code.",
-        },
-        { status: 422 }
-      );
-    }
+    const campaign = selectPromoCodeCampaign(campaigns.data, body.campaignId);
     resolvedCampaignName = campaign.name;
   } catch (err) {
+    const errorMessage = formatPromoCodeCreationError(err);
+    if (
+      errorMessage === "No commission plans found" ||
+      errorMessage === "Specified commission plan not found"
+    ) {
+      return NextResponse.json({ error: errorMessage }, { status: 404 });
+    }
+
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[admin promo-codes] campaign check failed:`, msg);
     return NextResponse.json(
@@ -220,8 +214,9 @@ export async function POST(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[admin promo-codes] create failed for ${id}:`, msg);
+    const errorMessage = formatPromoCodeCreationError(err);
     return NextResponse.json(
-      { error: `Upstream rejected: ${msg}` },
+      { error: errorMessage },
       { status: 502 }
     );
   }

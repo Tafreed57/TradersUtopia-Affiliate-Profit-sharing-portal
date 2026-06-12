@@ -273,9 +273,17 @@ interface StudentsResponse {
 
 interface UserSearchResult {
   id: string;
+  source: "portal" | "upstream";
+  portalUserId: string | null;
+  upstreamAffiliateId: string | null;
   name: string | null;
   email: string;
   image: string | null;
+}
+
+interface AdminStudentSearchResponse {
+  data: UserSearchResult[];
+  upstreamSearchFailed: boolean;
 }
 
 interface DetailCommission {
@@ -772,10 +780,14 @@ function AdminPairStudentDialog({
   const [selected, setSelected] = useState<UserSearchResult | null>(null);
   const [teacherCut, setTeacherCut] = useState("");
 
-  const { data: searchResults, isFetching } = useQuery<{ data: UserSearchResult[] }>({
+  const { data: searchResults, isFetching } = useQuery<AdminStudentSearchResponse>({
     queryKey: ["admin-pair-student-search", teacherId, search],
     queryFn: async () =>
-      fetchJson(`/api/users/search?q=${encodeURIComponent(search)}`),
+      fetchJson(
+        `/api/admin/student-search?q=${encodeURIComponent(
+          search
+        )}&teacherId=${encodeURIComponent(teacherId)}`
+      ),
     enabled: open && search.length >= 2,
     retry: false,
   });
@@ -787,7 +799,12 @@ function AdminPairStudentDialog({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           teacherId,
-          studentId: selected!.id,
+          studentId:
+            selected!.source === "portal" ? selected!.portalUserId : undefined,
+          upstreamAffiliateId:
+            selected!.source === "upstream"
+              ? selected!.upstreamAffiliateId
+              : undefined,
           teacherCut: Number(teacherCut),
         }),
       });
@@ -903,8 +920,18 @@ function AdminPairStudentDialog({
                               </p>
                             )}
                           </div>
+                          {user.source === "upstream" && (
+                            <Badge variant="outline" className="ml-auto shrink-0">
+                              Not signed in
+                            </Badge>
+                          )}
                         </button>
                       ))
+                    )}
+                    {searchResults?.upstreamSearchFailed && (
+                      <div className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
+                        Account search is temporarily unavailable.
+                      </div>
                     )}
                   </div>
                 )}

@@ -5,6 +5,10 @@ import { z } from "zod";
 import { authOptions } from "@/lib/auth-options";
 import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
+import {
+  formatPromoCodeCreationError,
+  selectPromoCodeCampaign,
+} from "@/lib/promo-code-campaign";
 import { createCoupon, listCampaigns } from "@/lib/rewardful";
 
 const approveSchema = z.object({
@@ -17,7 +21,7 @@ const approveSchema = z.object({
  * POST /api/promo-codes/:id/approve
  *
  * Teacher approves or rejects a student's promo code request.
- * On approval, auto-creates the coupon via Rewardful API.
+ * On approval, auto-creates the coupon via the commission-system API.
  */
 export async function POST(
   req: NextRequest,
@@ -128,23 +132,10 @@ export async function POST(
         throw new Error("No commission plans found");
       }
 
-      const selectedCampaign = campaign_id
-        ? campaigns.data.find((c) => c.id === campaign_id)
-        : campaigns.data.find((c) => c.default) ?? campaigns.data[0];
-
-      if (!selectedCampaign) {
-        throw new Error("Specified commission plan not found");
-      }
-
-      // Guard: a commission plan without a linked Stripe coupon cannot map
-      // promo codes to Stripe promotion codes. Approving against it silently
-      // no-ops at checkout (purchase goes through, no commission is tracked).
-      // Block here so the admin knows exactly what's missing.
-      if (!selectedCampaign.stripe_coupon_id) {
-        throw new Error(
-          `"${selectedCampaign.name}" is missing its Stripe coupon. Ask the owner to configure "Campaign coupon" for this plan before approving codes against it.`
-        );
-      }
+      const selectedCampaign = selectPromoCodeCampaign(
+        campaigns.data,
+        campaign_id
+      );
 
       const coupon = await createCoupon({
         affiliate_id: request.requester.rewardfulAffiliateId,
@@ -174,8 +165,10 @@ export async function POST(
 
       return NextResponse.json(updated);
     } catch (apiError) {
-      const errorMessage =
-        apiError instanceof Error ? apiError.message : "Unknown error";
+      const rawMessage =
+        apiError instanceof Error ? apiError.message : String(apiError);
+      console.error(`[promo-code-approve] create failed for ${id}:`, rawMessage);
+      const errorMessage = formatPromoCodeCreationError(apiError);
 
       await prisma.promoCodeRequest.update({
         where: { id },
@@ -188,7 +181,7 @@ export async function POST(
       });
 
       return NextResponse.json(
-        { error: `Failed to create code: ${errorMessage}` },
+        { error: errorMessage },
         { status: 422 }
       );
     }

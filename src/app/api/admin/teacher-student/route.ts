@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { z } from "zod";
 
+import {
+  findOrCreatePortalUserForUpstreamAffiliate,
+  UpstreamAffiliateLinkError,
+} from "@/lib/admin-upstream-affiliate-link";
 import { authOptions } from "@/lib/auth-options";
 import { TEACHER_CUT_WARN_THRESHOLD } from "@/lib/constants";
 import { createNotification } from "@/lib/notifications";
@@ -12,8 +16,12 @@ export const maxDuration = 300;
 
 const pairSchema = z.object({
   teacherId: z.string().min(1),
-  studentId: z.string().min(1),
+  studentId: z.string().min(1).optional(),
+  upstreamAffiliateId: z.string().min(1).optional(),
   teacherCut: z.number().min(0).max(100).default(0),
+}).refine((value) => value.studentId || value.upstreamAffiliateId, {
+  message: "Student is required",
+  path: ["studentId"],
 });
 
 /**
@@ -31,7 +39,28 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { teacherId, studentId, teacherCut } = pairSchema.parse(body);
+    const parsed = pairSchema.parse(body);
+    const { teacherId, teacherCut, upstreamAffiliateId } = parsed;
+    let { studentId } = parsed;
+
+    const teacher = await prisma.user.findUnique({
+      where: { id: teacherId },
+      select: { id: true, name: true, email: true },
+    });
+    if (!teacher) {
+      return NextResponse.json({ error: "Teacher not found" }, { status: 404 });
+    }
+
+    if (!studentId && upstreamAffiliateId) {
+      const linkedUser = await findOrCreatePortalUserForUpstreamAffiliate(
+        upstreamAffiliateId
+      );
+      studentId = linkedUser.id;
+    }
+
+    if (!studentId) {
+      return NextResponse.json({ error: "Student is required" }, { status: 400 });
+    }
 
     if (teacherId === studentId) {
       return NextResponse.json(
@@ -40,11 +69,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const [teacher, student, existing] = await Promise.all([
-      prisma.user.findUnique({
-        where: { id: teacherId },
-        select: { id: true, name: true, email: true },
-      }),
+    const [student, existing] = await Promise.all([
       prisma.user.findUnique({
         where: { id: studentId },
         select: { id: true, name: true, email: true },
@@ -55,9 +80,6 @@ export async function POST(req: NextRequest) {
       }),
     ]);
 
-    if (!teacher) {
-      return NextResponse.json({ error: "Teacher not found" }, { status: 404 });
-    }
     if (!student) {
       return NextResponse.json({ error: "Student not found" }, { status: 404 });
     }
@@ -144,6 +166,9 @@ export async function POST(req: NextRequest) {
         { error: "Invalid input", details: err.issues },
         { status: 400 }
       );
+    }
+    if (err instanceof UpstreamAffiliateLinkError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
     }
     console.error("[admin-pair] failed:", err);
     return NextResponse.json(

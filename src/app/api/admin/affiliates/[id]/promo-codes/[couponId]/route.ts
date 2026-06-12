@@ -79,7 +79,7 @@ export async function DELETE(
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[admin promo-codes] delete failed for ${couponId}:`, msg);
     return NextResponse.json(
-      { error: `Upstream rejected: ${msg}` },
+      { error: "Failed to delete promo code" },
       { status: 502 }
     );
   }
