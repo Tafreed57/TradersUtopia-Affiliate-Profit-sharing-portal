@@ -157,12 +157,14 @@ export async function GET() {
       const coupons = await rewardful.listAllCouponsForAffiliate(
         me.rewardfulAffiliateId
       );
-      activeCoupons = coupons.map((c) => ({
-        id: c.id,
-        code: rewardful.couponCode(c),
-        campaignName: c.campaign?.name ?? null,
-        createdAt: c.created_at ?? null,
-      }));
+      activeCoupons = coupons
+        .filter((c) => c.archived !== true)
+        .map((c) => ({
+          id: c.id,
+          code: rewardful.couponCode(c),
+          campaignName: c.campaign?.name ?? null,
+          createdAt: c.created_at ?? null,
+        }));
     } catch (err) {
       // 404: stored rewardfulAffiliateId no longer exists upstream (test
       // fixture, cleared campaign, manual deletion). Same handling as

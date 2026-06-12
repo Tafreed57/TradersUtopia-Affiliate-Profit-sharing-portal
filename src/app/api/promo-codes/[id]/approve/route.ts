@@ -5,17 +5,30 @@ import { z } from "zod";
 import { authOptions } from "@/lib/auth-options";
 import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
+import { formatPromoCodeCreationError } from "@/lib/promo-code-campaign";
 import {
-  formatPromoCodeCreationError,
-  selectPromoCodeCampaign,
-} from "@/lib/promo-code-campaign";
-import { createCoupon, listCampaigns } from "@/lib/rewardful";
+  couponCode,
+  createCoupon,
+  listAllCouponsForAffiliate,
+  type RewardfulCoupon,
+} from "@/lib/rewardful";
 
 const approveSchema = z.object({
   action: z.enum(["approve", "reject"]),
   reason: z.string().optional(),
-  campaign_id: z.string().optional(),
 });
+
+function activeCouponForCode(
+  coupons: RewardfulCoupon[],
+  code: string
+): RewardfulCoupon | undefined {
+  const normalized = code.toUpperCase();
+  return coupons.find(
+    (coupon) =>
+      coupon.archived !== true &&
+      couponCode(coupon).toUpperCase() === normalized
+  );
+}
 
 /**
  * POST /api/promo-codes/:id/approve
@@ -36,7 +49,7 @@ export async function POST(
 
   try {
     const body = await req.json();
-    const { action, reason, campaign_id } = approveSchema.parse(body);
+    const { action, reason } = approveSchema.parse(body);
 
     // Get the promo code request
     const request = await prisma.promoCodeRequest.findUnique({
@@ -111,7 +124,7 @@ export async function POST(
       return NextResponse.json(updated);
     }
 
-    // Approve — create coupon via Rewardful
+    // Approve - create an affiliate coupon upstream.
     if (!request.requester.rewardfulAffiliateId) {
       const updated = await prisma.promoCodeRequest.update({
         where: { id },
@@ -126,22 +139,19 @@ export async function POST(
     }
 
     try {
-      // Resolve campaign: use provided campaign_id or fall back to default
-      const campaigns = await listCampaigns({ limit: 100 });
-      if (!campaigns.data.length) {
-        throw new Error("No commission plans found");
-      }
-
-      const selectedCampaign = selectPromoCodeCampaign(
-        campaigns.data,
-        campaign_id
+      // Retry is idempotent: if the code already exists on this affiliate
+      // upstream, repair the local audit row instead of creating a duplicate.
+      const existingCoupon = activeCouponForCode(
+        await listAllCouponsForAffiliate(request.requester.rewardfulAffiliateId),
+        request.proposedCode
       );
 
-      const coupon = await createCoupon({
-        affiliate_id: request.requester.rewardfulAffiliateId,
-        campaign_id: selectedCampaign.id,
-        code: request.proposedCode,
-      });
+      const coupon =
+        existingCoupon ??
+        (await createCoupon({
+          affiliate_id: request.requester.rewardfulAffiliateId,
+          code: request.proposedCode,
+        }));
 
       const updated = await prisma.promoCodeRequest.update({
         where: { id },
@@ -150,8 +160,9 @@ export async function POST(
           reviewerId: session.user.id,
           reviewedAt: new Date(),
           rewardfulCouponId: coupon.id,
-          campaignId: selectedCampaign.id,
-          campaignName: selectedCampaign.name,
+          campaignId: coupon.campaign?.id ?? null,
+          campaignName: coupon.campaign?.name ?? null,
+          errorMessage: null,
         },
       });
 

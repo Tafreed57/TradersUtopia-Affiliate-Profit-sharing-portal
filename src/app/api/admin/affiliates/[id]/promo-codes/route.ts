@@ -8,10 +8,7 @@ import {
   PROMO_CODE_MIN_LENGTH,
 } from "@/lib/constants";
 import { prisma } from "@/lib/prisma";
-import {
-  formatPromoCodeCreationError,
-  selectPromoCodeCampaign,
-} from "@/lib/promo-code-campaign";
+import { formatPromoCodeCreationError } from "@/lib/promo-code-campaign";
 import * as rewardful from "@/lib/rewardful";
 
 /**
@@ -55,6 +52,8 @@ export async function GET(
         code: rewardful.couponCode(c),
         campaignId: c.campaign?.id ?? null,
         campaignName: c.campaign?.name ?? null,
+        archived: c.archived ?? false,
+        archivedAt: c.archived_at ?? null,
         leads: c.leads ?? 0,
         conversions: c.conversions ?? 0,
         createdAt: c.created_at,
@@ -80,10 +79,10 @@ export async function GET(
 /**
  * POST /api/admin/affiliates/:id/promo-codes
  *
- * Admin-created promo code. Bypasses the affiliate-request→teacher-approval
- * flow — admin-created codes are immediately active at Rewardful.
+ * Admin-created promo code. Bypasses the affiliate request / teacher approval
+ * flow. Admin-created codes are immediately active upstream.
  *
- * Body: { code: string, campaignId: string }
+ * Body: { code: string }
  */
 const createSchema = z.object({
   code: z
@@ -91,7 +90,6 @@ const createSchema = z.object({
     .min(PROMO_CODE_MIN_LENGTH)
     .max(PROMO_CODE_MAX_LENGTH)
     .regex(/^[A-Za-z0-9]+$/, "Code must contain only letters and digits"),
-  campaignId: z.string().min(1, "Campaign is required"),
 });
 
 export async function POST(
@@ -154,41 +152,31 @@ export async function POST(
     );
   }
 
-  // Resolve the campaign name up-front so the local audit row is populated
-  // even if the create response omits the expanded campaign object.
-  let resolvedCampaignName: string | null = null;
   try {
-    const campaigns = await rewardful.listCampaigns({ limit: 100 });
-    const campaign = selectPromoCodeCampaign(campaigns.data, body.campaignId);
-    resolvedCampaignName = campaign.name;
-  } catch (err) {
-    const errorMessage = formatPromoCodeCreationError(err);
-    if (
-      errorMessage === "No commission plans found" ||
-      errorMessage === "Specified commission plan not found"
-    ) {
-      return NextResponse.json({ error: errorMessage }, { status: 404 });
+    const existingCoupons = await rewardful.listAllCouponsForAffiliate(
+      user.rewardfulAffiliateId
+    );
+    const existingActiveCoupon = existingCoupons.find(
+      (coupon) =>
+        coupon.archived !== true &&
+        rewardful.couponCode(coupon).toUpperCase() === normalizedCode
+    );
+
+    if (existingActiveCoupon) {
+      return NextResponse.json(
+        { error: `Code "${normalizedCode}" already exists for this affiliate.` },
+        { status: 409 }
+      );
     }
 
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[admin promo-codes] campaign check failed:`, msg);
-    return NextResponse.json(
-      { error: "Failed to verify campaign" },
-      { status: 502 }
-    );
-  }
-
-  try {
     const created = await rewardful.createCoupon({
       affiliate_id: user.rewardfulAffiliateId,
-      campaign_id: body.campaignId,
       code: normalizedCode,
     });
 
     // Record locally as a CREATED request with the admin as reviewer so
     // the audit trail stays consistent. The admin-direct path sets
-    // reviewerId = admin who ran it. Falls back to the resolved
-    // campaign name if Rewardful's create response didn't expand it.
+    // reviewerId = admin who ran it.
     await prisma.promoCodeRequest.create({
       data: {
         requesterId: id,
@@ -196,8 +184,8 @@ export async function POST(
         proposedCode: normalizedCode,
         status: "CREATED",
         rewardfulCouponId: created.id,
-        campaignId: body.campaignId,
-        campaignName: created.campaign?.name ?? resolvedCampaignName,
+        campaignId: created.campaign?.id ?? null,
+        campaignName: created.campaign?.name ?? null,
         reviewedAt: new Date(),
       },
     });

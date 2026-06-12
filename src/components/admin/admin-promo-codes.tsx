@@ -10,13 +10,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 
 interface AdminCoupon {
@@ -24,14 +17,11 @@ interface AdminCoupon {
   code: string;
   campaignId: string | null;
   campaignName: string | null;
+  archived: boolean;
+  archivedAt: string | null;
   leads: number;
   conversions: number;
   createdAt: string;
-}
-
-interface AdminCampaign {
-  id: string;
-  name: string;
 }
 
 /**
@@ -44,7 +34,6 @@ interface AdminCampaign {
 export function AdminPromoCodes({ affiliateId }: { affiliateId: string }) {
   const qc = useQueryClient();
   const [newCode, setNewCode] = useState("");
-  const [campaignId, setCampaignId] = useState("");
 
   const { data, isLoading } = useQuery<{ coupons: AdminCoupon[] }>({
     queryKey: ["admin-affiliate-coupons", affiliateId],
@@ -57,15 +46,6 @@ export function AdminPromoCodes({ affiliateId }: { affiliateId: string }) {
     },
   });
 
-  const { data: campaigns } = useQuery<{ data: AdminCampaign[] }>({
-    queryKey: ["admin-campaigns"],
-    queryFn: async () => {
-      const res = await fetch("/api/admin/campaigns");
-      if (!res.ok) throw new Error("Failed to fetch campaigns");
-      return res.json();
-    },
-  });
-
   const createMutation = useMutation({
     mutationFn: async () => {
       const res = await fetch(
@@ -73,7 +53,7 @@ export function AdminPromoCodes({ affiliateId }: { affiliateId: string }) {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ code: newCode.trim(), campaignId }),
+          body: JSON.stringify({ code: newCode.trim() }),
         }
       );
       const payload = await res.json().catch(() => ({}));
@@ -109,8 +89,7 @@ export function AdminPromoCodes({ affiliateId }: { affiliateId: string }) {
     onError: (err: Error) => toast.error(err.message),
   });
 
-  const canSubmit =
-    newCode.trim().length >= 4 && campaignId && !createMutation.isPending;
+  const canSubmit = newCode.trim().length >= 4 && !createMutation.isPending;
 
   return (
     <Card>
@@ -124,7 +103,7 @@ export function AdminPromoCodes({ affiliateId }: { affiliateId: string }) {
         {/* Admin create — bypasses the affiliate-request / teacher-approval flow. */}
         <div className="rounded-lg border border-border/50 p-3 space-y-3">
           <p className="text-sm font-medium">Create new code</p>
-          <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] items-end">
+          <div className="grid gap-3 sm:grid-cols-[1fr_auto] items-end">
             <div className="space-y-1">
               <Label className="text-xs">Code</Label>
               <Input
@@ -133,24 +112,6 @@ export function AdminPromoCodes({ affiliateId }: { affiliateId: string }) {
                 onChange={(e) => setNewCode(e.target.value.toUpperCase())}
                 maxLength={6}
               />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Campaign</Label>
-              <Select
-                value={campaignId}
-                onValueChange={(v) => setCampaignId(v ?? "")}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Pick a campaign" />
-                </SelectTrigger>
-                <SelectContent>
-                  {campaigns?.data?.map((c) => (
-                    <SelectItem key={c.id} value={c.id}>
-                      {c.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
             </div>
             <Button
               onClick={() => createMutation.mutate()}
@@ -191,14 +152,16 @@ export function AdminPromoCodes({ affiliateId }: { affiliateId: string }) {
                     <span className="font-mono font-bold">{coupon.code}</span>
                     <Badge
                       variant="default"
-                      className="bg-success/15 text-success border-success/30"
+                      className={
+                        coupon.archived
+                          ? "bg-muted text-muted-foreground border-border"
+                          : "bg-success/15 text-success border-success/30"
+                      }
                     >
-                      Active
+                      {coupon.archived ? "Archived" : "Active"}
                     </Badge>
                   </div>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    {coupon.campaignName ?? "Unknown campaign"}
-                    {" · "}
                     {coupon.leads} leads · {coupon.conversions} conversions
                   </p>
                 </div>

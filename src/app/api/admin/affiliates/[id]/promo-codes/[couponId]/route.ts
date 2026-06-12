@@ -42,7 +42,7 @@ export async function DELETE(
   // affiliate before deleting. Prevents a stale or manually-constructed
   // request from deleting another affiliate's code via this scoped URL.
   // Uses the paginated list rather than a direct GET because the free
-  // endpoint doesn't expose a /coupons/:id lookup; at realistic scales
+  // endpoint doesn't need a direct coupon lookup; at realistic scales
   // (dozens of coupons per affiliate) this is cheap.
   try {
     const coupons = await rewardful.listAllCouponsForAffiliate(

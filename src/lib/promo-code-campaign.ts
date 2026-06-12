@@ -37,11 +37,11 @@ export function formatPromoCodeCreationError(error: unknown): string {
     }
 
     if (apiError.status === 404) {
-      return "The selected commission plan or affiliate account could not be found.";
+      return "The affiliate account for this promo code could not be found.";
     }
 
     if (apiError.status === 422) {
-      return "The selected commission plan could not create that promo code. Try another plan or code.";
+      return "That promo code could not be created. Try another code.";
     }
   }
 
