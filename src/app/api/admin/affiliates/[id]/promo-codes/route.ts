@@ -8,7 +8,7 @@ import {
   PROMO_CODE_MIN_LENGTH,
 } from "@/lib/constants";
 import { prisma } from "@/lib/prisma";
-import { formatPromoCodeCreationError } from "@/lib/promo-code-campaign";
+import { createReservedPromoCode, PromoCodeConflict, reservePromoCode } from "@/lib/promo-code-service";
 import * as rewardful from "@/lib/rewardful";
 
 /**
@@ -132,80 +132,26 @@ export async function POST(
 
   const normalizedCode = body.code.toUpperCase();
 
-  // Mirror the public request-flow uniqueness guard: if the code is
-  // already reserved (pending, approved, or created) for ANY affiliate,
-  // admin creation would collide with it at Rewardful and doom the
-  // other request. Block early with a clear message.
-  const conflict = await prisma.promoCodeRequest.findFirst({
-    where: {
-      proposedCode: normalizedCode,
-      status: { in: ["PENDING_TEACHER", "APPROVED_TEACHER", "CREATED"] },
-    },
-    select: { id: true, requesterId: true, status: true },
-  });
-  if (conflict) {
-    return NextResponse.json(
-      {
-        error: `Code "${normalizedCode}" is already reserved (status: ${conflict.status}). Resolve the existing request before creating.`,
-      },
-      { status: 409 }
-    );
-  }
-
   try {
-    const existingCoupons = await rewardful.listAllCouponsForAffiliate(
-      user.rewardfulAffiliateId
-    );
-    const existingActiveCoupon = existingCoupons.find(
-      (coupon) =>
-        coupon.archived !== true &&
-        rewardful.couponCode(coupon).toUpperCase() === normalizedCode
-    );
-
-    if (existingActiveCoupon) {
-      return NextResponse.json(
-        { error: `Code "${normalizedCode}" already exists for this affiliate.` },
-        { status: 409 }
-      );
-    }
-
-    const created = await rewardful.createCoupon({
-      affiliate_id: user.rewardfulAffiliateId,
-      code: normalizedCode,
+    const { request } = await reservePromoCode({
+      requesterId: id, code: normalizedCode, immediate: true, reviewerId: session.user.id,
     });
-
-    // Record locally as a CREATED request with the admin as reviewer so
-    // the audit trail stays consistent. The admin-direct path sets
-    // reviewerId = admin who ran it.
-    await prisma.promoCodeRequest.create({
-      data: {
-        requesterId: id,
-        reviewerId: session.user.id,
-        proposedCode: normalizedCode,
-        status: "CREATED",
-        rewardfulCouponId: created.id,
-        campaignId: created.campaign?.id ?? null,
-        campaignName: created.campaign?.name ?? null,
-        reviewedAt: new Date(),
-      },
+    const outcome = await createReservedPromoCode({
+      request, affiliateId: user.rewardfulAffiliateId, reviewerId: session.user.id,
     });
-
+    if (outcome.result === "unavailable") return NextResponse.json({ error: "This code is unavailable. Try a different code." }, { status: 409 });
+    if (outcome.result === "failed") return NextResponse.json({ error: outcome.request.errorMessage }, { status: 502 });
     return NextResponse.json({
-      ok: true,
-      coupon: {
-        id: created.id,
-        code: created.token,
-        campaignId: created.campaign?.id ?? null,
-        campaignName: created.campaign?.name ?? null,
-      },
-    });
+      ok: outcome.result === "created",
+      status: outcome.request.status,
+      coupon: outcome.result === "created" ? {
+        id: outcome.request.rewardfulCouponId, code: outcome.request.proposedCode,
+        campaignId: outcome.request.campaignId, campaignName: outcome.request.campaignName,
+      } : null,
+    }, { status: outcome.result === "busy" ? 202 : 200 });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[admin promo-codes] create failed for ${id}:`, msg);
-    const errorMessage = formatPromoCodeCreationError(err);
-    return NextResponse.json(
-      { error: errorMessage },
-      { status: 502 }
-    );
+    if (err instanceof PromoCodeConflict) return NextResponse.json({ error: err.message }, { status: 409 });
+    console.error(`[admin promo-codes] create failed for ${id}:`, err);
+    return NextResponse.json({ error: "The promo code could not be created right now. Try again later." }, { status: 502 });
   }
 }

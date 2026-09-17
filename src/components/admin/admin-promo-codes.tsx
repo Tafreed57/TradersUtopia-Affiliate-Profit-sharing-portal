@@ -60,10 +60,15 @@ export function AdminPromoCodes({ affiliateId }: { affiliateId: string }) {
       if (!res.ok) {
         throw new Error(payload.error ?? "Failed to create promo code");
       }
-      return payload;
+      return { created: res.status !== 202 && payload.status === "CREATED" };
     },
-    onSuccess: () => {
+    onSuccess: ({ created }) => {
       qc.invalidateQueries({ queryKey: ["admin-affiliate-coupons", affiliateId] });
+      qc.invalidateQueries({ queryKey: ["admin", "promo-codes"] });
+      if (!created) {
+        toast.info("This code is still being created. Retry the same code shortly.");
+        return;
+      }
       setNewCode("");
       toast.success("Promo code created");
     },
@@ -123,8 +128,8 @@ export function AdminPromoCodes({ affiliateId }: { affiliateId: string }) {
             </Button>
           </div>
           <p className="text-xs text-muted-foreground">
-            Admin-created codes are active immediately — no teacher approval
-            required. The affiliate sees them in their own portal as Active.
+            Codes are ready to share once they appear as Active. No teacher
+            approval is required.
           </p>
         </div>
 

@@ -137,6 +137,7 @@ export async function GET(req: NextRequest) {
         where: { id: { in: affiliateIds } },
         select: {
           id: true,
+          accountType: true,
           initialCommissionPercent: true,
           recurringCommissionPercent: true,
           ratesLocked: true,
@@ -161,6 +162,14 @@ export async function GET(req: NextRequest) {
       for (const { event, newIsRecurring } of toFlip) {
         const user = userMap.get(event.affiliateId);
         if (!user) continue;
+        if (user.accountType === "WORK") {
+          await prisma.commissionEvent.update({
+            where: { id: event.id },
+            data: { isRecurring: newIsRecurring, ceoCut: event.fullAmount },
+          });
+          classificationFlipped += 1;
+          continue;
+        }
 
         const rate = newIsRecurring
           ? new Decimal(user.recurringCommissionPercent.toString())

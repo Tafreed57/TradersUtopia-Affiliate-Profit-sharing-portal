@@ -131,6 +131,23 @@ export interface RewardfulCommission {
   updated_at: string;
 }
 
+/**
+ * Returns the stable commission base used by the portal's split engine.
+ *
+ * The nested sale amount is mutable and becomes zero after a full refund,
+ * even when the commission remains paid. The top-level commission amount is
+ * the stable value reflected in commission totals. Older payload variants
+ * without that field can still fall back to the nested sale amount.
+ */
+export function rewardfulCommissionBaseAmountCents(commission: {
+  amount?: number | null;
+  sale?: { sale_amount_cents?: number | null } | null;
+}): number | null {
+  if (typeof commission.amount === "number") return commission.amount;
+  const saleAmount = commission.sale?.sale_amount_cents;
+  return typeof saleAmount === "number" ? saleAmount : null;
+}
+
 export interface RewardfulReferral {
   id: string;
   affiliate: { id: string; email: string };

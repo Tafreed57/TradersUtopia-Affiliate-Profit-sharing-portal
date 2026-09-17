@@ -5,208 +5,71 @@ import { z } from "zod";
 import { authOptions } from "@/lib/auth-options";
 import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
-import { formatPromoCodeCreationError } from "@/lib/promo-code-campaign";
-import {
-  couponCode,
-  createCoupon,
-  listAllCouponsForAffiliate,
-  type RewardfulCoupon,
-} from "@/lib/rewardful";
+import { createReservedPromoCode, PromoCodeConflict, rejectReservedPromoCode } from "@/lib/promo-code-service";
 
-const approveSchema = z.object({
-  action: z.enum(["approve", "reject"]),
-  reason: z.string().optional(),
-});
+const approveSchema = z.object({ action: z.enum(["approve", "reject"]), reason: z.string().max(500).optional() });
 
-function activeCouponForCode(
-  coupons: RewardfulCoupon[],
-  code: string
-): RewardfulCoupon | undefined {
-  const normalized = code.toUpperCase();
-  return coupons.find(
-    (coupon) =>
-      coupon.archived !== true &&
-      couponCode(coupon).toUpperCase() === normalized
-  );
-}
-
-/**
- * POST /api/promo-codes/:id/approve
- *
- * Teacher approves or rejects a student's promo code request.
- * On approval, auto-creates the coupon via the commission-system API.
- */
-export async function POST(
-  req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+/** Teachers review regular affiliates; administrators can also retry failed creation. */
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
+  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id } = await params;
-
   try {
-    const body = await req.json();
-    const { action, reason } = approveSchema.parse(body);
-
-    // Get the promo code request
-    const request = await prisma.promoCodeRequest.findUnique({
-      where: { id },
-      include: {
-        requester: {
-          select: {
-            id: true,
-            rewardfulAffiliateId: true,
-            email: true,
-          },
-        },
-      },
-    });
-
-    if (!request) {
-      return NextResponse.json(
-        { error: "Request not found" },
-        { status: 404 }
-      );
-    }
-
-    const isAdmin = session.user.isAdmin;
-
-    // Admins can retry FAILED codes; teachers can only act on PENDING_TEACHER
-    const allowedStatuses = isAdmin
-      ? ["PENDING_TEACHER", "FAILED"]
-      : ["PENDING_TEACHER"];
-
-    if (!allowedStatuses.includes(request.status)) {
-      return NextResponse.json(
-        { error: "Request has already been reviewed" },
-        { status: 409 }
-      );
-    }
-
-    // Verify the reviewer is a teacher of the requester
-    const isTeacher = await prisma.teacherStudent.findFirst({
-      where: {
-        teacherId: session.user.id,
-        studentId: request.requesterId,
-        status: "ACTIVE",
-      },
-    });
-
-    if (!isTeacher && !isAdmin) {
-      return NextResponse.json(
-        { error: "You are not authorized to review this request" },
-        { status: 403 }
-      );
-    }
-
-    if (action === "reject") {
-      const updated = await prisma.promoCodeRequest.update({
+    const { action, reason } = approveSchema.parse(await req.json());
+    const [reviewer, request] = await Promise.all([
+      prisma.user.findUnique({ where: { id: session.user.id }, select: { accountType: true, status: true } }),
+      prisma.promoCodeRequest.findUnique({
         where: { id },
-        data: {
-          status: "REJECTED_TEACHER",
-          reviewerId: session.user.id,
-          rejectionReason: reason ?? null,
-          reviewedAt: new Date(),
-        },
-      });
+        include: { requester: { select: { rewardfulAffiliateId: true, accountType: true, status: true } } },
+      }),
+    ]);
+    const isAdmin = session.user.isAdmin;
+    if (!reviewer || reviewer.status !== "ACTIVE" || (!isAdmin && reviewer.accountType === "WORK")) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+    if (!request) return NextResponse.json({ error: "Request not found" }, { status: 404 });
+    if (request.requester.status !== "ACTIVE") return NextResponse.json({ error: "Account is unavailable" }, { status: 409 });
+    const isWork = request.requester.accountType === "WORK";
+    const isTeacher = !isWork && await prisma.teacherStudent.findFirst({
+      where: { teacherId: session.user.id, studentId: request.requesterId, status: "ACTIVE" },
+    });
+    if (!isAdmin && !isTeacher) return NextResponse.json({ error: "You are not authorized to review this request" }, { status: 403 });
 
+    const canRetryCreating = request.status === "CREATING" && (isAdmin || request.reviewerId === session.user.id);
+    if (request.status !== "PENDING_TEACHER" && !(isAdmin && request.status === "FAILED") && !canRetryCreating) {
+      return NextResponse.json({ error: "Request has already been reviewed" }, { status: 409 });
+    }
+    if (action === "reject") {
+      const updated = await rejectReservedPromoCode({ requestId: id, reviewerId: session.user.id, reason: reason ?? null });
       await createNotification({
-        userId: request.requesterId,
-        type: "PROMO_CODE_REJECTED",
-        title: "Promo Code Rejected",
+        userId: request.requesterId, dedupeKey: `promo-rejected:${id}`,
+        type: "PROMO_CODE_REJECTED", title: "Promo Code Rejected",
         body: `Your promo code request "${request.proposedCode}" was rejected.${reason ? ` Reason: ${reason}` : ""}`,
         data: { promoCodeRequestId: id },
       });
-
       return NextResponse.json(updated);
     }
-
-    // Approve - create an affiliate coupon upstream.
     if (!request.requester.rewardfulAffiliateId) {
-      const updated = await prisma.promoCodeRequest.update({
-        where: { id },
-        data: {
-          status: "FAILED",
-          reviewerId: session.user.id,
-          reviewedAt: new Date(),
-          errorMessage: "Affiliate not linked to commission system",
-        },
-      });
-      return NextResponse.json(updated);
+      return NextResponse.json({ error: "This account is getting ready. Try again shortly." }, { status: 409 });
     }
-
-    try {
-      // Retry is idempotent: if the code already exists on this affiliate
-      // upstream, repair the local audit row instead of creating a duplicate.
-      const existingCoupon = activeCouponForCode(
-        await listAllCouponsForAffiliate(request.requester.rewardfulAffiliateId),
-        request.proposedCode
-      );
-
-      const coupon =
-        existingCoupon ??
-        (await createCoupon({
-          affiliate_id: request.requester.rewardfulAffiliateId,
-          code: request.proposedCode,
-        }));
-
-      const updated = await prisma.promoCodeRequest.update({
-        where: { id },
-        data: {
-          status: "CREATED",
-          reviewerId: session.user.id,
-          reviewedAt: new Date(),
-          rewardfulCouponId: coupon.id,
-          campaignId: coupon.campaign?.id ?? null,
-          campaignName: coupon.campaign?.name ?? null,
-          errorMessage: null,
-        },
-      });
-
+    const outcome = await createReservedPromoCode({
+      request, affiliateId: request.requester.rewardfulAffiliateId, reviewerId: session.user.id,
+    });
+    if (outcome.result === "unavailable") return NextResponse.json({ error: "This code is unavailable. Try a different code." }, { status: 409 });
+    if (outcome.result === "failed") return NextResponse.json({ error: outcome.request.errorMessage }, { status: 422 });
+    if (outcome.result === "created") {
       await createNotification({
-        userId: request.requesterId,
-        type: "PROMO_CODE_APPROVED",
-        title: "Promo Code Approved!",
-        body: `Your promo code "${request.proposedCode}" has been approved and is now active.`,
+        userId: request.requesterId, dedupeKey: `promo-active:${id}`,
+        type: "PROMO_CODE_APPROVED", title: isWork ? "Promo Code Active" : "Promo Code Approved!",
+        body: isWork ? `Your promo code "${request.proposedCode}" is now active.` : `Your promo code "${request.proposedCode}" has been approved and is now active.`,
         data: { promoCodeRequestId: id },
-      });
-
-      return NextResponse.json(updated);
-    } catch (apiError) {
-      const rawMessage =
-        apiError instanceof Error ? apiError.message : String(apiError);
-      console.error(`[promo-code-approve] create failed for ${id}:`, rawMessage);
-      const errorMessage = formatPromoCodeCreationError(apiError);
-
-      await prisma.promoCodeRequest.update({
-        where: { id },
-        data: {
-          status: "FAILED",
-          reviewerId: session.user.id,
-          reviewedAt: new Date(),
-          errorMessage,
-        },
-      });
-
-      return NextResponse.json(
-        { error: errorMessage },
-        { status: 422 }
-      );
+      }).catch((error) => console.error("Promo activation notification failed:", error));
     }
+    return NextResponse.json(outcome.request, { status: outcome.result === "busy" ? 202 : 200 });
   } catch (error) {
-    if (error instanceof z.ZodError) {
-      return NextResponse.json(
-        { error: "Invalid input", details: error.issues },
-        { status: 400 }
-      );
-    }
+    if (error instanceof PromoCodeConflict) return NextResponse.json({ error: error.message }, { status: 409 });
+    if (error instanceof z.ZodError) return NextResponse.json({ error: "Invalid input", details: error.issues }, { status: 400 });
     console.error("Promo code approval error:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

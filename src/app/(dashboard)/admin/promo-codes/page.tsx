@@ -35,6 +35,7 @@ interface AdminPromoCode {
 const STATUS_CONFIG: Record<string, { label: string; icon: React.ReactNode; className: string }> = {
   PENDING_TEACHER: { label: "Pending Teacher", icon: <Clock className="h-3 w-3" />, className: "bg-warning/15 text-warning border-warning/30" },
   APPROVED_TEACHER: { label: "Creating...", icon: <Clock className="h-3 w-3" />, className: "bg-info/15 text-info border-info/30" },
+  CREATING: { label: "Creating...", icon: <Clock className="h-3 w-3" />, className: "bg-info/15 text-info border-info/30" },
   CREATED: { label: "Active", icon: <Check className="h-3 w-3" />, className: "bg-success/15 text-success border-success/30" },
   REJECTED_TEACHER: { label: "Rejected", icon: <X className="h-3 w-3" />, className: "bg-error/15 text-error border-error/30" },
   FAILED: { label: "Failed", icon: <AlertCircle className="h-3 w-3" />, className: "bg-error/15 text-error border-error/30" },
@@ -55,6 +56,7 @@ export default function AdminPromoCodesPage() {
       if (!res.ok) throw new Error("Failed to fetch promo codes");
       return res.json();
     },
+    refetchInterval: (query) => query.state.data?.data.some((code) => code.status === "CREATING") ? 3000 : false,
   });
 
   const approveMutation = useMutation({
@@ -68,17 +70,25 @@ export default function AdminPromoCodesPage() {
         const err = await res.json().catch(() => ({}));
         throw new Error((err as { error?: string }).error ?? "Failed to process");
       }
-      return res.json();
+      const payload = await res.json();
+      return { status: res.status === 202 ? "CREATING" : payload.status };
     },
-    onSuccess: (_, variables) => {
+    onSuccess: (result, variables) => {
       queryClient.invalidateQueries({ queryKey: ["admin", "promo-codes"] });
-      toast.success(variables.action === "approve" ? "Code approved and created" : "Code rejected");
+      if (variables.action === "reject") {
+        toast.success("Code rejected");
+      } else if (result.status === "CREATED") {
+        toast.success("Code approved and created");
+      } else {
+        toast.info("This code is still being created. You can retry shortly.");
+      }
     },
     onError: (error: Error) => toast.error(error.message),
   });
 
   const pendingCodes = data?.data.filter((c) => c.status === "PENDING_TEACHER") ?? [];
   const allCodes = data?.data ?? [];
+  const retryableCodes = allCodes.filter((code) => code.status === "FAILED" || code.status === "CREATING");
 
   return (
     <div className="space-y-6">
@@ -182,23 +192,24 @@ export default function AdminPromoCodesPage() {
         </CardContent>
       </Card>
 
-      {/* Failed retry section */}
-      {data?.data.some((c) => c.status === "FAILED") && (
-        <Card className="border-error/30">
+      {/* The server safely handles retries while a creation is still in progress. */}
+      {retryableCodes.length > 0 && (
+        <Card>
           <CardHeader>
-            <CardTitle className="text-lg flex items-center gap-2 text-error">
-              <AlertCircle className="h-5 w-5" /> Failed Codes
+            <CardTitle className="text-lg flex items-center gap-2">
+              <RefreshCw className="h-5 w-5" /> Codes Awaiting Creation
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            {data.data.filter((c) => c.status === "FAILED").map((code) => (
-              <div key={code.id} className="flex flex-col gap-2 rounded-lg border border-error/20 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            {retryableCodes.map((code) => (
+              <div key={code.id} className="flex flex-col gap-2 rounded-lg border border-border/50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <div className="flex items-center gap-2">
-                    <Tag className="h-4 w-4 text-error" />
+                    <Tag className="h-4 w-4 text-primary" />
                     <span className="font-mono font-bold">{code.proposedCode}</span>
                     <span className="text-xs text-muted-foreground">for {code.requester.name ?? code.requester.email}</span>
                   </div>
+                  {code.status === "CREATING" && <p className="text-xs text-muted-foreground mt-1">Creation is in progress. If it does not finish, retry this code.</p>}
                   {code.errorMessage && <p className="text-xs text-error mt-1">{code.errorMessage}</p>}
                 </div>
                 <div className="flex gap-2 items-center">

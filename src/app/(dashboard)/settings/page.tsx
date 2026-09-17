@@ -25,14 +25,15 @@ interface UserProfile {
   id: string;
   email: string;
   name: string | null;
-  canProposeRates: boolean;
-  preferredCurrency: string;
+  canProposeRates?: boolean;
+  preferredCurrency?: string;
   createdAt: string;
 }
 
 export default function SettingsPage() {
   const { data: session } = useSession();
   const userId = session?.user?.id;
+  const isWork = session?.user?.accountType === "WORK" && !session.user.isAdmin;
   const { currency, setCurrency } = useCurrency();
   const queryClient = useQueryClient();
   const [notificationPermission, setNotificationPermission] = useState<
@@ -156,7 +157,7 @@ export default function SettingsPage() {
                 </div>
               </div>
 
-              {profile && !profile.canProposeRates && (
+              {!isWork && profile && !profile.canProposeRates && (
                 <div className="flex items-center gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning">
                   <Shield className="h-4 w-4" />
                   Rate proposal access has been revoked by an admin.
@@ -168,7 +169,7 @@ export default function SettingsPage() {
       </Card>
 
       {/* Preferences */}
-      <Card>
+      {!isWork && <Card>
         <CardHeader>
           <CardTitle className="text-lg">Preferences</CardTitle>
         </CardHeader>
@@ -208,7 +209,7 @@ export default function SettingsPage() {
             {saveMutation.isPending ? "Saving..." : "Save Preferences"}
           </Button>
         </CardContent>
-      </Card>
+      </Card>}
 
       <Card>
         <CardHeader>

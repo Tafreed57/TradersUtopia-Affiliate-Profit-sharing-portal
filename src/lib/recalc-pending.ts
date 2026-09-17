@@ -1,6 +1,7 @@
 import { CommissionStatus, Prisma } from "@prisma/client";
 import Decimal from "decimal.js";
 
+import { isCommissionEligible } from "@/lib/account-access";
 import { hasConfiguredCommissionRates } from "@/lib/commission-rate-config";
 import { prisma } from "@/lib/prisma";
 
@@ -46,12 +47,16 @@ export async function runRecalcPending(
     where: { id: affiliateId },
     select: {
       id: true,
+      accountType: true,
       initialCommissionPercent: true,
       recurringCommissionPercent: true,
       ratesConfiguredAt: true,
     },
   });
   if (!affiliate) return { kind: "not_found" };
+  if (!isCommissionEligible(affiliate)) {
+    return { kind: "ok", updated: 0, teacherRowsAffected: 0 };
+  }
 
   const initialRate = new Decimal(affiliate.initialCommissionPercent.toString());
   const recurringRate = new Decimal(

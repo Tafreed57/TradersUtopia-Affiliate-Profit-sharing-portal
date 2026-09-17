@@ -159,10 +159,11 @@ export function EarningsSummaryCard({
 export function EarningsSummary() {
   const { data: session } = useSession();
   const userId = session?.user?.id;
+  const canViewCommissions = !!userId && (session?.user?.accountType === "COMMISSION" || session?.user?.isAdmin === true);
 
   const { data, isLoading, isError } = useQuery<EarningsSummaryData>({
     queryKey: ["lifetime-stats", userId],
-    enabled: !!userId,
+    enabled: canViewCommissions,
     queryFn: async () => {
       const res = await fetch("/api/commissions/lifetime-stats");
       if (!res.ok) throw new Error("failed");
@@ -172,7 +173,7 @@ export function EarningsSummary() {
     refetchOnWindowFocus: false,
   });
 
-  if (isError) return null;
+  if (!canViewCommissions || isError) return null;
 
   return <EarningsSummaryCard data={data} isLoading={isLoading} />;
 }

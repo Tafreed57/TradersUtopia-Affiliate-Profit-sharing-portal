@@ -8,14 +8,14 @@
  * live on the splits. CEO cut is implicit — no CEO split rows.
  *
  * Amounts are stored in the event's native `currency` (USD for US Stripe,
- * CAD for Canadian). Callers that display money must either filter by
- * currency or normalize via getCadToUsdRate() — see
- * anti-patterns/column-name-as-contract.
+ * CAD for Canadian). CAD accounting is derived separately from upstream
+ * state totals; native event amounts remain available for native views.
  */
 
-import { NotificationType, Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import Decimal from "decimal.js";
 
+import { isCommissionEligible } from "@/lib/account-access";
 import { hasConfiguredCommissionRates } from "@/lib/commission-rate-config";
 import { resolveCommissionStatus } from "@/lib/commission-status-rules";
 import {
@@ -23,7 +23,14 @@ import {
   mapTeacherRelationToCutInfo,
   type TeacherCutInfo,
 } from "@/lib/commission-teacher-chain";
+import { getCommissionCadAllocation } from "@/lib/commission-cad-service";
+import {
+  buildCommissionValueNotifications,
+  type CommissionValueNotificationEvent,
+  type CommissionValueNotificationSplit,
+} from "@/lib/commission-value-notification-data";
 import { TEACHER_CUT_WARN_THRESHOLD } from "@/lib/constants";
+import { createNotifications } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
 import type { RewardfulCommissionState } from "@/lib/rewardful";
 
@@ -49,29 +56,29 @@ export interface WebhookConversion {
   rawPayload: Record<string, unknown>;
 }
 
-interface NotificationItem {
-  userId: string;
-  type: NotificationType;
-  title: string;
-  body: string;
-  data?: Record<string, unknown>;
-}
-
 export interface ProcessingResult {
   success: boolean;
   skipped?: boolean;
   reason?: string;
   commissionsCreated?: number;
   warnings?: string[];
-  notifications?: NotificationItem[];
 }
+
+export interface ProcessConversionOptions {
+  notify?: boolean;
+}
+
+type CreatedCommissionEventForNotifications = CommissionValueNotificationEvent & {
+  splits: CommissionValueNotificationSplit[];
+};
 
 // ---------------------------------------------------------------------------
 // Engine
 // ---------------------------------------------------------------------------
 
 export async function processConversion(
-  conversion: WebhookConversion
+  conversion: WebhookConversion,
+  options: ProcessConversionOptions = {}
 ): Promise<ProcessingResult> {
   const warnings: string[] = [];
 
@@ -128,13 +135,14 @@ export async function processConversion(
     : false;
 
   // 3. Get teacher chain (active teachers at depth 1 and 2).
-  const teacherChain = await getTeacherChain(affiliate.id);
+  const commissionEligible = isCommissionEligible(affiliate);
+  const teacherChain = commissionEligible ? await getTeacherChain(affiliate.id) : [];
 
   // 4. Calculate splits. Rate depends on classification: initial vs recurring.
   const applicableRate = isRecurring
     ? affiliate.recurringCommissionPercent
     : affiliate.initialCommissionPercent;
-  const affiliatePercent = new Decimal(applicableRate.toString());
+  const affiliatePercent = new Decimal(commissionEligible ? applicableRate.toString() : 0);
   const affiliateCut = fullAmount.mul(affiliatePercent).div(100);
 
   const teacherCuts = teacherChain.map((t) => ({
@@ -223,7 +231,7 @@ export async function processConversion(
   // fail the create with P2002 — we treat that as a duplicate skip.
   const splitData: Prisma.CommissionSplitCreateWithoutEventInput[] = [];
 
-  splitData.push({
+  if (commissionEligible) splitData.push({
     recipient: { connect: { id: affiliate.id } },
     role: "AFFILIATE",
     cutPercent: affiliatePercent.toDecimalPlaces(2).toNumber(),
@@ -246,8 +254,11 @@ export async function processConversion(
     );
   }
 
+  let createdEventForNotifications: CreatedCommissionEventForNotifications | null =
+    null;
+
   try {
-    await prisma.commissionEvent.create({
+    createdEventForNotifications = await prisma.commissionEvent.create({
       data: {
         rewardfulCommissionId: conversion.rewardfulCommissionId,
         rewardfulReferralId: conversion.rewardfulReferralId ?? null,
@@ -272,6 +283,32 @@ export async function processConversion(
         rewardfulData: conversion.rawPayload as Prisma.InputJsonValue,
         splits: { create: splitData },
       },
+      select: {
+        id: true,
+        rewardfulCommissionId: true,
+        isRecurring: true,
+        conversionDate: true,
+        currency: true,
+        splits: {
+          select: {
+            id: true,
+            recipientId: true,
+            role: true,
+            cutPercent: true,
+            cutAmount: true,
+            providerCutCad: true,
+            status: true,
+            recipient: {
+              select: {
+                id: true,
+                status: true,
+                canSeeRecurringCommissions: true,
+                recurringCommissionsVisibleFrom: true,
+              },
+            },
+          },
+        },
+      },
     });
   } catch (err) {
     // P2002 on rewardfulCommissionId or idempotencyKey → a concurrent webhook
@@ -294,48 +331,64 @@ export async function processConversion(
     throw err;
   }
 
-  // 8. Notifications.
-  const notifications: NotificationItem[] = [];
-
-  if (isRateNotSet) {
-    // Rate not set — no notification; UI banner surfaces the unset-rate state.
-  } else if (affiliateReason === "affiliate_deactivated") {
-    // Deactivated affiliate — suppress notification entirely. They've been
-    // offboarded; a normal payout push would be wrong + misleading. Audit
-    // trail lives in the CommissionSplit row.
-  } else if (finalAffiliateCut.eq(0)) {
-    notifications.push({
-      userId: affiliate.id,
-      type: "CONVERSION_RECEIVED",
-      title: "Conversion Recorded",
-      body: `A conversion was recorded under your account. Your current cut on this conversion is $0.00 ${currency}.`,
-      data: { rewardfulCommissionId: conversion.rewardfulCommissionId },
-    });
-  } else {
-    notifications.push({
-      userId: affiliate.id,
-      type: "CONVERSION_RECEIVED",
-      title: "New Commission Earned!",
-      body: `You earned $${finalAffiliateCut.toFixed(2)} ${currency} from a new conversion.`,
-      data: { rewardfulCommissionId: conversion.rewardfulCommissionId },
-    });
+  if (!createdEventForNotifications) {
+    throw new Error(
+      `Commission ${conversion.rewardfulCommissionId} was not available for notification fan-out after create.`
+    );
   }
 
-  for (const tc of teacherCuts) {
-    notifications.push({
-      userId: tc.teacherId,
-      type: "CONVERSION_RECEIVED",
-      title: "Student Conversion",
-      body: `Your student earned a conversion. Your cut: $${tc.amount.toFixed(2)} ${currency}.`,
-      data: { rewardfulCommissionId: conversion.rewardfulCommissionId },
+  if (commissionEligible && options.notify !== false) {
+    let notificationSplits = createdEventForNotifications.splits;
+    try {
+      const cadAllocation = await getCommissionCadAllocation(affiliate.id);
+      notificationSplits = createdEventForNotifications.splits.map((split) => {
+        const providerCutCad = cadAllocation.splitCadById.get(split.id);
+        return providerCutCad
+          ? {
+              ...split,
+              providerCutCad: providerCutCad.toDecimalPlaces(2).toString(),
+            }
+          : split;
+      });
+
+      if (cadAllocation.reason !== "ok") {
+        warnings.push(
+          `Provider CAD allocation ${cadAllocation.reason}; unresolved USD commission value notification(s) skipped`
+        );
+      }
+    } catch (error) {
+      console.error(
+        `[commission-engine] failed to resolve provider CAD before notification fan-out for ${conversion.rewardfulCommissionId}:`,
+        error
+      );
+      warnings.push(
+        "Provider CAD allocation failed; unresolved USD commission value notification(s) skipped"
+      );
+    }
+
+    const notifications = buildCommissionValueNotifications({
+      event: createdEventForNotifications,
+      splits: notificationSplits,
     });
+
+    if (notifications.length > 0) {
+      const deliveries = await createNotifications(notifications);
+      const failedDeliveries = deliveries.filter(
+        (delivery) => delivery.status === "rejected"
+      ).length;
+
+      if (failedDeliveries > 0) {
+        warnings.push(
+          `${failedDeliveries} commission value notification(s) failed to create`
+        );
+      }
+    }
   }
 
   return {
     success: true,
-    commissionsCreated: 1 + teacherCuts.length,
+    commissionsCreated: splitData.length,
     warnings: warnings.length > 0 ? warnings : undefined,
-    notifications,
   };
 }
 
@@ -347,7 +400,12 @@ async function getTeacherChain(
   affiliateId: string
 ): Promise<TeacherCutInfo[]> {
   const relations = await prisma.teacherStudent.findMany({
-    where: { studentId: affiliateId, status: "ACTIVE" },
+    where: {
+      studentId: affiliateId,
+      status: "ACTIVE",
+      teacher: { accountType: "COMMISSION" },
+      student: { accountType: "COMMISSION" },
+    },
     select: {
       id: true,
       teacherId: true,

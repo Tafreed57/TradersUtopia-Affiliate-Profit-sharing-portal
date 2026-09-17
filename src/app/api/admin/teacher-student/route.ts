@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { z } from "zod";
 
@@ -11,7 +11,10 @@ import { authOptions } from "@/lib/auth-options";
 import { TEACHER_CUT_WARN_THRESHOLD } from "@/lib/constants";
 import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
-import { activateTeacherStudentRelationship } from "@/lib/teacher-student-relationships";
+import {
+  activateTeacherStudentRelationship,
+  backfillUnpaidTeacherSplitsForRelationship,
+} from "@/lib/teacher-student-relationships";
 
 export const maxDuration = 300;
 
@@ -46,10 +49,13 @@ export async function POST(req: NextRequest) {
 
     const teacher = await prisma.user.findUnique({
       where: { id: teacherId },
-      select: { id: true, name: true, email: true },
+      select: { id: true, name: true, email: true, accountType: true },
     });
     if (!teacher) {
       return NextResponse.json({ error: "Teacher not found" }, { status: 404 });
+    }
+    if (teacher.accountType === "WORK") {
+      return NextResponse.json({ error: "Work accounts cannot be teachers or students" }, { status: 403 });
     }
 
     if (!studentId && upstreamAffiliateId) {
@@ -78,6 +84,7 @@ export async function POST(req: NextRequest) {
           name: true,
           email: true,
           rewardfulAffiliateId: true,
+          accountType: true,
         },
       }),
       prisma.teacherStudent.findUnique({
@@ -88,6 +95,9 @@ export async function POST(req: NextRequest) {
 
     if (!student) {
       return NextResponse.json({ error: "Student not found" }, { status: 404 });
+    }
+    if (student.accountType === "WORK") {
+      return NextResponse.json({ error: "Work accounts cannot be teachers or students" }, { status: 403 });
     }
 
     if (existing?.status === "ACTIVE") {
@@ -115,37 +125,89 @@ export async function POST(req: NextRequest) {
       teacherCut,
       actorId: session.user.id,
       origin: "ADMIN_PAIR",
-      historicalBackfill: "UNPAID_ONLY",
+      historicalBackfill: "NONE",
     });
 
     let historySync:
       | { status: "SKIPPED"; reason: "NO_LINKED_COMMISSION_ACCOUNT" }
-      | ({
-          status: "COMPLETED";
-        } & Awaited<ReturnType<typeof syncAffiliateCommissionCatalog>>)
-      | { status: "FAILED"; error: string } = {
+      | { status: "QUEUED" } = {
       status: "SKIPPED",
       reason: "NO_LINKED_COMMISSION_ACCOUNT",
     };
 
     if (student.rewardfulAffiliateId) {
-      try {
-        const syncResult = await syncAffiliateCommissionCatalog({
-          affiliateId: student.id,
-          rewardfulAffiliateId: student.rewardfulAffiliateId,
-        });
-        historySync = { status: "COMPLETED", ...syncResult };
-      } catch (error) {
-        console.error(
-          `[admin-pair] commission history sync failed for student ${student.id}:`,
-          error
+      historySync = { status: "QUEUED" };
+      const relationshipId = activation.relationship.id;
+      const linkedStudentId = student.id;
+      const linkedAffiliateId = student.rewardfulAffiliateId;
+
+      after(async () => {
+        const startedAt = Date.now();
+        console.log(
+          JSON.stringify({
+            level: "info",
+            msg: "admin_pair_history_sync_start",
+            teacherId,
+            studentId: linkedStudentId,
+            relationshipId,
+          })
         );
-        historySync = {
-          status: "FAILED",
-          error:
-            "The relationship was created, but commission history sync failed. Retry syncing this affiliate from the admin panel.",
-        };
-      }
+
+        let syncResult: Awaited<ReturnType<typeof syncAffiliateCommissionCatalog>> | null = null;
+        try {
+          syncResult = await syncAffiliateCommissionCatalog({
+            affiliateId: linkedStudentId,
+            rewardfulAffiliateId: linkedAffiliateId,
+          });
+        } catch (error) {
+          console.error(
+            JSON.stringify({
+              level: "error",
+              msg: "admin_pair_history_sync_import_failed",
+              teacherId,
+              studentId: linkedStudentId,
+              relationshipId,
+              error: error instanceof Error ? error.message : String(error),
+              ms: Date.now() - startedAt,
+            })
+          );
+        }
+
+        let historicalBackfillCreated = 0;
+        try {
+          historicalBackfillCreated =
+            await backfillUnpaidTeacherSplitsForRelationship(relationshipId);
+        } catch (error) {
+          console.error(
+            JSON.stringify({
+              level: "error",
+              msg: "admin_pair_history_sync_split_backfill_failed",
+              teacherId,
+              studentId: linkedStudentId,
+              relationshipId,
+              error: error instanceof Error ? error.message : String(error),
+              ms: Date.now() - startedAt,
+            })
+          );
+        }
+
+        console.log(
+          JSON.stringify({
+            level: "info",
+            msg: "admin_pair_history_sync_done",
+            teacherId,
+            studentId: linkedStudentId,
+            relationshipId,
+            fetched: syncResult?.fetched ?? null,
+            created: syncResult?.created ?? null,
+            paidSynced: syncResult?.paidSynced ?? null,
+            voidedSynced: syncResult?.voidedSynced ?? null,
+            missingVoided: syncResult?.missingVoided ?? null,
+            historicalBackfillCreated,
+            ms: Date.now() - startedAt,
+          })
+        );
+      });
     }
 
     const [allTeachers, studentOwn] = await Promise.all([

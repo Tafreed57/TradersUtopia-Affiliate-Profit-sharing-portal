@@ -1,6 +1,12 @@
 import { test, expect } from '@playwright/test';
 
+import { cleanupTrackedTestUsers, trackTestUser } from './test-user-cleanup';
+
 const TEST_USER_PASSWORD = 'TestPassword123!';
+
+test.afterEach(async () => {
+  await cleanupTrackedTestUsers();
+});
 
 test.describe('Authentication Flow', () => {
   test('should redirect to login when accessing protected route', async ({ page }) => {
@@ -35,6 +41,7 @@ test.describe('Authentication Flow', () => {
   test('should register a new user and redirect to dashboard', async ({ page }) => {
     const timestamp = Date.now();
     const email = `test-${timestamp}@example.com`;
+    trackTestUser(email);
 
     await page.goto('/register');
 
@@ -56,6 +63,7 @@ test.describe('Authentication Flow', () => {
     // First create a user
     const timestamp = Date.now();
     const email = `login-test-${timestamp}@example.com`;
+    trackTestUser(email);
 
     // Register
     await page.goto('/register');

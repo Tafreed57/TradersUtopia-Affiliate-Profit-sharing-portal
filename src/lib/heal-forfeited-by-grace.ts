@@ -36,6 +36,8 @@ export async function healForfeitedByGrace(): Promise<HealResult> {
   const candidates = await prisma.commissionSplit.findMany({
     where: {
       role: "AFFILIATE",
+      recipient: { accountType: "COMMISSION" },
+      event: { affiliate: { accountType: "COMMISSION" } },
       status: "FORFEITED",
       forfeitureReason: reason,
     },

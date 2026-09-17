@@ -9,12 +9,13 @@ const registerSchema = z.object({
   name: z.string().min(1).max(100),
   email: z.string().email(),
   password: z.string().min(8).max(100),
+  accountType: z.enum(["COMMISSION", "WORK"]).default("COMMISSION"),
 });
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { name, email, password } = registerSchema.parse(body);
+    const { name, email, password, accountType } = registerSchema.parse(body);
 
     const normalizedEmail = email.toLowerCase();
 
@@ -34,17 +35,23 @@ export async function POST(req: NextRequest) {
 
     if (existing) {
       if (canClaimUpstreamPlaceholder(existing)) {
-        const user = await prisma.user.update({
-          where: { id: existing.id },
+        const claim = await prisma.user.updateMany({
+          where: {
+            id: existing.id,
+            status: "ACTIVE",
+            passwordHash: null,
+            accounts: { none: {} },
+          },
           data: {
             name,
             passwordHash,
             linkError: null,
           },
-          select: { id: true, email: true, name: true },
         });
-
-        return NextResponse.json(user, { status: 201 });
+        if (claim.count !== 1) {
+          return NextResponse.json({ error: "An account with this email already exists" }, { status: 409 });
+        }
+        return NextResponse.json({ id: existing.id, email: existing.email, name }, { status: 201 });
       }
 
       return NextResponse.json(
@@ -58,6 +65,8 @@ export async function POST(req: NextRequest) {
         name,
         email: normalizedEmail,
         passwordHash,
+        accountType,
+        ...(accountType === "WORK" ? { canBeTeacher: false, canProposeRates: false } : {}),
       },
     });
 
@@ -66,6 +75,9 @@ export async function POST(req: NextRequest) {
       { status: 201 }
     );
   } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "P2002") {
+      return NextResponse.json({ error: "An account with this email already exists" }, { status: 409 });
+    }
     if (error instanceof z.ZodError) {
       return NextResponse.json(
         { error: "Invalid input", details: error.issues },

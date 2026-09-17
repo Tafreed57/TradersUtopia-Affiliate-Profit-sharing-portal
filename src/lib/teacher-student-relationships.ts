@@ -7,12 +7,31 @@ import {
 } from "@prisma/client";
 import Decimal from "decimal.js";
 
-import { getCadToUsdRate } from "@/lib/currency";
+import {
+  getCommissionCadAllocation,
+  getCommissionCadAllocations,
+  type AffiliateCadAllocation,
+} from "@/lib/commission-cad-service";
 import { UNPAID_HISTORICAL_AFFILIATE_STATUSES } from "@/lib/historical-backfill-rules";
 import { prisma } from "@/lib/prisma";
 import { planCompleteTeacherStudentRemoval } from "@/lib/teacher-student-removal";
 
 type DbClient = Prisma.TransactionClient | typeof prisma;
+
+export const WORK_RELATIONSHIP_ERROR = "Work accounts cannot be teachers or students";
+
+async function assertCommissionParticipants(db: DbClient, teacherId: string, studentId: string) {
+  const users = await db.user.findMany({
+    where: { id: { in: [teacherId, studentId] } },
+    select: { id: true, accountType: true },
+  });
+  if (users.some((user) => user.accountType === "WORK")) {
+    throw new Error(WORK_RELATIONSHIP_ERROR);
+  }
+  if (users.length !== new Set([teacherId, studentId]).size) {
+    throw new Error("Relationship participant not found");
+  }
+}
 
 type TeacherStudentRecord = Pick<
   TeacherStudent,
@@ -135,12 +154,6 @@ function roundMoney(value: number) {
   return Math.round(value * 100) / 100;
 }
 
-function toCad(nativeAmount: Decimal, currency: string, cadToUsd: Decimal) {
-  return currency.toUpperCase() === "CAD"
-    ? nativeAmount
-    : nativeAmount.div(cadToUsd);
-}
-
 function getSplitStateLabel(event: {
   upstreamState: string | null;
   upstreamPaidAt: Date | null;
@@ -158,23 +171,18 @@ function getSplitStateLabel(event: {
   return "IN_HOLDING" as const;
 }
 
-async function getCadToUsdDecimal() {
-  const rate = await getCadToUsdRate();
-  return new Decimal(rate?.rate.toString() ?? "0.74");
-}
-
 async function getTeacherRelationshipEpisodeSummaryDb(
   db: DbClient,
   {
     teacherId,
     relationshipId,
     relationshipSequence,
-    cadToUsd,
+    splitCadById,
   }: {
     teacherId: string;
     relationshipId: string;
     relationshipSequence: number;
-    cadToUsd: Decimal;
+    splitCadById: Map<string, Decimal>;
   }
 ): Promise<RelationshipEpisodeSummary> {
   const splits = await db.commissionSplit.findMany({
@@ -186,6 +194,7 @@ async function getTeacherRelationshipEpisodeSummaryDb(
       status: { in: ["EARNED", "PAID"] },
     },
     select: {
+      id: true,
       status: true,
       cutAmount: true,
       event: {
@@ -206,13 +215,10 @@ async function getTeacherRelationshipEpisodeSummaryDb(
   let nextDueAt: Date | null = null;
 
   for (const split of splits) {
-    const cad = toCad(
-      new Decimal(split.cutAmount.toString()),
-      split.event.currency,
-      cadToUsd
-    );
-
     commissionCount += 1;
+    const cad = splitCadById.get(split.id);
+    if (!cad) continue;
+
     if (split.status === "PAID") {
       teacherPaidCad = teacherPaidCad.add(cad);
       continue;
@@ -252,7 +258,7 @@ async function createArchiveRecordTx(
     archiveReason,
     archiveMode,
     now,
-    cadToUsd,
+    splitCadById,
   }: {
     archivedById: string;
     archivedByRole: TeacherStudentArchiveActorRole;
@@ -260,14 +266,14 @@ async function createArchiveRecordTx(
     archiveReason: string | null;
     archiveMode?: "SAFE_ARCHIVE" | "COMPLETE_REMOVE";
     now: Date;
-    cadToUsd: Decimal;
+    splitCadById: Map<string, Decimal>;
   }
 ) {
   const summary = await getTeacherRelationshipEpisodeSummaryDb(tx, {
     teacherId: relationship.teacherId,
     relationshipId: relationship.id,
     relationshipSequence: relationship.activationSequence,
-    cadToUsd,
+    splitCadById,
   });
 
   const data = {
@@ -431,6 +437,7 @@ async function createUnpaidHistoricalTeacherSplitsTx(
     teacherCut: Prisma.Decimal;
   }
 ) {
+  await assertCommissionParticipants(tx, teacherId, studentId);
   if (new Decimal(teacherCut.toString()).lte(0)) {
     return 0;
   }
@@ -438,6 +445,7 @@ async function createUnpaidHistoricalTeacherSplitsTx(
   const historicalEvents = await tx.commissionEvent.findMany({
     where: {
       affiliateId: studentId,
+      affiliate: { accountType: "COMMISSION" },
       upstreamPaidAt: null,
       upstreamVoidedAt: null,
       OR: [
@@ -511,6 +519,7 @@ async function syncDepthTwoRelationshipsTx(
   const studentsOfStudent = await tx.teacherStudent.findMany({
     where: {
       teacherId: rootStudentId,
+      student: { accountType: "COMMISSION" },
       status: "ACTIVE",
       depth: 1,
       NOT: { studentId: teacherId },
@@ -587,6 +596,7 @@ async function activateTeacherStudentRelationshipTx(
     historicalBackfill = "UNPAID_ONLY",
   }: ActivateRelationshipOptions
 ) {
+  await assertCommissionParticipants(tx, teacherId, studentId);
   const now = new Date();
   const existing = await tx.teacherStudent.findUnique({
     where: {
@@ -720,11 +730,16 @@ async function collectRestoreGapEventsTx(
     teacherCut: Prisma.Decimal;
     archivedAt: Date;
   },
-  cadToUsd: Decimal
+  providedAllocation?: AffiliateCadAllocation
 ) {
+  await assertCommissionParticipants(tx, archive.teacherId, archive.studentId);
+  const allocation =
+    providedAllocation ??
+    (await getCommissionCadAllocation(archive.studentId));
   const events = await tx.commissionEvent.findMany({
     where: {
       affiliateId: archive.studentId,
+      affiliate: { accountType: "COMMISSION" },
       conversionDate: { gt: archive.archivedAt },
       splits: {
         none: {
@@ -762,9 +777,15 @@ async function collectRestoreGapEventsTx(
     const grantAmountNative = canGrant
       ? Decimal.min(requestedNative, ceoCut).toDecimalPlaces(2)
       : new Decimal(0);
-    const grantAmountCad = roundMoney(
-      toCad(grantAmountNative, event.currency, cadToUsd).toNumber()
-    );
+    const eventCad = allocation.eventCadById.get(event.id);
+    const grantAmountCad =
+      eventCad && !new Decimal(event.fullAmount.toString()).isZero()
+        ? eventCad
+            .mul(grantAmountNative)
+            .div(event.fullAmount.toString())
+            .toDecimalPlaces(2)
+            .toNumber()
+        : 0;
 
     let disabledReason: string | null = null;
     if (state === "VOIDED") {
@@ -807,7 +828,7 @@ async function completeRestoreTx(
     backfillMode,
     selectedEventIds,
     requestToUpdate,
-    cadToUsd,
+    allocation,
   }: {
     archive: {
       id: string;
@@ -823,13 +844,13 @@ async function completeRestoreTx(
     reviewNote: string | null;
     backfillMode: TeacherStudentBackfillMode;
     selectedEventIds: string[];
-    cadToUsd: Decimal;
+    allocation: AffiliateCadAllocation;
     requestToUpdate?: {
       id: string;
     } | null;
   }
 ) {
-  const previews = await collectRestoreGapEventsTx(tx, archive, cadToUsd);
+  const previews = await collectRestoreGapEventsTx(tx, archive, allocation);
   const eligibleIds = new Set(
     previews.filter((item) => item.preview.canGrant).map((item) => item.raw.id)
   );
@@ -866,9 +887,7 @@ async function completeRestoreTx(
       });
       if (!result.created) continue;
       grantedCount += 1;
-      grantedAmountCad = grantedAmountCad.add(
-        toCad(result.cutNative, item.raw.currency, cadToUsd)
-      );
+      grantedAmountCad = grantedAmountCad.add(item.preview.grantAmountCad);
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -933,22 +952,55 @@ export async function getTeacherRelationshipEpisodeSummary(
   relationshipId: string,
   relationshipSequence: number
 ) {
-  const cadToUsd = await getCadToUsdDecimal();
+  const relationship = await prisma.teacherStudent.findUnique({
+    where: { id: relationshipId },
+    select: { studentId: true },
+  });
+  if (!relationship) {
+    throw new Error("Relationship not found");
+  }
+  const allocation = await getCommissionCadAllocation(relationship.studentId);
   return getTeacherRelationshipEpisodeSummaryDb(prisma, {
     teacherId,
     relationshipId,
     relationshipSequence,
-    cadToUsd,
+    splitCadById: allocation.splitCadById,
   });
 }
 
 export async function archiveTeacherStudentRelationship(
   options: ArchiveRelationshipOptions
 ) {
-  // Fetch external/cache-backed currency data before opening the transaction.
-  // Holding a DB transaction open while waiting on exchange-rate refreshes can
-  // make high-history removals time out and surface as a generic archive error.
-  const cadToUsd = await getCadToUsdDecimal();
+  const allocationRelationship = await prisma.teacherStudent.findUnique({
+    where: { id: options.relationshipId },
+    select: { teacherId: true, studentId: true, depth: true },
+  });
+  if (!allocationRelationship) throw new Error("Relationship not found");
+  const allocationStudentIds = [allocationRelationship.studentId];
+  if (allocationRelationship.depth === 1) {
+    const childLinks = await prisma.teacherStudent.findMany({
+      where: {
+        teacherId: allocationRelationship.studentId,
+        status: "ACTIVE",
+        depth: 1,
+      },
+      select: { studentId: true },
+    });
+    const childIds = childLinks.map((link) => link.studentId);
+    if (childIds.length > 0) {
+      const derivedLinks = await prisma.teacherStudent.findMany({
+        where: {
+          teacherId: allocationRelationship.teacherId,
+          studentId: { in: childIds },
+          status: "ACTIVE",
+          depth: 2,
+        },
+        select: { studentId: true },
+      });
+      allocationStudentIds.push(...derivedLinks.map((link) => link.studentId));
+    }
+  }
+  const cadAllocations = await getCommissionCadAllocations(allocationStudentIds);
 
   return prisma.$transaction(async (tx) => {
     const relationship = await tx.teacherStudent.findUnique({
@@ -984,7 +1036,8 @@ export async function archiveTeacherStudentRelationship(
         showInPreviousStudents,
         archiveReason: options.archiveReason ?? null,
         now,
-        cadToUsd,
+        splitCadById:
+          cadAllocations.get(relationship.studentId)?.splitCadById ?? new Map(),
       }),
     ];
 
@@ -1057,7 +1110,8 @@ export async function archiveTeacherStudentRelationship(
               options.archiveReason ??
               "Indirect relationship ended because the direct teacher link was removed.",
             now,
-            cadToUsd,
+            splitCadById:
+              cadAllocations.get(derived.studentId)?.splitCadById ?? new Map(),
           });
         }
 
@@ -1098,7 +1152,14 @@ export async function archiveTeacherStudentRelationship(
 export async function completeRemoveTeacherStudentRelationship(
   options: CompleteRemoveRelationshipOptions
 ) {
-  const cadToUsd = await getCadToUsdDecimal();
+  const allocationRelationship = await prisma.teacherStudent.findUnique({
+    where: { id: options.relationshipId },
+    select: { studentId: true },
+  });
+  if (!allocationRelationship) throw new Error("Relationship not found");
+  const allocation = await getCommissionCadAllocation(
+    allocationRelationship.studentId
+  );
 
   return prisma.$transaction(async (tx) => {
     const relationship = await tx.teacherStudent.findUnique({
@@ -1168,7 +1229,7 @@ export async function completeRemoveTeacherStudentRelationship(
         options.archiveReason ??
         "Admin completely removed this student from the teacher roster.",
       now,
-      cadToUsd,
+      splitCadById: allocation.splitCadById,
     });
 
     await tx.teacherStudent.updateMany({
@@ -1203,6 +1264,44 @@ export async function activateTeacherStudentRelationship(
   );
 }
 
+export async function backfillUnpaidTeacherSplitsForRelationship(
+  relationshipId: string
+) {
+  const relationship = await prisma.teacherStudent.findUnique({
+    where: { id: relationshipId },
+    select: {
+      id: true,
+      teacherId: true,
+      studentId: true,
+      depth: true,
+      teacherCut: true,
+      status: true,
+      activationSequence: true,
+    },
+  });
+
+  if (!relationship) {
+    throw new Error("Relationship not found");
+  }
+
+  if (relationship.status !== "ACTIVE") {
+    return 0;
+  }
+
+  return prisma.$transaction(
+    (tx) =>
+      createUnpaidHistoricalTeacherSplitsTx(tx, {
+        teacherId: relationship.teacherId,
+        studentId: relationship.studentId,
+        relationshipId: relationship.id,
+        relationshipSequence: relationship.activationSequence,
+        depth: relationship.depth,
+        teacherCut: relationship.teacherCut,
+      }),
+    { maxWait: 10_000, timeout: 180_000 }
+  );
+}
+
 export async function getRestoreGapPreview(archiveId: string) {
   const archive = await prisma.teacherStudentArchive.findUnique({
     where: { id: archiveId },
@@ -1232,8 +1331,7 @@ export async function getRestoreGapPreview(archiveId: string) {
     throw new Error("Archived relationship not found");
   }
 
-  const cadToUsd = await getCadToUsdDecimal();
-  const previews = await collectRestoreGapEventsTx(prisma, archive, cadToUsd);
+  const previews = await collectRestoreGapEventsTx(prisma, archive);
   const gapTotals = previews.reduce(
     (acc, item) => {
       acc.totalCount += 1;
@@ -1330,6 +1428,7 @@ export async function requestTeacherStudentRestore({
   if (archive.teacherStudent.teacherId !== requestedById) {
     throw new Error("Only the archived teacher can request this restore");
   }
+  await assertCommissionParticipants(prisma, archive.teacherId, archive.studentId);
 
   if (archive.teacherStudent.depth !== 1) {
     throw new Error("Only direct student relationships can be restored by request");
@@ -1357,7 +1456,18 @@ export async function requestTeacherStudentRestore({
 export async function reviewTeacherStudentRestoreRequest(
   options: ReviewRestoreRequestOptions
 ) {
-  const cadToUsd = await getCadToUsdDecimal();
+  const allocationRequest = await prisma.teacherStudentRestoreRequest.findUnique({
+    where: { id: options.requestId },
+    select: { archive: { select: { studentId: true, teacherId: true } } },
+  });
+  if (!allocationRequest) throw new Error("Restore request not found");
+  if (options.action === "approve") {
+    await assertCommissionParticipants(prisma, allocationRequest.archive.teacherId, allocationRequest.archive.studentId);
+  }
+  const allocation =
+    options.action === "approve"
+      ? await getCommissionCadAllocation(allocationRequest.archive.studentId)
+      : null;
 
   return prisma.$transaction(async (tx) => {
     const request = await tx.teacherStudentRestoreRequest.findUnique({
@@ -1405,14 +1515,22 @@ export async function reviewTeacherStudentRestoreRequest(
       reviewNote: options.reviewNote ?? null,
       backfillMode: options.backfillMode ?? "NONE",
       selectedEventIds: options.selectedEventIds ?? [],
-      cadToUsd,
+      allocation: allocation!,
       requestToUpdate: { id: request.id },
     });
   }, { maxWait: 10_000, timeout: 30_000 });
 }
 
 export async function restoreTeacherStudentDirect(options: DirectRestoreOptions) {
-  const cadToUsd = await getCadToUsdDecimal();
+  const allocationArchive = await prisma.teacherStudentArchive.findUnique({
+    where: { id: options.archiveId },
+    select: { studentId: true, teacherId: true },
+  });
+  if (!allocationArchive) throw new Error("Archived relationship not found");
+  await assertCommissionParticipants(prisma, allocationArchive.teacherId, allocationArchive.studentId);
+  const allocation = await getCommissionCadAllocation(
+    allocationArchive.studentId
+  );
 
   return prisma.$transaction(async (tx) => {
     const archive = await tx.teacherStudentArchive.findUnique({
@@ -1429,7 +1547,7 @@ export async function restoreTeacherStudentDirect(options: DirectRestoreOptions)
       reviewNote: options.reviewNote ?? null,
       backfillMode: options.backfillMode,
       selectedEventIds: options.selectedEventIds ?? [],
-      cadToUsd,
+      allocation,
     });
   }, { maxWait: 10_000, timeout: 30_000 });
 }

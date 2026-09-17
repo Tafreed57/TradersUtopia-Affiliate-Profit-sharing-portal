@@ -39,6 +39,7 @@ export async function GET(req: NextRequest) {
     where: {
       id: { notIn: excludeIds },
       status: "ACTIVE",
+      accountType: "COMMISSION",
       OR: [
         { name: { contains: q, mode: "insensitive" } },
         { email: { contains: q, mode: "insensitive" } },

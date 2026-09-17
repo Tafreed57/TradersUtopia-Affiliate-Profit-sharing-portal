@@ -114,7 +114,7 @@ export async function PATCH(
 
     const message = error instanceof Error ? error.message : String(error);
     const status =
-      message.includes("not found")
+      message === "Work accounts cannot be teachers or students" ? 403 : message.includes("not found")
         ? 404
         : message.includes("already")
         ? 409

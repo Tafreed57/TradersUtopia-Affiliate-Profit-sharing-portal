@@ -35,6 +35,10 @@ export async function POST(req: NextRequest) {
           studentId,
         },
       },
+      include: {
+        teacher: { select: { accountType: true } },
+        student: { select: { accountType: true } },
+      },
     });
 
     if (!relationship || relationship.status !== "ACTIVE") {
@@ -42,6 +46,9 @@ export async function POST(req: NextRequest) {
         { error: "No active teacher-student relationship found" },
         { status: 404 }
       );
+    }
+    if (relationship.teacher.accountType === "WORK" || relationship.student.accountType === "WORK") {
+      return NextResponse.json({ error: "Work accounts cannot be teachers or students" }, { status: 403 });
     }
 
     // Check if teacher can propose rates

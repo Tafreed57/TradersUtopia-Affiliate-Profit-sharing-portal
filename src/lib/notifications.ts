@@ -1,16 +1,20 @@
 import * as Sentry from "@sentry/nextjs";
-import type {
-  NotificationType,
+import {
   Prisma,
-  PushStatus,
+  type NotificationType,
+  type PushStatus,
 } from "@prisma/client";
 
 import { sanitizeNotificationCopy } from "@/lib/notification-privacy";
 import { resolveNotificationHref } from "@/lib/notification-links";
 import { prisma } from "@/lib/prisma";
+import { isWorkPortalUser } from "@/lib/account-access";
+import { isAdminEmail } from "@/lib/constants";
+import { isWorkNotificationAllowed, workNotificationPresentation } from "@/lib/work-notification-policy";
 
 interface CreateNotificationParams {
   userId: string;
+  dedupeKey?: string;
   type: NotificationType;
   title: string;
   body: string;
@@ -64,23 +68,49 @@ function formatPushError(error: unknown): string {
  */
 export async function createNotification({
   userId,
+  dedupeKey,
   type,
   title,
   body,
   data,
 }: CreateNotificationParams) {
-  const notificationData = normalizeNotificationData(type, data);
-  const copy = sanitizeNotificationCopy(type, title, body);
-
-  const notification = await prisma.notification.create({
-    data: {
-      userId,
-      type,
-      title: copy.title,
-      body: copy.body,
-      data: notificationData as Prisma.InputJsonValue,
-    },
+  const recipient = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { accountType: true, email: true },
   });
+  if (!recipient) return null;
+  const workUser = isWorkPortalUser({ ...recipient, isAdmin: isAdminEmail(recipient.email) });
+  if (workUser && !isWorkNotificationAllowed(type)) return null;
+  const presentation = workUser ? workNotificationPresentation(type) : null;
+  const notificationData = presentation?.data ?? normalizeNotificationData(type, data);
+  const copy = presentation ?? sanitizeNotificationCopy(type, title, body);
+
+  let notification;
+  try {
+    notification = await prisma.notification.create({
+      data: {
+        userId,
+        dedupeKey,
+        type,
+        title: copy.title,
+        body: copy.body,
+        data: notificationData as Prisma.InputJsonValue,
+      },
+    });
+  } catch (error) {
+    if (
+      dedupeKey &&
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002" &&
+      String(error.meta?.target ?? "").includes("dedupeKey")
+    ) {
+      const existing = await prisma.notification.findUnique({
+        where: { dedupeKey },
+      });
+      if (existing) return { ...existing, skipped: true } as const;
+    }
+    throw error;
+  }
 
   let pushResult: PushAttemptResult;
   try {

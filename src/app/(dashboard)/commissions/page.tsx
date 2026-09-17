@@ -34,6 +34,7 @@ import { useCurrency } from "@/providers/currency-provider";
 interface Commission {
   id: string;
   affiliateCut: string;
+  affiliateCutCad: string | null;
   currency: "USD" | "CAD";
   status: "EARNED" | "FORFEITED" | "PENDING" | "PAID" | "VOIDED";
   forfeitedToCeo: boolean;
@@ -162,9 +163,18 @@ export default function CommissionsPage() {
     data?.data
       .filter((c) => c.status === "EARNED")
       .reduce(
-        (sum, c) => sum + convert(Number(c.affiliateCut), c.currency),
+        (sum, c) =>
+          sum +
+          (currency === "CAD" && c.affiliateCutCad !== null
+            ? Number(c.affiliateCutCad)
+            : convert(Number(c.affiliateCut), c.currency)),
         0
       ) ?? 0;
+
+  const formatCommission = (commission: Commission) =>
+    currency === "CAD" && commission.affiliateCutCad !== null
+      ? `CA$${Number(commission.affiliateCutCad).toFixed(2)}`
+      : format(Number(commission.affiliateCut), commission.currency);
 
   return (
     <div className="space-y-6">
@@ -374,7 +384,7 @@ export default function CommissionsPage() {
                                 : "font-semibold"
                             }
                           >
-                            {format(Number(commission.affiliateCut), commission.currency)}
+                            {formatCommission(commission)}
                           </span>
                         </TableCell>
                         <TableCell>

@@ -97,6 +97,7 @@ import { useCurrency } from "@/providers/currency-provider";
 
 interface AffiliateDetail {
   id: string;
+  accountType: "COMMISSION" | "WORK";
   email: string;
   name: string | null;
   image: string | null;
@@ -106,6 +107,8 @@ interface AffiliateDetail {
   recurringCommissionPercent: number;
   canProposeRates: boolean;
   canBeTeacher: boolean;
+  canSeeRecurringCommissions: boolean;
+  recurringCommissionsVisibleFrom: string | null;
   ratesLocked: boolean;
   ratesConfigured: boolean;
   rewardfulAffiliateId: string | null;
@@ -138,6 +141,7 @@ interface AffiliateDetail {
     id: string;
     affiliateCutPercent: number;
     affiliateCut: number;
+    affiliateCutCad: number | null;
     ceoCut: number;
     currency: "USD" | "CAD";
     status: "EARNED" | "FORFEITED" | "PENDING" | "PAID" | "VOIDED";
@@ -161,9 +165,18 @@ interface AffiliateDetail {
   pendingRateNotSetCount: number;
 }
 
+type RecurringCommissionVisibilityMode = "ALL_HISTORY" | "FROM_NOW";
+type AffiliateVisibilityReason =
+  | "first_time_commission"
+  | "recurring_visible"
+  | "recurring_visible_before_hide_from"
+  | "recurring_hidden_all_history"
+  | "recurring_hidden_after_hide_from";
+
 interface Commission {
   id: string;
   affiliateCut: string;
+  affiliateCutCad: string | null;
   currency: "USD" | "CAD";
   status: "EARNED" | "FORFEITED" | "PENDING" | "PAID" | "VOIDED";
   forfeitedToCeo: boolean;
@@ -173,6 +186,9 @@ interface Commission {
   upstreamDueAt: string | null;
   campaignName: string | null;
   processedAt: string;
+  isRecurring?: boolean;
+  visibleToAffiliate?: boolean;
+  affiliateVisibilityReason?: AffiliateVisibilityReason;
 }
 
 interface CommissionResponse {
@@ -290,6 +306,7 @@ interface DetailCommission {
   id: string;
   conversionDate: string;
   teacherCut: number;
+  teacherCutCad: number | null;
   currency: "USD" | "CAD";
   status: string;
   forfeitureReason: string | null;
@@ -513,18 +530,79 @@ function CommissionStatusBadge({
   );
 }
 
+const AFFILIATE_VISIBILITY_CONFIG: Record<
+  AffiliateVisibilityReason,
+  {
+    label: "Visible to affiliate" | "Hidden from affiliate";
+    detail: string;
+    className: string;
+  }
+> = {
+  first_time_commission: {
+    label: "Visible to affiliate",
+    detail: "First-time signup row",
+    className: "bg-success/15 text-success border-success/30",
+  },
+  recurring_visible: {
+    label: "Visible to affiliate",
+    detail: "Recurring row shown; hide rule is off",
+    className: "bg-success/15 text-success border-success/30",
+  },
+  recurring_visible_before_hide_from: {
+    label: "Visible to affiliate",
+    detail: "Old recurring row kept visible",
+    className: "bg-success/15 text-success border-success/30",
+  },
+  recurring_hidden_all_history: {
+    label: "Hidden from affiliate",
+    detail: "All recurring history is hidden",
+    className: "bg-muted/30 text-muted-foreground border-border/60",
+  },
+  recurring_hidden_after_hide_from: {
+    label: "Hidden from affiliate",
+    detail: "New recurring row hidden from now onward",
+    className: "bg-muted/30 text-muted-foreground border-border/60",
+  },
+};
+
+function AffiliateVisibilityBadge({
+  commission,
+}: {
+  commission: Commission;
+}) {
+  if (commission.visibleToAffiliate === undefined) return null;
+
+  const reason =
+    commission.affiliateVisibilityReason ??
+    (commission.visibleToAffiliate
+      ? "recurring_visible"
+      : "recurring_hidden_all_history");
+  const config = AFFILIATE_VISIBILITY_CONFIG[reason];
+
+  return (
+    <div className="space-y-1">
+      <Badge variant="default" className={config.className}>
+        {config.label}
+      </Badge>
+      <p className="text-xs text-muted-foreground">{config.detail}</p>
+    </div>
+  );
+}
+
 function StudentDetailSheet({
   adminId,
   affiliateId,
   student,
   onClose,
   format,
+  currency,
 }: {
   adminId: string | undefined;
   affiliateId: string;
   student: Student | null;
   onClose: () => void;
   format: (amount: number, inputCurrency?: "CAD" | "USD") => string;
+  currency: "CAD" | "USD";
 }) {
   const { data, isLoading } = useQuery<StudentDetailResponse>({
     queryKey: [
@@ -704,7 +782,9 @@ function StudentDetailSheet({
                             : "text-muted-foreground"
                         }`}
                       >
-                        {format(commission.teacherCut, commission.currency)}
+                        {currency === "CAD" && commission.teacherCutCad !== null
+                          ? `CA$${commission.teacherCutCad.toFixed(2)}`
+                          : format(commission.teacherCut, commission.currency)}
                       </span>
                       <Badge variant="default" className={badgeClassName}>
                         {badgeLabel}
@@ -822,8 +902,12 @@ function AdminPairStudentDialog({
 
       return response.json();
     },
-    onSuccess: () => {
-      toast.success("Student linked successfully");
+    onSuccess: (payload: { historySync?: { status?: string } }) => {
+      toast.success(
+        payload.historySync?.status === "QUEUED"
+          ? "Student linked. Commission history is syncing in the background."
+          : "Student linked successfully"
+      );
       setOpen(false);
       setSearch("");
       setSelected(null);
@@ -1600,6 +1684,18 @@ export function ManagedAffiliateWorkspace({
   const adminId = session?.user?.id;
   const queryClient = useQueryClient();
   const { currency, toggle, format, convert, stale } = useCurrency();
+  const formatCommissionValue = (
+    nativeAmount: number,
+    nativeCurrency: "CAD" | "USD",
+    cadAmount: number | string | null
+  ) =>
+    currency === "CAD" && cadAmount !== null
+      ? `CA$${Number(cadAmount).toFixed(2)}`
+      : format(nativeAmount, nativeCurrency);
+  const recurringCommissionVisibilityMode = (
+    affiliate: AffiliateDetail
+  ): RecurringCommissionVisibilityMode =>
+    affiliate.recurringCommissionsVisibleFrom ? "FROM_NOW" : "ALL_HISTORY";
 
   const [activeTab, setActiveTab] = useState("overview");
   const [page, setPage] = useState(1);
@@ -1624,6 +1720,12 @@ export function ManagedAffiliateWorkspace({
   const [replaceLinkDialogOpen, setReplaceLinkDialogOpen] = useState(false);
   const [replaceLinkIdentifier, setReplaceLinkIdentifier] = useState("");
   const [replaceLinkConfirmText, setReplaceLinkConfirmText] = useState("");
+  const [recurringVisibilityDialogOpen, setRecurringVisibilityDialogOpen] =
+    useState(false);
+  const [
+    pendingRecurringVisibilityMode,
+    setPendingRecurringVisibilityMode,
+  ] = useState<RecurringCommissionVisibilityMode>("FROM_NOW");
 
   const workspaceKey = ["admin-affiliate-workspace", adminId, affiliateId] as const;
   const monthWindow = getMonthWindow(selectedMonth);
@@ -1648,7 +1750,7 @@ export function ManagedAffiliateWorkspace({
 
   const lifetimeQuery = useQuery<ManagedLifetimeStats>({
     queryKey: [...workspaceKey, "lifetime"],
-    enabled: !!adminId,
+    enabled: !!adminId && overviewQuery.data?.accountType === "COMMISSION",
     queryFn: async () =>
       fetchJson(`/api/admin/affiliates/${affiliateId}/lifetime-stats`),
     retry: false,
@@ -1668,7 +1770,7 @@ export function ManagedAffiliateWorkspace({
 
   const studentsQuery = useQuery<StudentsResponse>({
     queryKey: [...workspaceKey, "students"],
-    enabled: !!adminId,
+    enabled: !!adminId && overviewQuery.data?.accountType === "COMMISSION",
     queryFn: async () =>
       fetchJson(`/api/admin/affiliates/${affiliateId}/students`),
     retry: false,
@@ -1693,7 +1795,7 @@ export function ManagedAffiliateWorkspace({
       fromDate,
       toDate,
     ],
-    enabled: !!adminId && activeTab === "commissions",
+    enabled: !!adminId && overviewQuery.data?.accountType === "COMMISSION" && activeTab === "commissions",
     queryFn: async () =>
       fetchJson(
         `/api/admin/affiliates/${affiliateId}/commissions?${commissionQueryParams.toString()}`
@@ -1900,6 +2002,37 @@ export function ManagedAffiliateWorkspace({
     return <p className="text-muted-foreground">Affiliate not found.</p>;
   }
 
+  if (data.accountType === "WORK") {
+    return (
+      <div className="space-y-6">
+        <Link href="/admin" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="h-4 w-4" />Back to Admin</Link>
+        <Card className="border-amber-300/20">
+          <CardHeader>
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div><Badge variant="outline" className="mb-3 border-amber-300/30 text-amber-300">Work</Badge><CardTitle>{data.name ?? data.email}</CardTitle><p className="mt-2 text-sm text-muted-foreground">{data.email}</p></div>
+              <Badge variant="outline">{data.status === "ACTIVE" ? "Active" : "Deactivated"}</Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">Traders Utopia Affiliate Work · Attendance and promo codes</p>
+            {data.linkError && <p className="text-sm text-warning">Account connection needs attention.</p>}
+            <div className="flex flex-wrap gap-3">
+              {!data.rewardfulAffiliateId && <Button variant="outline" disabled={retryLinkMutation.isPending} onClick={() => retryLinkMutation.mutate()}>{retryLinkMutation.isPending ? "Connecting..." : "Retry account connection"}</Button>}
+              <Button variant="outline" disabled={updateMutation.isPending} onClick={() => updateMutation.mutate({ status: data.status === "ACTIVE" ? "DEACTIVATED" : "ACTIVE" })}>{updateMutation.isPending ? "Saving..." : data.status === "ACTIVE" ? "Deactivate Work account" : "Reactivate Work account"}</Button>
+            </div>
+          </CardContent>
+        </Card>
+        <AdminPromoCodes affiliateId={affiliateId} />
+        <Card>
+          <CardHeader><div className="flex flex-wrap items-center justify-between gap-3"><CardTitle>Attendance</CardTitle><Input aria-label="Attendance month" type="month" className="w-44" value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} /></div></CardHeader>
+          <CardContent>
+            {attendanceQuery.isLoading ? <Skeleton className="h-24" /> : attendanceQuery.isError ? <p className="text-sm text-muted-foreground">Attendance is unavailable. Please try again.</p> : !attendanceQuery.data?.data.length ? <p className="text-sm text-muted-foreground">No attendance recorded this month.</p> : <div className="divide-y divide-border/50">{attendanceQuery.data.data.map((record) => <div key={record.id} className="flex flex-wrap justify-between gap-3 py-3 text-sm"><div><p className="font-medium">{record.date}</p>{record.note && <p className="mt-1 text-muted-foreground">{record.note}</p>}</div><p className="text-xs text-muted-foreground">{record.timezone}</p></div>)}</div>}
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   const lifetimeError =
     lifetimeQuery.error instanceof Error ? lifetimeQuery.error.message : null;
   const attendanceError =
@@ -1949,7 +2082,10 @@ export function ManagedAffiliateWorkspace({
       .filter((commission) => commission.status === "EARNED")
       .reduce(
         (sum, commission) =>
-          sum + convert(Number(commission.affiliateCut), commission.currency),
+          sum +
+          (currency === "CAD" && commission.affiliateCutCad !== null
+            ? Number(commission.affiliateCutCad)
+            : convert(Number(commission.affiliateCut), commission.currency)),
         0
       ) ?? 0;
 
@@ -1993,6 +2129,7 @@ export function ManagedAffiliateWorkspace({
         student={selectedStudent}
         onClose={() => setSelectedStudent(null)}
         format={format}
+        currency={currency}
       />
       <ArchiveStudentDialog
         student={studentToArchive}
@@ -2210,7 +2347,11 @@ export function ManagedAffiliateWorkspace({
                                 {formatShortDate(commission.conversionDate)}
                               </TableCell>
                               <TableCell>
-                                {format(commission.affiliateCut, commission.currency)}
+                                {formatCommissionValue(
+                                  commission.affiliateCut,
+                                  commission.currency,
+                                  commission.affiliateCutCad
+                                )}
                               </TableCell>
                               <TableCell>
                                 <CommissionStatusBadge status={commission.status} />
@@ -2526,6 +2667,7 @@ export function ManagedAffiliateWorkspace({
                         <TableRow>
                           <TableHead>Date</TableHead>
                           <TableHead>Their Cut</TableHead>
+                          <TableHead>Affiliate View</TableHead>
                           <TableHead>Status</TableHead>
                         </TableRow>
                       </TableHeader>
@@ -2559,11 +2701,15 @@ export function ManagedAffiliateWorkspace({
                                     : "font-semibold"
                                 }
                               >
-                                {format(
+                                {formatCommissionValue(
                                   Number(commission.affiliateCut),
-                                  commission.currency
+                                  commission.currency,
+                                  commission.affiliateCutCad
                                 )}
                               </span>
+                            </TableCell>
+                            <TableCell>
+                              <AffiliateVisibilityBadge commission={commission} />
                             </TableCell>
                             <TableCell>
                               {commission.status === "EARNED" ? (
@@ -3312,6 +3458,49 @@ export function ManagedAffiliateWorkspace({
 
                     <Separator />
 
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="font-medium">
+                            Hide recurring commission rows
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            When off, this affiliate sees their normal full
+                            commission history. When on, choose which recurring
+                            rows to hide from history only.
+                          </p>
+                        </div>
+                        <Switch
+                          checked={data.canSeeRecurringCommissions}
+                          onCheckedChange={(checked) => {
+                            if (!checked) {
+                              updateMutation.mutate({
+                                canSeeRecurringCommissions: false,
+                              });
+                              return;
+                            }
+
+                            setPendingRecurringVisibilityMode(
+                              data.canSeeRecurringCommissions
+                                ? recurringCommissionVisibilityMode(data)
+                                : "FROM_NOW"
+                            );
+                            setRecurringVisibilityDialogOpen(true);
+                          }}
+                        />
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {data.canSeeRecurringCommissions
+                          ? recurringCommissionVisibilityMode(data) ===
+                            "ALL_HISTORY"
+                            ? "Hide rule active: all recurring rows are hidden from this affiliate's history."
+                            : "Hide rule active: old recurring rows stay visible; new recurring rows after this was enabled are hidden."
+                          : "Hide rule off: no commission history rows are being manipulated."}
+                      </p>
+                    </div>
+
+                    <Separator />
+
                     <div className="space-y-2">
                       <div className="flex items-center gap-2">
                         <p className="font-medium">Linked account</p>
@@ -3477,6 +3666,74 @@ export function ManagedAffiliateWorkspace({
             )}
           </TabsContent>
         </Tabs>
+
+        <Dialog
+          open={recurringVisibilityDialogOpen}
+          onOpenChange={setRecurringVisibilityDialogOpen}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Choose recurring rows to hide</DialogTitle>
+              <DialogDescription>
+                Pick what recurring rows should be hidden from this affiliate&apos;s
+                commission history. This only affects their history view; their
+                earning totals still include their full commission amounts.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-3 py-2">
+              <Label className="text-xs text-muted-foreground">
+                Hide scope
+              </Label>
+              <Select
+                value={pendingRecurringVisibilityMode}
+                onValueChange={(value) =>
+                  setPendingRecurringVisibilityMode(
+                    value as RecurringCommissionVisibilityMode
+                  )
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose visibility scope" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL_HISTORY">
+                    Hide all recurring history
+                  </SelectItem>
+                  <SelectItem value="FROM_NOW">
+                    Hide from now onward
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Hide all recurring history removes old and future recurring rows
+                from their history. Hide from now onward keeps old recurring
+                rows visible and hides only new recurring rows after this rule
+                is enabled.
+              </p>
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setRecurringVisibilityDialogOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={() => {
+                  updateMutation.mutate({
+                    canSeeRecurringCommissions: true,
+                    recurringCommissionVisibilityMode:
+                      pendingRecurringVisibilityMode,
+                  });
+                  setRecurringVisibilityDialogOpen(false);
+                }}
+                disabled={updateMutation.isPending}
+              >
+                Save hide rule
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         <Dialog open={unlockDialogOpen} onOpenChange={setUnlockDialogOpen}>
           <DialogContent>

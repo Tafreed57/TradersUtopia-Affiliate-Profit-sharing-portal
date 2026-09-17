@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useSession } from "next-auth/react";
 
 type Currency = "CAD" | "USD";
 
@@ -35,11 +36,14 @@ interface CurrencyContextValue {
 const CurrencyContext = createContext<CurrencyContextValue | null>(null);
 
 export function CurrencyProvider({ children }: { children: React.ReactNode }) {
+  const { data: session, status } = useSession();
+  const enabled = status === "authenticated" && (session.user.accountType === "COMMISSION" || session.user.isAdmin);
   const [currency, setCurrency] = useState<Currency>("CAD");
 
   // Fetches the CAD→USD rate from the server
   const { data, isLoading } = useQuery({
     queryKey: ["exchange-rate"],
+    enabled,
     queryFn: async () => {
       const res = await fetch("/api/currency");
       if (!res.ok) return null;
@@ -49,7 +53,7 @@ export function CurrencyProvider({ children }: { children: React.ReactNode }) {
       }>;
     },
     staleTime: 5 * 60 * 1000, // Match server cache TTL
-    refetchInterval: 5 * 60 * 1000,
+    refetchInterval: enabled ? 5 * 60 * 1000 : false,
   });
 
   const toggle = useCallback(() => {

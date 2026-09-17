@@ -2,15 +2,12 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 
 import { authOptions } from "@/lib/auth-options";
+import { getCommissionCadAllocation } from "@/lib/commission-cad-service";
+import { applyRecurringCommissionVisibility } from "@/lib/commission-visibility";
 import { getTorontoMonthComparisonWindows } from "@/lib/company-performance";
-import { getCadToUsdRate } from "@/lib/currency";
 import { prisma } from "@/lib/prisma";
 
-/**
- * GET /api/dashboard/stats
- *
- * Returns dashboard summary stats for the authenticated user.
- */
+/** Returns dashboard summary stats for the authenticated user. */
 export async function GET() {
   const session = await getServerSession(authOptions);
   if (!session?.user?.id) {
@@ -18,73 +15,49 @@ export async function GET() {
   }
 
   const userId = session.user.id;
-
   const monthWindows = getTorontoMonthComparisonWindows();
   const monthStart = monthWindows.current.start;
   const monthEnd = monthWindows.current.end;
   const monthStartStr = monthStart.toISOString().slice(0, 10);
   const monthEndStr = monthEnd.toISOString().slice(0, 10);
-
+  const visibilityUser = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      canSeeRecurringCommissions: true,
+      recurringCommissionsVisibleFrom: true,
+    },
+  });
   const affiliateSplitWhere = { role: "AFFILIATE" as const, recipientId: userId };
-
-  // `CommissionSplit.cutAmount` stores the event's native currency (USD or CAD
-  // per CommissionEvent.currency) despite the column name — see the *Cad
-  // DEBT. Aggregate per-currency and normalize USD→CAD server-side using
-  // the cached exchange rate so the FE can treat `totalEarned` as canonical
-  // CAD without worrying about mixed-currency users.
-  const perCurrencyTotalWhere = {
-    ...affiliateSplitWhere,
-    status: { in: ["EARNED" as const, "PAID" as const] },
-  };
-  const perCurrencyMonthWhere = {
-    ...perCurrencyTotalWhere,
-    event: { conversionDate: { gte: monthStart, lt: monthEnd } },
-  };
-  const perCurrencyPaidMonthWhere = {
-    ...affiliateSplitWhere,
-    status: "PAID" as const,
-    paidAt: { gte: monthStart, lt: monthEnd },
-  };
+  const visibleAffiliateSplitWhere = applyRecurringCommissionVisibility(
+    affiliateSplitWhere,
+    {
+      canSeeRecurringCommissions:
+        visibilityUser?.canSeeRecurringCommissions ?? false,
+      recurringCommissionsVisibleFrom:
+        visibilityUser?.recurringCommissionsVisibleFrom ?? null,
+    }
+  );
 
   const [
-    totalUsdAgg,
-    totalCadAgg,
-    monthUsdAgg,
-    monthCadAgg,
-    paidMonthUsdAgg,
-    paidMonthCadAgg,
+    payableSplits,
     commissionCount,
     attendanceThisMonth,
     recentSplits,
-    rate,
+    cadAllocation,
   ] = await Promise.all([
-    prisma.commissionSplit.aggregate({
-      where: { ...perCurrencyTotalWhere, event: { currency: "USD" } },
-      _sum: { cutAmount: true },
+    prisma.commissionSplit.findMany({
+      where: {
+        ...affiliateSplitWhere,
+        status: { in: ["EARNED", "PAID"] },
+      },
+      select: {
+        id: true,
+        status: true,
+        paidAt: true,
+        event: { select: { conversionDate: true } },
+      },
     }),
-    prisma.commissionSplit.aggregate({
-      where: { ...perCurrencyTotalWhere, event: { currency: "CAD" } },
-      _sum: { cutAmount: true },
-    }),
-    prisma.commissionSplit.aggregate({
-      where: { ...perCurrencyMonthWhere, event: { currency: "USD", conversionDate: { gte: monthStart, lt: monthEnd } } },
-      _sum: { cutAmount: true },
-    }),
-    prisma.commissionSplit.aggregate({
-      where: { ...perCurrencyMonthWhere, event: { currency: "CAD", conversionDate: { gte: monthStart, lt: monthEnd } } },
-      _sum: { cutAmount: true },
-    }),
-    prisma.commissionSplit.aggregate({
-      where: { ...perCurrencyPaidMonthWhere, event: { currency: "USD" } },
-      _sum: { cutAmount: true },
-    }),
-    prisma.commissionSplit.aggregate({
-      where: { ...perCurrencyPaidMonthWhere, event: { currency: "CAD" } },
-      _sum: { cutAmount: true },
-    }),
-
     prisma.commissionSplit.count({ where: affiliateSplitWhere }),
-
     prisma.attendance.groupBy({
       by: ["date"],
       where: {
@@ -92,9 +65,8 @@ export async function GET() {
         date: { gte: monthStartStr, lte: monthEndStr },
       },
     }),
-
     prisma.commissionSplit.findMany({
-      where: affiliateSplitWhere,
+      where: visibleAffiliateSplitWhere,
       orderBy: [
         { event: { conversionDate: "desc" } },
         { createdAt: "desc" },
@@ -108,44 +80,54 @@ export async function GET() {
         event: { select: { conversionDate: true, currency: true } },
       },
     }),
-
-    getCadToUsdRate(),
+    getCommissionCadAllocation(userId),
   ]);
 
-  // Convert USD portions to CAD. cadToUsd is CAD→USD rate, so CAD = USD / rate.
-  // Fallback 0.74 matches the lib's hardcoded fallback when API is unavailable.
-  const cadToUsd = rate?.rate.toNumber() ?? 0.74;
-  const toCad = (usd: number) => Math.round((usd / cadToUsd) * 100) / 100;
+  const cadFor = (id: string) =>
+    cadAllocation.splitCadById.get(id)?.toNumber() ?? 0;
+  const totalEarned = payableSplits.reduce(
+    (sum, split) => sum + cadFor(split.id),
+    0
+  );
+  const thisMonthEarned = payableSplits.reduce(
+    (sum, split) =>
+      split.event.conversionDate >= monthStart &&
+      split.event.conversionDate < monthEnd
+        ? sum + cadFor(split.id)
+        : sum,
+    0
+  );
+  const paidThisMonth = payableSplits.reduce(
+    (sum, split) =>
+      split.status === "PAID" &&
+      split.paidAt &&
+      split.paidAt >= monthStart &&
+      split.paidAt < monthEnd
+        ? sum + cadFor(split.id)
+        : sum,
+    0
+  );
 
-  const totalUsd = totalUsdAgg._sum.cutAmount?.toNumber() ?? 0;
-  const totalCad = totalCadAgg._sum.cutAmount?.toNumber() ?? 0;
-  const monthUsd = monthUsdAgg._sum.cutAmount?.toNumber() ?? 0;
-  const monthCad = monthCadAgg._sum.cutAmount?.toNumber() ?? 0;
-  const paidMonthUsd = paidMonthUsdAgg._sum.cutAmount?.toNumber() ?? 0;
-  const paidMonthCad = paidMonthCadAgg._sum.cutAmount?.toNumber() ?? 0;
-
-  // No HTTP cache header here. `Cache-Control: private, max-age=N` would
-  // let the browser HTTP cache reuse this response by URL alone — without
-  // `Vary: Cookie` a sign-out + sign-in-as-another-user within the TTL
-  // could serve the previous user's earnings summary (Codex catch).
-  // React Query's in-memory cache (`staleTime: 30s` from the global
-  // QueryProvider default) already dedupes within-tab fetches; multi-tab
-  // deduping isn't worth the leak risk.
   return NextResponse.json({
-    totalEarned: Math.round((totalCad + toCad(totalUsd)) * 100) / 100,
+    totalEarned: Math.round(totalEarned * 100) / 100,
     totalEarnedCurrency: "CAD" as const,
-    thisMonthEarned: Math.round((monthCad + toCad(monthUsd)) * 100) / 100,
-    paidThisMonth: Math.round((paidMonthCad + toCad(paidMonthUsd)) * 100) / 100,
+    thisMonthEarned: Math.round(thisMonthEarned * 100) / 100,
+    paidThisMonth: Math.round(paidThisMonth * 100) / 100,
     commissionCount,
     attendanceDaysThisMonth: attendanceThisMonth.length,
-    recentCommissions: recentSplits.map((s) => ({
-      id: s.id,
-      affiliateCut: s.cutAmount,
-      // Defensive upper-case in case of legacy lowercase row.
-      currency: s.event.currency.toUpperCase() as "USD" | "CAD",
-      status: s.status,
-      forfeitedToCeo: s.forfeitedToCeo,
-      conversionDate: s.event.conversionDate,
+    dataStale: cadAllocation.stale,
+    recentCommissions: recentSplits.map((split) => ({
+      id: split.id,
+      affiliateCut: split.cutAmount,
+      affiliateCutCad:
+        cadAllocation.splitCadById
+          .get(split.id)
+          ?.toDecimalPlaces(2)
+          .toNumber() ?? null,
+      currency: split.event.currency.toUpperCase() as "USD" | "CAD",
+      status: split.status,
+      forfeitedToCeo: split.forfeitedToCeo,
+      conversionDate: split.event.conversionDate,
     })),
   });
 }

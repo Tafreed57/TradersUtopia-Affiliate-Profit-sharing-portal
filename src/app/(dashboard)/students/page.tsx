@@ -140,6 +140,7 @@ interface DetailCommission {
   id: string;
   conversionDate: string;
   teacherCut: number;
+  teacherCutCad: number | null;
   currency: "USD" | "CAD";
   status: string;
   forfeitureReason: string | null;
@@ -227,11 +228,13 @@ function StudentDetailSheet({
   viewerId,
   onClose,
   format,
+  currency,
 }: {
   student: Student | null;
   viewerId: string | undefined;
   onClose: () => void;
   format: (amount: number, inputCurrency?: "CAD" | "USD") => string;
+  currency: "CAD" | "USD";
 }) {
   // Viewer-scoped key: /api/students/:id/detail returns a response that
   // depends on session.user.id (it shows THE VIEWER's teacher cut, not an
@@ -423,7 +426,9 @@ function StudentDetailSheet({
                               : "text-muted-foreground"
                           }`}
                         >
-                          {format(c.teacherCut, c.currency)}
+                          {currency === "CAD" && c.teacherCutCad !== null
+                            ? `CA$${c.teacherCutCad.toFixed(2)}`
+                            : format(c.teacherCut, c.currency)}
                         </span>
                         <Badge variant="default" className={badgeClassName}>
                           {badgeLabel}
@@ -891,7 +896,7 @@ function RequestStudentReturnDialog({
 }
 
 export default function StudentsPage() {
-  const { format } = useCurrency();
+  const { format, currency } = useCurrency();
   const queryClient = useQueryClient();
   const { data: session } = useSession();
   const userId = session?.user?.id;
@@ -989,6 +994,7 @@ export default function StudentsPage() {
         viewerId={userId}
         onClose={() => setSelectedStudent(null)}
         format={format}
+        currency={currency}
       />
 
       <div className="flex items-center justify-between">

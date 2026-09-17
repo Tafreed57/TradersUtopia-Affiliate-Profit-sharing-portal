@@ -10,6 +10,7 @@ interface BrandLogoProps {
   href?: string;
   className?: string;
   priority?: boolean;
+  work?: boolean;
 }
 
 export function BrandLogo({
@@ -17,7 +18,16 @@ export function BrandLogo({
   href = "/",
   className,
   priority = false,
+  work = false,
 }: BrandLogoProps) {
+  if (work) {
+    return (
+      <Link href={href === "/" ? "/attendance" : href} className={cn("inline-flex items-center gap-3", className)} aria-label="Traders Utopia Affiliate Work home">
+        <Image src="/brand/logo-icon.png" alt="" width={36} height={36} className="h-9 w-9 shrink-0 rounded-lg object-contain" priority={priority} />
+        <span className="leading-tight"><span className="block text-xs font-semibold tracking-wide">TRADERS UTOPIA</span><span className="mt-1 block text-sm font-medium text-amber-300">Affiliate Work</span></span>
+      </Link>
+    );
+  }
   const content = compact ? (
     <div
       className={cn(

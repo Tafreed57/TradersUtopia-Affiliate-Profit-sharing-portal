@@ -31,7 +31,9 @@ export default function LoginPage() {
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const callbackUrl = searchParams.get("callbackUrl") ?? "/";
+  const requestedNext = searchParams.get("callbackUrl");
+  const safeNext = requestedNext?.startsWith("/") && !requestedNext.startsWith("//") && !requestedNext.startsWith("/auth/") ? requestedNext : "/";
+  const callbackUrl = `/auth/complete?next=${encodeURIComponent(safeNext)}`;
   const [loading, setLoading] = useState(false);
 
   async function handleCredentials(e: React.FormEvent<HTMLFormElement>) {
@@ -58,7 +60,7 @@ function LoginForm() {
   }
 
   async function handleGoogle() {
-    await signIn("google", { callbackUrl });
+    await signIn("google", { callbackUrl, onboardingType: "COMMISSION" });
   }
 
   return (

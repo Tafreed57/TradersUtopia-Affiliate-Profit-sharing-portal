@@ -27,7 +27,11 @@ export async function POST() {
   // derivative — their splits come from new conversions processed after the
   // relationship is live.
   const relationships = await prisma.teacherStudent.findMany({
-    where: { status: "ACTIVE", depth: 1 },
+    where: {
+      status: "ACTIVE", depth: 1,
+      teacher: { accountType: "COMMISSION" },
+      student: { accountType: "COMMISSION" },
+    },
     select: { teacherId: true, studentId: true, teacherCut: true, depth: true },
   });
 

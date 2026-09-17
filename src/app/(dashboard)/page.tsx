@@ -36,6 +36,7 @@ interface DashboardStats {
   recentCommissions: {
     id: string;
     affiliateCut: string;
+    affiliateCutCad: number | null;
     currency: "USD" | "CAD";
     status: "EARNED" | "FORFEITED" | "PENDING" | "PAID" | "VOIDED";
     forfeitedToCeo: boolean;
@@ -399,7 +400,9 @@ export default function DashboardPage() {
                   >
                     <div>
                       <p className="text-sm font-medium">
-                        {format(Number(c.affiliateCut), c.currency)}
+                        {currency === "CAD" && c.affiliateCutCad !== null
+                          ? `CA$${c.affiliateCutCad.toFixed(2)}`
+                          : format(Number(c.affiliateCut), c.currency)}
                       </p>
                       <p className="text-xs text-muted-foreground">
                         {formatShortDate(c.conversionDate)}

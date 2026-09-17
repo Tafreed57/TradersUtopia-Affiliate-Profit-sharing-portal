@@ -3,9 +3,11 @@ import { getServerSession } from "next-auth";
 import { z } from "zod";
 
 import { authOptions } from "@/lib/auth-options";
+import { linkRewardfulAffiliateWithTimeout } from "@/lib/auth-rewardful-link";
 import { PROMO_CODE_MAX_LENGTH, PROMO_CODE_MIN_LENGTH } from "@/lib/constants";
-import { createNotifications } from "@/lib/notifications";
+import { createNotification, createNotifications } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
+import { createReservedPromoCode, PromoCodeConflict, reservePromoCode, workPromoCodeDto } from "@/lib/promo-code-service";
 import * as rewardful from "@/lib/rewardful";
 
 const requestSchema = z.object({
@@ -32,28 +34,48 @@ export async function POST(req: NextRequest) {
     const { proposedCode } = requestSchema.parse(body);
     const normalizedCode = proposedCode.toUpperCase();
 
-    // Check for duplicate pending/created codes
-    const existing = await prisma.promoCodeRequest.findFirst({
-      where: {
-        proposedCode: normalizedCode,
-        status: { in: ["PENDING_TEACHER", "APPROVED_TEACHER", "CREATED"] },
-      },
+    const user = await prisma.user.findUnique({
+      where: { id: session.user.id },
+      select: { accountType: true, status: true, rewardfulAffiliateId: true, email: true, name: true },
     });
-
-    if (existing) {
-      return NextResponse.json(
-        { error: "This code is already in use or pending approval" },
-        { status: 409 }
-      );
+    if (!user || user.status !== "ACTIVE") {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
-
-    const request = await prisma.promoCodeRequest.create({
-      data: {
-        requesterId: session.user.id,
-        proposedCode: normalizedCode,
-        status: "PENDING_TEACHER",
-      },
+    const isWork = user.accountType === "WORK";
+    if (isWork && !user.rewardfulAffiliateId) {
+      // Work does not poll the commission backfill endpoint. A Create/Retry
+      // action must recover an interrupted signup link using its existing lock.
+      await linkRewardfulAffiliateWithTimeout({ userId: session.user.id, email: user.email, name: user.name });
+      const refreshed = await prisma.user.findUnique({
+        where: { id: session.user.id }, select: { rewardfulAffiliateId: true, status: true },
+      });
+      if (!refreshed || refreshed.status !== "ACTIVE") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      user.rewardfulAffiliateId = refreshed?.rewardfulAffiliateId ?? null;
+      if (!user.rewardfulAffiliateId) {
+        return NextResponse.json({ error: "Your account is getting ready. Try again shortly." }, { status: 409 });
+      }
+    }
+    const { request, isNew } = await reservePromoCode({
+      requesterId: session.user.id, code: normalizedCode, immediate: isWork,
     });
+    if (isWork) {
+      const outcome = await createReservedPromoCode({ request, affiliateId: user.rewardfulAffiliateId! });
+      if (outcome.result === "unavailable") {
+        return NextResponse.json({ error: "This code is unavailable. Try a different code." }, { status: 409 });
+      }
+      if (outcome.result === "failed") {
+        return NextResponse.json({ error: "This code could not be created. Try again.", request: workPromoCodeDto(outcome.request) }, { status: 503 });
+      }
+      if (outcome.result === "created") {
+        await createNotification({
+          userId: session.user.id, dedupeKey: `promo-active:${request.id}`,
+          type: "PROMO_CODE_APPROVED", title: "Promo Code Active",
+          body: `Your promo code "${normalizedCode}" is now active.`, data: { href: "/promo-codes" },
+        }).catch((error) => console.error("Promo activation notification failed:", error));
+      }
+      return NextResponse.json(workPromoCodeDto(outcome.request), { status: outcome.result === "busy" ? 202 : isNew ? 201 : 200 });
+    }
+    if (!isNew) return NextResponse.json(request);
 
     // Notify all teachers about the promo code request
     const teachers = await prisma.teacherStudent.findMany({
@@ -77,6 +99,9 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(request, { status: 201 });
   } catch (error) {
+    if (error instanceof PromoCodeConflict) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
     if (error instanceof z.ZodError) {
       return NextResponse.json(
         { error: "Invalid input", details: error.issues },
@@ -108,8 +133,10 @@ export async function GET() {
   // Load user's upstream affiliate id so we can fetch existing coupons.
   const me = await prisma.user.findUnique({
     where: { id: userId },
-    select: { rewardfulAffiliateId: true },
+    select: { rewardfulAffiliateId: true, accountType: true, status: true },
   });
+  if (!me || me.status !== "ACTIVE") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  const isWork = me.accountType === "WORK";
 
   // Get user's own requests
   const myRequests = await prisma.promoCodeRequest.findMany({
@@ -121,7 +148,7 @@ export async function GET() {
   });
 
   // Get requests from students (if user is a teacher)
-  const studentIds = await prisma.teacherStudent.findMany({
+  const studentIds = isWork ? [] : await prisma.teacherStudent.findMany({
     where: { teacherId: userId, status: "ACTIVE", depth: 1 },
     select: { studentId: true },
   });
@@ -182,8 +209,8 @@ export async function GET() {
   }
 
   return NextResponse.json({
-    myRequests,
+    myRequests: isWork ? myRequests.map(workPromoCodeDto) : myRequests,
     pendingApprovals: studentRequests,
-    activeCoupons,
+    activeCoupons: isWork ? activeCoupons.map((coupon) => ({ id: coupon.code, code: coupon.code, createdAt: coupon.createdAt })) : activeCoupons,
   });
 }

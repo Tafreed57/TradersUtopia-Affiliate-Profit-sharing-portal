@@ -41,6 +41,7 @@ import {
 
 interface Affiliate {
   id: string;
+  accountType: "COMMISSION" | "WORK";
   email: string;
   name: string | null;
   image: string | null;
@@ -115,6 +116,7 @@ interface AdminDiagnosticsResponse {
 export default function AdminPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [accountTypeFilter, setAccountTypeFilter] = useState("all");
   const [page, setPage] = useState(1);
   const queryClient = useQueryClient();
   // Scope admin caches by adminId so account-switching in the same browser
@@ -128,10 +130,11 @@ export default function AdminPage() {
   queryParams.set("page", String(page));
   if (search) queryParams.set("search", search);
   if (statusFilter !== "all") queryParams.set("status", statusFilter);
+  if (accountTypeFilter !== "all") queryParams.set("accountType", accountTypeFilter);
 
   const { data: affiliatesData, isLoading: affiliatesLoading } =
     useQuery<AffiliatesResponse>({
-      queryKey: ["admin-affiliates", adminId, page, search, statusFilter],
+      queryKey: ["admin-affiliates", adminId, page, search, statusFilter, accountTypeFilter],
       enabled: !!adminId,
       queryFn: async () => {
         const res = await fetch(`/api/admin/affiliates?${queryParams}`);
@@ -530,6 +533,10 @@ export default function AdminPage() {
                 className="pl-9"
               />
             </div>
+            <Select value={accountTypeFilter} onValueChange={(value) => { setAccountTypeFilter(value ?? "all"); setPage(1); }}>
+              <SelectTrigger className="w-[175px]" aria-label="Account type"><SelectValue placeholder="Account type" /></SelectTrigger>
+              <SelectContent><SelectItem value="all">All account types</SelectItem><SelectItem value="COMMISSION">Commission</SelectItem><SelectItem value="WORK">Work</SelectItem></SelectContent>
+            </Select>
             <Select
               value={statusFilter}
               onValueChange={(val) => {
@@ -586,6 +593,7 @@ export default function AdminPage() {
                           <div>
                             <p className="text-sm font-medium">
                               {affiliate.name ?? affiliate.email}
+                              <Badge variant="outline" className={affiliate.accountType === "WORK" ? "ml-2 border-amber-300/30 text-amber-300" : "ml-2"}>{affiliate.accountType === "WORK" ? "Work" : "Commission"}</Badge>
                             </p>
                             <p className="text-xs text-muted-foreground">
                               {affiliate.email}
@@ -625,13 +633,13 @@ export default function AdminPage() {
                         </div>
                       </TableCell>
                       <TableCell className="font-mono text-xs">
-                        <div>{affiliate.initialCommissionPercent}% init</div>
+                        {affiliate.accountType === "WORK" ? "—" : <><div>{affiliate.initialCommissionPercent}% init</div>
                         <div className="text-muted-foreground">
                           {affiliate.recurringCommissionPercent}% rec
-                        </div>
+                        </div></>}
                       </TableCell>
-                      <TableCell>{affiliate.commissionsCount}</TableCell>
-                      <TableCell>{affiliate.studentsCount}</TableCell>
+                      <TableCell>{affiliate.accountType === "WORK" ? "—" : affiliate.commissionsCount}</TableCell>
+                      <TableCell>{affiliate.accountType === "WORK" ? "—" : affiliate.studentsCount}</TableCell>
                       <TableCell>
                         <Badge
                           variant="default"

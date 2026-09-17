@@ -17,10 +17,12 @@ export async function GET(req: NextRequest) {
 
   const search = req.nextUrl.searchParams.get("search") ?? "";
   const status = req.nextUrl.searchParams.get("status");
+  const accountType = req.nextUrl.searchParams.get("accountType");
   const page = Math.max(1, Number(req.nextUrl.searchParams.get("page") ?? "1"));
   const limit = Math.min(100, Math.max(1, Number(req.nextUrl.searchParams.get("limit") ?? "50")));
 
   const where: Record<string, unknown> = {};
+  if (accountType === "COMMISSION" || accountType === "WORK") where.accountType = accountType;
 
   if (search) {
     where.OR = [
@@ -42,6 +44,7 @@ export async function GET(req: NextRequest) {
         name: true,
         image: true,
         status: true,
+        accountType: true,
         commissionPercent: true,
         initialCommissionPercent: true,
         recurringCommissionPercent: true,

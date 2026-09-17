@@ -152,9 +152,10 @@ export function LifetimeHeaderCards({
 export function LifetimeHeader() {
   const { data: session } = useSession();
   const userId = session?.user?.id;
+  const canViewCommissions = !!userId && (session?.user?.accountType === "COMMISSION" || session?.user?.isAdmin === true);
   const { data, isLoading, isError } = useQuery<LifetimeHeaderData>({
     queryKey: ["lifetime-stats", userId],
-    enabled: !!userId,
+    enabled: canViewCommissions,
     queryFn: async () => {
       const res = await fetch("/api/commissions/lifetime-stats");
       if (!res.ok) throw new Error("failed");
@@ -164,7 +165,7 @@ export function LifetimeHeader() {
     refetchOnWindowFocus: false,
   });
 
-  if (isError) return null;
+  if (!canViewCommissions || isError) return null;
 
   return <LifetimeHeaderCards data={data} isLoading={isLoading} />;
 }

@@ -35,10 +35,13 @@ export async function GET(req: NextRequest) {
 
   const teacher = await prisma.user.findUnique({
     where: { id: teacherId },
-    select: { id: true },
+    select: { id: true, accountType: true },
   });
   if (!teacher) {
     return NextResponse.json({ error: "Teacher not found" }, { status: 404 });
+  }
+  if (teacher.accountType === "WORK") {
+    return NextResponse.json({ error: "Work accounts cannot be teachers or students" }, { status: 403 });
   }
 
   const existing = await prisma.teacherStudent.findMany({
@@ -57,6 +60,7 @@ export async function GET(req: NextRequest) {
     where: {
       id: { notIn: Array.from(excludedUserIds) },
       status: "ACTIVE",
+      accountType: "COMMISSION",
       OR: [
         { name: { contains: q, mode: "insensitive" } },
         { email: { contains: q, mode: "insensitive" } },
@@ -92,10 +96,28 @@ export async function GET(req: NextRequest) {
       affiliate.email.toLowerCase()
     );
 
+    // A linked Work account must not reappear as an upstream-only candidate.
+    const workMatches = await prisma.user.findMany({
+      where: {
+        accountType: "WORK",
+        OR: [
+          { rewardfulAffiliateId: { in: upstreamIds } },
+          { email: { in: upstreamEmails } },
+        ],
+      },
+      select: { rewardfulAffiliateId: true, email: true },
+    });
+    const workIds = new Set(workMatches.map((user) => user.rewardfulAffiliateId));
+    const workEmails = new Set(workMatches.map((user) => user.email.toLowerCase()));
+    upstreamMatches = upstreamMatches.filter((affiliate) =>
+      !workIds.has(affiliate.id) && !workEmails.has(affiliate.email.toLowerCase())
+    );
+
     linkedLocalMatches = await prisma.user.findMany({
       where: {
         id: { notIn: Array.from(excludedUserIds) },
         status: "ACTIVE",
+        accountType: "COMMISSION",
         OR: [
           { rewardfulAffiliateId: { in: upstreamIds } },
           { email: { in: upstreamEmails } },

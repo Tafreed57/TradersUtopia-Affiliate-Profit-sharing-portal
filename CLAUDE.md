@@ -9,6 +9,14 @@
 - All data sourced from Rewardful must be presented as our own system
 - No reference to any third party
 
+### Commission Rate Privacy Rule
+**CRITICAL**: Affiliate/teacher commission percentages are private business terms and must NEVER be exposed in affiliate-facing UI, notifications, emails, tooltips, or API responses intended for regular users.
+
+- Affiliates may see their earned cut amount, but not the percentage/rate used to calculate it
+- Commission value notifications must show the earned amount only, never phrases like "50% rate" or "commission percentage"
+- Admin-only screens and internal audit records may show percentages
+- Treat commission percentages as confidential even if the value exists in the database or calculation engine
+
 ### Admin Control Rule
 - Admin can adjust any affiliate's commission percentage at any time
 - Changes take effect on NEXT conversion (not retroactive)

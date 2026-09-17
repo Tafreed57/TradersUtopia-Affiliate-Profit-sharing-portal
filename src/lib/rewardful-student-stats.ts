@@ -1,8 +1,8 @@
-import { getCadToUsdRate } from "@/lib/currency";
+import { getCommissionCadAllocations } from "@/lib/commission-cad-service";
 import { prisma } from "@/lib/prisma";
 
 /**
- * Teacher's own CommissionSplit aggregates per student, normalized to CAD.
+ * Teacher's own CommissionSplit aggregates per student, allocated to CAD.
  *
  * Historically this module round-tripped to Rewardful to get the student's
  * UNPAID cents and multiplied by the legacy single-rate commission — a
@@ -10,10 +10,9 @@ import { prisma } from "@/lib/prisma";
  * student. CommissionSplit is the authoritative source for what the system
  * owes the teacher, updated by webhook + nightly reconcile + heal-forfeited.
  *
- * `CommissionSplit.cutAmount` stores the event's native currency (USD for
- * webhook-sourced, CAD for Rewardful-backfilled). We normalize USD rows to
- * CAD server-side before returning, so the returned teacher*Cad fields are
- * canonical CAD the FE can display as-is.
+ * `CommissionSplit.cutAmount` stores the event's native currency. CAD values
+ * come from the upstream state-level CAD base and each split's exact cut,
+ * avoiding drift from today's exchange rate.
  */
 export interface TeacherStudentSplitStats {
   teacherUnpaidCad: number;
@@ -38,8 +37,7 @@ export async function getTeacherStudentSplitStats(
   const ids = Array.from(new Set(studentIds));
   if (ids.length === 0) return result;
 
-  const [rows, rate] = await Promise.all([
-    prisma.commissionSplit.findMany({
+  const rows = await prisma.commissionSplit.findMany({
       where: {
         role: "TEACHER",
         recipientId: teacherId,
@@ -47,6 +45,7 @@ export async function getTeacherStudentSplitStats(
         event: { affiliateId: { in: ids } },
       },
       select: {
+        id: true,
         status: true,
         cutAmount: true,
         event: {
@@ -58,11 +57,8 @@ export async function getTeacherStudentSplitStats(
           },
         },
       },
-    }),
-    getCadToUsdRate(),
-  ]);
-
-  const cadToUsd = rate?.rate.toNumber() ?? 0.74;
+    });
+  const allocations = await getCommissionCadAllocations(ids);
 
   const fetchedAt = new Date().toISOString();
   for (const id of ids) {
@@ -81,8 +77,11 @@ export async function getTeacherStudentSplitStats(
   for (const row of rows) {
     const acc = result.get(row.event.affiliateId);
     if (!acc) continue;
-    const native = row.cutAmount.toNumber();
-    const cad = row.event.currency === "CAD" ? native : native / cadToUsd;
+    const cad = allocations
+      .get(row.event.affiliateId)
+      ?.splitCadById.get(row.id)
+      ?.toNumber();
+    if (cad === undefined) continue;
     if (row.status === "PAID") acc.teacherPaidCad += cad;
     else {
       acc.teacherUnpaidCad += cad;

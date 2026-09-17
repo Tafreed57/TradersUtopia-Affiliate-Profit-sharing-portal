@@ -31,13 +31,16 @@ export async function POST(
 
   const user = await prisma.user.findUnique({
     where: { id },
-    select: { ratesLocked: true },
+    select: { ratesLocked: true, accountType: true },
   });
   if (!user) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
   try {
+    if (user.accountType === "WORK") {
+      return NextResponse.json({ error: "Work accounts do not support commission settings" }, { status: 403 });
+    }
     const result = await runRecalcPending(id, session.user.id, {
       pendingOnly: user.ratesLocked,
     });
