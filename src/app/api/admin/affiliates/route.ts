@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
+import type { Prisma } from "@prisma/client";
 
+import { affiliateGroupIdSchema, parseAffiliatePagination } from "@/lib/affiliate-group-validation";
 import { authOptions } from "@/lib/auth-options";
 import { prisma } from "@/lib/prisma";
 
@@ -18,11 +20,18 @@ export async function GET(req: NextRequest) {
   const search = req.nextUrl.searchParams.get("search") ?? "";
   const status = req.nextUrl.searchParams.get("status");
   const accountType = req.nextUrl.searchParams.get("accountType");
-  const page = Math.max(1, Number(req.nextUrl.searchParams.get("page") ?? "1"));
-  const limit = Math.min(100, Math.max(1, Number(req.nextUrl.searchParams.get("limit") ?? "50")));
+  const pagination = parseAffiliatePagination(req.nextUrl.searchParams);
+  if (!pagination) return NextResponse.json({ error: "Page and limit must be positive integers" }, { status: 400 });
+  const { page, limit, skip } = pagination;
+  const groupId = req.nextUrl.searchParams.get("groupId");
+  const grouped = req.nextUrl.searchParams.get("grouped") === "true";
+  if (groupId !== null && (groupId.trim() !== groupId || !affiliateGroupIdSchema.safeParse(groupId).success)) {
+    return NextResponse.json({ error: "Invalid group filter" }, { status: 400 });
+  }
 
-  const where: Record<string, unknown> = {};
+  const where: Prisma.UserWhereInput = {};
   if (accountType === "COMMISSION" || accountType === "WORK") where.accountType = accountType;
+  if (groupId !== null) where.affiliateGroupMembership = groupId === "ungrouped" ? { is: null } : { is: { groupId } };
 
   if (search) {
     where.OR = [
@@ -45,6 +54,7 @@ export async function GET(req: NextRequest) {
         image: true,
         status: true,
         accountType: true,
+        affiliateGroupMembership: { select: { group: { select: { id: true, name: true, color: true } } } },
         commissionPercent: true,
         initialCommissionPercent: true,
         recurringCommissionPercent: true,
@@ -61,15 +71,20 @@ export async function GET(req: NextRequest) {
           },
         },
       },
-      orderBy: { createdAt: "desc" },
-      skip: (page - 1) * limit,
+      // PostgreSQL's ascending order puts missing (NULL) relation names last.
+      // Sort the complete result set before skip/take so pages preserve groups.
+      orderBy: grouped
+        ? [{ affiliateGroupMembership: { group: { nameKey: "asc" } } }, { createdAt: "desc" }, { id: "asc" }]
+        : [{ createdAt: "desc" }, { id: "asc" }],
+      skip,
       take: limit,
     }),
     prisma.user.count({ where }),
   ]);
 
-  const data = affiliates.map((a) => ({
+  const data = affiliates.map(({ affiliateGroupMembership, ...a }) => ({
     ...a,
+    affiliateGroup: affiliateGroupMembership?.group ?? null,
     commissionPercent: a.commissionPercent.toNumber(),
     initialCommissionPercent: a.initialCommissionPercent.toNumber(),
     recurringCommissionPercent: a.recurringCommissionPercent.toNumber(),

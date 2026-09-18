@@ -12,12 +12,13 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useSession } from "next-auth/react";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { LeaderboardVisibilityCard } from "@/components/admin/leaderboard-visibility-card";
+import { AffiliateGroups, AffiliateGroupSelect, GroupColorDot, assignAffiliatesToGroup, type AffiliateGroup, type AffiliateGroupsResponse } from "@/components/admin/affiliate-groups";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -41,6 +42,7 @@ import {
 
 interface Affiliate {
   id: string;
+  affiliateGroup: Pick<AffiliateGroup, "id" | "name" | "color"> | null;
   accountType: "COMMISSION" | "WORK";
   email: string;
   name: string | null;
@@ -117,6 +119,9 @@ export default function AdminPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [accountTypeFilter, setAccountTypeFilter] = useState("all");
+  const [groupFilter, setGroupFilter] = useState("all");
+  const [selection, setSelection] = useState<{ scope: string; ids: string[] }>({ scope: "", ids: [] });
+  const [bulkGroup, setBulkGroup] = useState("");
   const [page, setPage] = useState(1);
   const queryClient = useQueryClient();
   // Scope admin caches by adminId so account-switching in the same browser
@@ -128,13 +133,15 @@ export default function AdminPage() {
 
   const queryParams = new URLSearchParams();
   queryParams.set("page", String(page));
+  queryParams.set("grouped", "true");
   if (search) queryParams.set("search", search);
   if (statusFilter !== "all") queryParams.set("status", statusFilter);
   if (accountTypeFilter !== "all") queryParams.set("accountType", accountTypeFilter);
+  if (groupFilter !== "all") queryParams.set("groupId", groupFilter);
 
-  const { data: affiliatesData, isLoading: affiliatesLoading } =
+  const { data: affiliatesData, isLoading: affiliatesLoading, error: affiliatesError, refetch: refetchAffiliates } =
     useQuery<AffiliatesResponse>({
-      queryKey: ["admin-affiliates", adminId, page, search, statusFilter, accountTypeFilter],
+      queryKey: ["admin-affiliates", adminId, page, search, statusFilter, accountTypeFilter, groupFilter],
       enabled: !!adminId,
       queryFn: async () => {
         const res = await fetch(`/api/admin/affiliates?${queryParams}`);
@@ -142,6 +149,43 @@ export default function AdminPage() {
         return res.json();
       },
     });
+
+  const groupsQuery = useQuery<AffiliateGroupsResponse>({
+    queryKey: ["admin-affiliate-groups", adminId],
+    enabled: !!adminId,
+    queryFn: async () => {
+      const res = await fetch("/api/admin/affiliate-groups");
+      if (!res.ok) throw new Error("Could not load affiliate groups");
+      return res.json();
+    },
+  });
+  const groups = groupsQuery.data?.data ?? [];
+  const selectionScope = JSON.stringify([adminId, page, search, statusFilter, accountTypeFilter, groupFilter]);
+  const pageAffiliateIds = affiliatesData?.data.map((affiliate) => affiliate.id) ?? [];
+  const selectedIds = selection.scope === selectionScope ? selection.ids.filter((id) => pageAffiliateIds.includes(id)) : [];
+  const allOnPageSelected = pageAffiliateIds.length > 0 && selectedIds.length === pageAffiliateIds.length;
+  const clearSelection = () => { setSelection({ scope: "", ids: [] }); setBulkGroup(""); };
+  const changeGroupFilter = (groupId: string) => { setGroupFilter(groupId); setPage(1); clearSelection(); };
+  const assignGroupMutation = useMutation({
+    mutationFn: ({ affiliateIds, groupId }: { affiliateIds: string[]; groupId: string | null }) => assignAffiliatesToGroup(affiliateIds, groupId),
+    onSuccess: async (_, { affiliateIds, groupId }) => {
+      clearSelection();
+      setPage(1);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["admin-affiliates", adminId] }),
+        queryClient.invalidateQueries({ queryKey: ["admin-affiliate-groups", adminId] }),
+      ]);
+      toast.success(`${affiliateIds.length === 1 ? "Affiliate" : `${affiliateIds.length} affiliates`} moved to ${groupId ? groups.find((group) => group.id === groupId)?.name ?? "group" : "Ungrouped"}`);
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+  const affiliateSections = (affiliatesData?.data ?? []).reduce<Array<{ id: string; name: string; color?: string; affiliates: Affiliate[] }>>((sections, affiliate) => {
+    const id = affiliate.affiliateGroup?.id ?? "ungrouped";
+    const lastSection = sections[sections.length - 1];
+    if (lastSection?.id === id) lastSection.affiliates.push(affiliate);
+    else sections.push({ id, name: affiliate.affiliateGroup?.name ?? "Ungrouped", color: affiliate.affiliateGroup?.color, affiliates: [affiliate] });
+    return sections;
+  }, []);
 
   const { data: proposalsData } = useQuery<{ data: Proposal[] }>({
     queryKey: ["admin-proposals", adminId],
@@ -303,7 +347,7 @@ export default function AdminPage() {
               <p className="text-2xl font-bold">
                 {affiliatesData?.pagination.total ?? "—"}
               </p>
-              <p className="text-sm text-muted-foreground">Total Affiliates</p>
+              <p className="text-sm text-muted-foreground">{search || statusFilter !== "all" || accountTypeFilter !== "all" || groupFilter !== "all" ? "Matching Affiliates" : "Total Affiliates"}</p>
             </div>
           </CardContent>
         </Card>
@@ -520,21 +564,24 @@ export default function AdminPage() {
       <Card>
         <CardHeader>
           <CardTitle className="text-lg">Affiliates</CardTitle>
+          <AffiliateGroups key={adminId} adminId={adminId} groups={groups} ungroupedCount={groupsQuery.data?.ungroupedCount ?? 0} activeFilter={groupFilter} onFilterChange={changeGroupFilter} loading={groupsQuery.isLoading || !adminId} error={groupsQuery.error} onRetry={() => { void groupsQuery.refetch(); }} />
           <div className="flex flex-wrap gap-3 pt-2">
             <div className="relative flex-1 min-w-[200px]">
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
               <Input
                 placeholder="Search by name or email..."
+                aria-label="Search affiliates by name or email"
                 value={search}
                 onChange={(e) => {
                   setSearch(e.target.value);
                   setPage(1);
+                  clearSelection();
                 }}
                 className="pl-9"
               />
             </div>
-            <Select value={accountTypeFilter} onValueChange={(value) => { setAccountTypeFilter(value ?? "all"); setPage(1); }}>
-              <SelectTrigger className="w-[175px]" aria-label="Account type"><SelectValue placeholder="Account type" /></SelectTrigger>
+            <Select value={accountTypeFilter} onValueChange={(value) => { setAccountTypeFilter(value ?? "all"); setPage(1); clearSelection(); }}>
+              <SelectTrigger className="w-[175px]" aria-label="Account type"><SelectValue>{accountTypeFilter === "all" ? "All account types" : accountTypeFilter === "WORK" ? "Work" : "Commission"}</SelectValue></SelectTrigger>
               <SelectContent><SelectItem value="all">All account types</SelectItem><SelectItem value="COMMISSION">Commission</SelectItem><SelectItem value="WORK">Work</SelectItem></SelectContent>
             </Select>
             <Select
@@ -542,10 +589,11 @@ export default function AdminPage() {
               onValueChange={(val) => {
                 setStatusFilter(val ?? "all");
                 setPage(1);
+                clearSelection();
               }}
             >
-              <SelectTrigger className="w-[150px]">
-                <SelectValue placeholder="Status" />
+              <SelectTrigger className="w-[150px]" aria-label="Affiliate status">
+                <SelectValue>{statusFilter === "all" ? "All statuses" : statusFilter === "ACTIVE" ? "Active" : "Deactivated"}</SelectValue>
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All</SelectItem>
@@ -556,12 +604,22 @@ export default function AdminPage() {
           </div>
         </CardHeader>
         <CardContent>
+          {selectedIds.length > 0 && (
+            <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-primary/30 bg-primary/5 p-3" role="region" aria-label="Move selected affiliates">
+              <span className="text-sm font-medium" aria-live="polite">{selectedIds.length} selected on this page</span>
+              <AffiliateGroupSelect groups={groups} value={bulkGroup} onValueChange={setBulkGroup} label="Move to group" disabled={assignGroupMutation.isPending || !groupsQuery.data} />
+              <Button size="sm" disabled={!bulkGroup || assignGroupMutation.isPending || !groupsQuery.data} onClick={() => assignGroupMutation.mutate({ affiliateIds: selectedIds, groupId: bulkGroup === "ungrouped" ? null : bulkGroup })}>{assignGroupMutation.isPending ? "Moving…" : "Move selected"}</Button>
+              <Button size="sm" variant="ghost" onClick={clearSelection} disabled={assignGroupMutation.isPending}>Clear selection</Button>
+            </div>
+          )}
           {affiliatesLoading || !adminId ? (
             <div className="space-y-3">
               {Array.from({ length: 5 }).map((_, i) => (
                 <Skeleton key={i} className="h-14 w-full" />
               ))}
             </div>
+          ) : affiliatesError ? (
+            <div role="alert" className="flex flex-wrap items-center justify-center gap-3 py-8 text-sm text-error">Could not load affiliates.<Button variant="outline" size="sm" onClick={() => { void refetchAffiliates(); }}>Retry affiliates</Button></div>
           ) : !affiliatesData?.data.length ? (
             <p className="py-8 text-center text-muted-foreground">
               No affiliates found
@@ -571,7 +629,9 @@ export default function AdminPage() {
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead className="w-10"><input type="checkbox" aria-label="Select all affiliates on this page" checked={allOnPageSelected} ref={(node) => { if (node) node.indeterminate = selectedIds.length > 0 && !allOnPageSelected; }} onChange={(event) => setSelection({ scope: selectionScope, ids: event.target.checked ? pageAffiliateIds : [] })} disabled={assignGroupMutation.isPending} className="size-4 cursor-pointer accent-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring" /></TableHead>
                     <TableHead>Affiliate</TableHead>
+                    <TableHead>Group</TableHead>
                     <TableHead>Rates (init / rec)</TableHead>
                     <TableHead>Commissions</TableHead>
                     <TableHead>Students</TableHead>
@@ -580,8 +640,15 @@ export default function AdminPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {affiliatesData.data.map((affiliate) => (
+                  {affiliateSections.map((section) => <Fragment key={section.id}>
+                    <TableRow className="hover:bg-muted/20" style={{ backgroundColor: section.color ? `${section.color}12` : undefined }}>
+                      <TableCell colSpan={8} className="border-l-[3px] py-3" style={{ borderLeftColor: section.color ?? "#94A3B8" }}>
+                        <div className="flex flex-wrap items-center gap-2"><GroupColorDot color={section.color} /><span className="font-semibold">{section.name}</span><span className="text-xs text-muted-foreground">{section.affiliates.length} on this page</span></div>
+                      </TableCell>
+                    </TableRow>
+                    {section.affiliates.map((affiliate) => (
                     <TableRow key={affiliate.id}>
+                      <TableCell><input type="checkbox" aria-label={`Select ${affiliate.name ?? affiliate.email}`} checked={selectedIds.includes(affiliate.id)} onChange={(event) => setSelection({ scope: selectionScope, ids: event.target.checked ? [...selectedIds, affiliate.id] : selectedIds.filter((id) => id !== affiliate.id) })} disabled={assignGroupMutation.isPending} className="size-4 cursor-pointer accent-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring" /></TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2">
                           <Avatar className="h-8 w-8">
@@ -632,6 +699,7 @@ export default function AdminPage() {
                           </div>
                         </div>
                       </TableCell>
+                      <TableCell><AffiliateGroupSelect groups={groups} value={affiliate.affiliateGroup?.id ?? "ungrouped"} currentName={affiliate.affiliateGroup?.name} label={`Group for ${affiliate.name ?? affiliate.email}`} disabled={assignGroupMutation.isPending || !groupsQuery.data} onValueChange={(value) => { if (value !== (affiliate.affiliateGroup?.id ?? "ungrouped")) assignGroupMutation.mutate({ affiliateIds: [affiliate.id], groupId: value === "ungrouped" ? null : value }); }} /></TableCell>
                       <TableCell className="font-mono text-xs">
                         {affiliate.accountType === "WORK" ? "—" : <><div>{affiliate.initialCommissionPercent}% init</div>
                         <div className="text-muted-foreground">
@@ -663,6 +731,7 @@ export default function AdminPage() {
                       </TableCell>
                     </TableRow>
                   ))}
+                  </Fragment>)}
                 </TableBody>
               </Table>
 
@@ -675,7 +744,7 @@ export default function AdminPage() {
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => setPage((p) => p - 1)}
+                      onClick={() => { setPage((p) => p - 1); clearSelection(); }}
                       disabled={page <= 1}
                     >
                       Previous
@@ -683,7 +752,7 @@ export default function AdminPage() {
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => setPage((p) => p + 1)}
+                      onClick={() => { setPage((p) => p + 1); clearSelection(); }}
                       disabled={page >= affiliatesData.pagination.totalPages}
                     >
                       Next
