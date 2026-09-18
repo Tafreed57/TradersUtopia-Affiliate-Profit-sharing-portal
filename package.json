@@ -11,6 +11,7 @@
     "test:unit": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test test/*.test.mts",
     "test:notification-privacy": "node scripts/check-notification-privacy.mjs",
     "test:work-runtime": "node scripts/verify-work-runtime.mjs",
+    "test:groups-runtime": "node scripts/verify-affiliate-groups-runtime.mjs",
     "test:e2e": "playwright test",
     "postinstall": "prisma generate"
   },
