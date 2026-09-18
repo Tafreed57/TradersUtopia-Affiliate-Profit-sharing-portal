@@ -6,11 +6,13 @@ declare module "next-auth" {
     user: {
       id: string;
       isAdmin: boolean;
+      accountType: "COMMISSION" | "WORK";
     } & DefaultSession["user"];
   }
 
   interface User extends DefaultUser {
     isAdmin?: boolean;
+    accountType?: "COMMISSION" | "WORK";
   }
 }
 
@@ -18,5 +20,6 @@ declare module "next-auth/jwt" {
   interface JWT extends DefaultJWT {
     id: string;
     isAdmin: boolean;
+    accountType: "COMMISSION" | "WORK";
   }
 }

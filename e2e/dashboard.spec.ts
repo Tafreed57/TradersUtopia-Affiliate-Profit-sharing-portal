@@ -1,11 +1,18 @@
 import { test, expect } from '@playwright/test';
 
+import { cleanupTrackedTestUsers, trackTestUser } from './test-user-cleanup';
+
 const TEST_USER_PASSWORD = 'TestPassword123!';
+
+test.afterEach(async () => {
+  await cleanupTrackedTestUsers();
+});
 
 async function loginUser(page) {
   await page.goto('/register');
   const timestamp = Date.now();
   const uniqueEmail = `dash-${timestamp}-${Math.random().toString(36).slice(7)}@example.com`;
+  trackTestUser(uniqueEmail);
 
   // Register new user
   await page.locator('#name').fill('Dashboard Test User');

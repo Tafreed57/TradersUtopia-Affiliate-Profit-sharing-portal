@@ -6,7 +6,7 @@ import {
   processConversion,
   type WebhookConversion,
 } from "@/lib/commission-engine";
-import { createNotifications } from "@/lib/notifications";
+import { notifyReferralLead } from "@/lib/lead-conversion-notifications";
 import { syncCommissionStatesFromCommissions } from "@/lib/paid-sync-service";
 import { handleCommissionPaid, handleCommissionVoided } from "@/lib/payment-service";
 import { normalizeRewardfulCommissionState } from "@/lib/rewardful";
@@ -14,7 +14,9 @@ import {
   extractCommissionObject,
   extractConversion,
   extractEventType,
+  extractReferralLead,
   isCommissionConversionEvent,
+  isReferralLeadEvent,
 } from "@/lib/rewardful-webhook-parser";
 
 /**
@@ -47,6 +49,18 @@ export async function POST(req: NextRequest) {
     }
 
     const eventType = extractEventType(payload);
+
+    if (isReferralLeadEvent(eventType)) {
+      const lead = extractReferralLead(payload);
+      if (!lead) {
+        return NextResponse.json(
+          { error: "Invalid lead payload" },
+          { status: 400 }
+        );
+      }
+
+      return NextResponse.json(await notifyReferralLead(lead));
+    }
 
     // State-change event: commission.updated with state=paid or state=voided.
     if (eventType.toLowerCase() === "commission.updated") {
@@ -120,10 +134,6 @@ export async function POST(req: NextRequest) {
 
     if (result.warnings?.length) {
       console.warn("Commission warnings:", result.warnings);
-    }
-
-    if (result.success && !result.skipped && result.notifications) {
-      await createNotifications(result.notifications);
     }
 
     return NextResponse.json(result);

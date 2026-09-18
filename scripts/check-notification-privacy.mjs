@@ -26,6 +26,15 @@ const forbiddenPatterns = [
     pattern:
       /(cut|share|percentage)[^`'"\n]{0,80}from\s+your\s+commissions/i,
   },
+  {
+    label: "commission notification rate disclosure",
+    pattern:
+      /You\s+earned[^`'"\n]{0,120}(\b\d+(?:\.\d+)?%|\brate\b|percentage)/i,
+  },
+  {
+    label: "commission notification percent formatter",
+    pattern: /formatPercent\s*\(/i,
+  },
 ];
 
 const requiredSanitizerUses = [

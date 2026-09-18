@@ -1,12 +1,14 @@
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import bcrypt from "bcryptjs";
 import type { AuthOptions } from "next-auth";
+import type { AdapterUser } from "next-auth/adapters";
 import CredentialsProvider from "next-auth/providers/credentials";
 import GoogleProvider from "next-auth/providers/google";
 
 import { linkRewardfulAffiliateWithTimeout } from "@/lib/auth-rewardful-link";
 import { isAdminEmail } from "@/lib/constants";
 import { prisma } from "@/lib/prisma";
+import type { PortalAccountType } from "@/lib/account-access";
 
 export const authOptions: AuthOptions = {
   adapter: PrismaAdapter(prisma) as AuthOptions["adapter"],
@@ -14,6 +16,7 @@ export const authOptions: AuthOptions = {
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID ?? "",
       clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
+      allowDangerousEmailAccountLinking: true,
     }),
     CredentialsProvider({
       name: "credentials",
@@ -51,7 +54,7 @@ export const authOptions: AuthOptions = {
   },
   pages: {
     signIn: "/login",
-    newUser: "/register",
+    newUser: "/auth/complete",
   },
   events: {
     async createUser({ user }) {
@@ -83,20 +86,59 @@ export const authOptions: AuthOptions = {
       if (user) {
         token.id = user.id;
       }
+      token.id ||= token.sub ?? "";
       // Re-evaluate on every JWT refresh so admin-allowlist changes
       // (env var update + redeploy) take effect on the next request
       // instead of requiring sign-out/in. token.email is populated by
       // NextAuth from the initial user object and persists across
       // refreshes.
       token.isAdmin = isAdminEmail(token.email as string | null | undefined);
+      // Persisted permissions also cover legacy sessions; never trust client updates.
+      if (token.id) {
+        const current = await prisma.user.findUnique({
+          where: { id: token.id },
+          select: { accountType: true, status: true },
+        });
+        if (!current || current.status !== "ACTIVE") {
+          token.id = "";
+          token.sub = "";
+          token.isAdmin = false;
+        } else {
+          token.accountType = current.accountType;
+        }
+      }
       return token;
     },
     async session({ session, token }) {
       if (session.user) {
         session.user.id = token.id;
         session.user.isAdmin = token.isAdmin;
+        session.user.accountType = token.accountType;
       }
       return session;
     },
   },
 };
+
+/** Only actual insertion classifies a new user; linking an existing email does not. */
+export function authOptionsForSignup(accountType: PortalAccountType): AuthOptions {
+  return {
+    ...authOptions,
+    adapter: {
+      ...authOptions.adapter,
+      async createUser(data: Omit<AdapterUser, "id">) {
+        const user = await prisma.user.create({
+          data: {
+            name: data.name,
+            email: data.email.toLowerCase(),
+            emailVerified: data.emailVerified,
+            image: data.image,
+            accountType,
+            ...(accountType === "WORK" ? { canBeTeacher: false, canProposeRates: false } : {}),
+          },
+        });
+        return user;
+      },
+    },
+  };
+}

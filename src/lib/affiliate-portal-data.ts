@@ -2,13 +2,24 @@ import { Prisma } from "@prisma/client";
 import Decimal from "decimal.js";
 
 import { linkRewardfulAffiliateWithTimeout } from "@/lib/auth-rewardful-link";
-import { getCadToUsdRate } from "@/lib/currency";
+import {
+  getCommissionCadAllocation,
+  getCommissionCadAllocations,
+  type UpstreamCadBaseCache,
+} from "@/lib/commission-cad-service";
+import {
+  applyRecurringCommissionVisibility,
+  getCommissionAffiliateVisibilityReason,
+  isCommissionVisibleToAffiliate,
+} from "@/lib/commission-visibility";
+import { getTorontoMonthComparisonWindows } from "@/lib/company-performance";
 import { prisma } from "@/lib/prisma";
 import * as rewardful from "@/lib/rewardful";
+import { firstTimeSignupEventWhere } from "@/lib/signup-conversions";
 import { getTeacherRelationshipEpisodeSummary } from "@/lib/teacher-student-relationships";
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
-const CACHE_VERSION = 7;
+const CACHE_VERSION = 11;
 const VALID_COMMISSION_STATUSES = [
   "EARNED",
   "FORFEITED",
@@ -50,6 +61,9 @@ interface LifetimeStatsPayload {
 
 interface CacheRecord extends LifetimeStatsPayload {
   cacheVersion: number;
+  canSeeRecurringCommissions?: boolean;
+  recurringCommissionsVisibleFrom?: string | null;
+  upstreamCadBase?: UpstreamCadBaseCache;
 }
 
 export class AffiliatePortalDataError extends Error {
@@ -68,6 +82,11 @@ export interface CommissionQueryInput {
   status?: string | null;
   from?: string | null;
   to?: string | null;
+}
+
+export interface AffiliateCommissionVisibilityOptions {
+  respectRecurringVisibility?: boolean;
+  includeAffiliateVisibility?: boolean;
 }
 
 export interface AttendanceQueryInput {
@@ -93,12 +112,6 @@ function endOfUtcDay(dateStr: string) {
   return new Date(`${dateStr}T23:59:59.999Z`);
 }
 
-function toCad(nativeAmount: number, currency: string, cadToUsd: number) {
-  return currency.toUpperCase() === "CAD"
-    ? nativeAmount
-    : nativeAmount / cadToUsd;
-}
-
 function normalizeCommissionStatus(status?: string | null) {
   if (!status) return undefined;
   return VALID_COMMISSION_STATUSES.includes(status as ValidCommissionStatus)
@@ -108,9 +121,30 @@ function normalizeCommissionStatus(status?: string | null) {
 
 export async function getAffiliateCommissionsData(
   userId: string,
-  input: CommissionQueryInput
+  input: CommissionQueryInput,
+  options: AffiliateCommissionVisibilityOptions = {}
 ) {
-  const where: Prisma.CommissionSplitWhereInput = {
+  const respectRecurringVisibility =
+    options.respectRecurringVisibility ?? true;
+  const includeAffiliateVisibility = options.includeAffiliateVisibility ?? false;
+  const visibilityUser =
+    respectRecurringVisibility || includeAffiliateVisibility
+    ? await prisma.user.findUnique({
+        where: { id: userId },
+        select: {
+          canSeeRecurringCommissions: true,
+          recurringCommissionsVisibleFrom: true,
+        },
+      })
+    : null;
+  const affiliateVisibility = {
+    canSeeRecurringCommissions:
+      visibilityUser?.canSeeRecurringCommissions ?? false,
+    recurringCommissionsVisibleFrom:
+      visibilityUser?.recurringCommissionsVisibleFrom ?? null,
+  };
+
+  let where: Prisma.CommissionSplitWhereInput = {
     role: "AFFILIATE",
     recipientId: userId,
   };
@@ -127,7 +161,28 @@ export async function getAffiliateCommissionsData(
     where.event = { conversionDate: dateFilter };
   }
 
-  const [splits, total] = await Promise.all([
+  if (respectRecurringVisibility) {
+    where = applyRecurringCommissionVisibility(
+      where,
+      affiliateVisibility
+    );
+  }
+
+  const monthWindows = getTorontoMonthComparisonWindows();
+  const monthlyConversionWhere: Prisma.CommissionSplitWhereInput = {
+    role: "AFFILIATE",
+    recipientId: userId,
+    status: { not: "VOIDED" },
+  };
+
+  const [
+    splits,
+    total,
+    currentMonthConversions,
+    previousMonthConversions,
+    cadAllocation,
+  ] =
+    await Promise.all([
     prisma.commissionSplit.findMany({
       where,
       orderBy: { event: { conversionDate: "desc" } },
@@ -143,6 +198,7 @@ export async function getAffiliateCommissionsData(
         event: {
           select: {
             conversionDate: true,
+            isRecurring: true,
             currency: true,
             upstreamState: true,
             upstreamDueAt: true,
@@ -152,27 +208,81 @@ export async function getAffiliateCommissionsData(
       },
     }),
     prisma.commissionSplit.count({ where }),
+    prisma.commissionSplit.count({
+      where: {
+        ...monthlyConversionWhere,
+        event: firstTimeSignupEventWhere({
+          conversionDate: {
+            gte: monthWindows.current.start,
+            lt: monthWindows.current.end,
+          },
+        }),
+      },
+    }),
+    prisma.commissionSplit.count({
+      where: {
+        ...monthlyConversionWhere,
+        event: firstTimeSignupEventWhere({
+          conversionDate: {
+            gte: monthWindows.previous.start,
+            lt: monthWindows.previous.end,
+          },
+        }),
+      },
+    }),
+    getCommissionCadAllocation(userId),
   ]);
 
   return {
-    data: splits.map((split) => ({
-      id: split.id,
-      affiliateCut: split.cutAmount.toString(),
-      currency: split.event.currency.toUpperCase() as "USD" | "CAD",
-      status: split.status,
-      forfeitedToCeo: split.forfeitedToCeo,
-      forfeitureReason: split.forfeitureReason,
-      conversionDate: split.event.conversionDate.toISOString(),
-      upstreamState: split.event.upstreamState,
-      upstreamDueAt: toIsoString(split.event.upstreamDueAt),
-      campaignName: split.event.campaignName,
-      processedAt: split.createdAt.toISOString(),
-    })),
+    data: splits.map((split) => {
+      const visibilityEvent = {
+        isRecurring: split.event.isRecurring,
+        conversionDate: split.event.conversionDate,
+      };
+
+      return {
+        id: split.id,
+        affiliateCut: split.cutAmount.toString(),
+        affiliateCutCad:
+          cadAllocation.splitCadById
+            .get(split.id)
+            ?.toDecimalPlaces(2)
+            .toString() ?? null,
+        currency: split.event.currency.toUpperCase() as "USD" | "CAD",
+        status: split.status,
+        forfeitedToCeo: split.forfeitedToCeo,
+        forfeitureReason: split.forfeitureReason,
+        conversionDate: split.event.conversionDate.toISOString(),
+        upstreamState: split.event.upstreamState,
+        upstreamDueAt: toIsoString(split.event.upstreamDueAt),
+        campaignName: split.event.campaignName,
+        processedAt: split.createdAt.toISOString(),
+        ...(includeAffiliateVisibility
+          ? {
+              isRecurring: split.event.isRecurring,
+              visibleToAffiliate: isCommissionVisibleToAffiliate(
+                visibilityEvent,
+                affiliateVisibility
+              ),
+              affiliateVisibilityReason:
+                getCommissionAffiliateVisibilityReason(
+                  visibilityEvent,
+                  affiliateVisibility
+                ),
+            }
+          : {}),
+      };
+    }),
     pagination: {
       page: input.page,
       limit: input.limit,
       total,
       totalPages: Math.ceil(total / input.limit),
+    },
+    monthlyConversionSummary: {
+      currentMonthConversions,
+      previousMonthConversions,
+      timezoneLabel: monthWindows.timezoneLabel,
     },
   };
 }
@@ -267,15 +377,17 @@ export async function getAffiliateLifetimeStatsData(userId: string) {
   };
 
   try {
-    const [stats, splits, rate] = await Promise.all([
-      rewardful.getAffiliateLifetimeStats(user.rewardfulAffiliateId),
+    const stats = await rewardful.getAffiliateLifetimeStats(
+      user.rewardfulAffiliateId
+    );
+    const [splits, cadAllocation] = await Promise.all([
       prisma.commissionSplit.findMany({
         where: {
           ...affiliateSplitWhere,
           status: { in: ["EARNED", "PAID"] },
         },
         select: {
-          cutAmount: true,
+          id: true,
           status: true,
           event: {
             select: {
@@ -286,31 +398,27 @@ export async function getAffiliateLifetimeStatsData(userId: string) {
           },
         },
       }),
-      getCadToUsdRate(),
+      getCommissionCadAllocation(userId, { providedStats: stats }),
     ]);
 
-    const cadToUsd = rate?.rate.toNumber() ?? 0.74;
-    let paidCad = 0;
-    let dueCad = 0;
-    let pendingCad = 0;
+    let paidCad = new Decimal(0);
+    let dueCad = new Decimal(0);
+    let pendingCad = new Decimal(0);
     let nextDueAt: Date | null = null;
 
     for (const split of splits) {
-      const cad = toCad(
-        split.cutAmount.toNumber(),
-        split.event.currency,
-        cadToUsd
-      );
+      const cad = cadAllocation.splitCadById.get(split.id);
+      if (!cad) continue;
 
       if (split.status === "PAID") {
-        paidCad += cad;
+        paidCad = paidCad.add(cad);
         continue;
       }
 
       if (split.event.upstreamState === "due") {
-        dueCad += cad;
+        dueCad = dueCad.add(cad);
       } else {
-        pendingCad += cad;
+        pendingCad = pendingCad.add(cad);
       }
 
       if (
@@ -322,11 +430,15 @@ export async function getAffiliateLifetimeStatsData(userId: string) {
       }
     }
 
-    paidCad = roundMoney(paidCad);
-    dueCad = roundMoney(dueCad);
-    pendingCad = roundMoney(pendingCad);
-    const unpaidCad = roundMoney(dueCad + pendingCad);
-    const grossEarnedCad = roundMoney(unpaidCad + paidCad);
+    const paidCadNumber = paidCad.toDecimalPlaces(2).toNumber();
+    const dueCadNumber = dueCad.toDecimalPlaces(2).toNumber();
+    const pendingCadNumber = pendingCad.toDecimalPlaces(2).toNumber();
+    const unpaidCad = dueCad.add(pendingCad).toDecimalPlaces(2).toNumber();
+    const grossEarnedCad = dueCad
+      .add(pendingCad)
+      .add(paidCad)
+      .toDecimalPlaces(2)
+      .toNumber();
 
     let campaign: LifetimeStatsPayload["campaign"] = null;
     if (stats.campaignId) {
@@ -358,10 +470,10 @@ export async function getAffiliateLifetimeStatsData(userId: string) {
       conversions: stats.conversions,
       conversionRate: stats.conversionRate,
       grossEarnedCad,
-      paidCad,
+      paidCad: paidCadNumber,
       unpaidCad,
-      dueCad,
-      pendingCad,
+      dueCad: dueCadNumber,
+      pendingCad: pendingCadNumber,
       currency: "CAD",
       coupons: stats.coupons,
       nextDueAt: nextDueAt?.toISOString() ?? null,
@@ -372,6 +484,7 @@ export async function getAffiliateLifetimeStatsData(userId: string) {
     const cacheRecord: CacheRecord = {
       ...payload,
       cacheVersion: CACHE_VERSION,
+      upstreamCadBase: cadAllocation.upstreamCadBase ?? undefined,
     };
 
     await prisma.user.update({
@@ -385,7 +498,7 @@ export async function getAffiliateLifetimeStatsData(userId: string) {
     return {
       ...payload,
       cachedAt: new Date().toISOString(),
-      stale: false,
+      stale: cadAllocation.stale,
     };
   } catch (error) {
     const isMissingAffiliate =
@@ -466,8 +579,7 @@ async function getTeacherEpisodeSummaries(
     return summaryByKey;
   }
 
-  const [splits, rate] = await Promise.all([
-    prisma.commissionSplit.findMany({
+  const splits = await prisma.commissionSplit.findMany({
       where: {
         role: "TEACHER",
         recipientId: teacherId,
@@ -477,23 +589,24 @@ async function getTeacherEpisodeSummaries(
         status: { in: ["EARNED", "PAID"] },
       },
       select: {
+        id: true,
         teacherStudentId: true,
         teacherStudentSequence: true,
         cutAmount: true,
         status: true,
         event: {
           select: {
+            affiliateId: true,
             currency: true,
             upstreamState: true,
             upstreamDueAt: true,
           },
         },
       },
-    }),
-    getCadToUsdRate(),
-  ]);
-
-  const cadToUsd = new Decimal(rate?.rate.toString() ?? "0.74");
+    });
+  const cadAllocations = await getCommissionCadAllocations(
+    splits.map((split) => split.event.affiliateId)
+  );
   const allowedKeys = new Set(summaryByKey.keys());
 
   for (const split of splits) {
@@ -514,12 +627,12 @@ async function getTeacherEpisodeSummaries(
       continue;
     }
 
-    const cad =
-      split.event.currency === "CAD"
-        ? new Decimal(split.cutAmount.toString())
-        : new Decimal(split.cutAmount.toString()).div(cadToUsd);
-
     summary.count += 1;
+    const cad = cadAllocations
+      .get(split.event.affiliateId)
+      ?.splitCadById.get(split.id);
+    if (!cad) continue;
+
     if (split.status === "PAID") {
       summary.paid = summary.paid.add(cad);
       continue;
@@ -1010,6 +1123,7 @@ export async function getTeacherStudentDetailData(
     teacherSplitStats,
     commissionTotal,
     attendanceTotal,
+    cadAllocation,
   ] = await Promise.all([
     prisma.user.findUnique({
       where: { id: studentId },
@@ -1058,6 +1172,7 @@ export async function getTeacherStudentDetailData(
     ),
     prisma.commissionSplit.count({ where: splitWhere }),
     prisma.attendance.count({ where: { userId: studentId } }),
+    getCommissionCadAllocation(studentId),
   ]);
 
   if (!student) {
@@ -1088,6 +1203,9 @@ export async function getTeacherStudentDetailData(
       fullAmount: split.event.fullAmount.toNumber(),
       teacherCutPercent: split.cutPercent.toNumber(),
       teacherCut: split.cutAmount.toNumber(),
+      teacherCutCad:
+        cadAllocation.splitCadById.get(split.id)?.toDecimalPlaces(2).toNumber() ??
+        null,
       currency: split.event.currency.toUpperCase() as "USD" | "CAD",
       status: split.status,
       forfeitedToCeo: split.forfeitedToCeo,
@@ -1109,40 +1227,27 @@ export async function getTeacherStudentDetailData(
 
 export async function getAffiliateEarnedSummaryCad(userId: string) {
   const affiliateSplitWhere = { role: "AFFILIATE" as const, recipientId: userId };
-  const [earnedUsdAgg, earnedCadAgg, paidUsdAgg, paidCadAgg, rate] =
-    await Promise.all([
-      prisma.commissionSplit.aggregate({
-        where: { ...affiliateSplitWhere, status: "EARNED", event: { currency: "USD" } },
-        _sum: { cutAmount: true },
-      }),
-      prisma.commissionSplit.aggregate({
-        where: { ...affiliateSplitWhere, status: "EARNED", event: { currency: "CAD" } },
-        _sum: { cutAmount: true },
-      }),
-      prisma.commissionSplit.aggregate({
-        where: { ...affiliateSplitWhere, status: "PAID", event: { currency: "USD" } },
-        _sum: { cutAmount: true },
-      }),
-      prisma.commissionSplit.aggregate({
-        where: { ...affiliateSplitWhere, status: "PAID", event: { currency: "CAD" } },
-        _sum: { cutAmount: true },
-      }),
-      getCadToUsdRate(),
-    ]);
-
-  const cadToUsd = rate?.rate.toNumber() ?? 0.74;
-  const earnedCad = roundMoney(
-    (earnedCadAgg._sum.cutAmount?.toNumber() ?? 0) +
-      toCad(earnedUsdAgg._sum.cutAmount?.toNumber() ?? 0, "USD", cadToUsd)
-  );
-  const paidCad = roundMoney(
-    (paidCadAgg._sum.cutAmount?.toNumber() ?? 0) +
-      toCad(paidUsdAgg._sum.cutAmount?.toNumber() ?? 0, "USD", cadToUsd)
-  );
+  const [splits, allocation] = await Promise.all([
+    prisma.commissionSplit.findMany({
+      where: { ...affiliateSplitWhere, status: { in: ["EARNED", "PAID"] } },
+      select: { id: true, status: true },
+    }),
+    getCommissionCadAllocation(userId),
+  ]);
+  let earned = new Decimal(0);
+  let paid = new Decimal(0);
+  for (const split of splits) {
+    const cad = allocation.splitCadById.get(split.id);
+    if (!cad) continue;
+    if (split.status === "PAID") paid = paid.add(cad);
+    else earned = earned.add(cad);
+  }
+  const earnedCad = earned.toDecimalPlaces(2).toNumber();
+  const paidCad = paid.toDecimalPlaces(2).toNumber();
 
   return {
     earnedCad,
     paidCad,
-    totalCad: roundMoney(earnedCad + paidCad),
+    totalCad: earned.add(paid).toDecimalPlaces(2).toNumber(),
   };
 }

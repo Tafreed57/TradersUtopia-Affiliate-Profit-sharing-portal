@@ -97,6 +97,7 @@ import { useCurrency } from "@/providers/currency-provider";
 
 interface AffiliateDetail {
   id: string;
+  accountType: "COMMISSION" | "WORK";
   email: string;
   name: string | null;
   image: string | null;
@@ -106,6 +107,8 @@ interface AffiliateDetail {
   recurringCommissionPercent: number;
   canProposeRates: boolean;
   canBeTeacher: boolean;
+  canSeeRecurringCommissions: boolean;
+  recurringCommissionsVisibleFrom: string | null;
   ratesLocked: boolean;
   ratesConfigured: boolean;
   rewardfulAffiliateId: string | null;
@@ -138,6 +141,7 @@ interface AffiliateDetail {
     id: string;
     affiliateCutPercent: number;
     affiliateCut: number;
+    affiliateCutCad: number | null;
     ceoCut: number;
     currency: "USD" | "CAD";
     status: "EARNED" | "FORFEITED" | "PENDING" | "PAID" | "VOIDED";
@@ -161,9 +165,18 @@ interface AffiliateDetail {
   pendingRateNotSetCount: number;
 }
 
+type RecurringCommissionVisibilityMode = "ALL_HISTORY" | "FROM_NOW";
+type AffiliateVisibilityReason =
+  | "first_time_commission"
+  | "recurring_visible"
+  | "recurring_visible_before_hide_from"
+  | "recurring_hidden_all_history"
+  | "recurring_hidden_after_hide_from";
+
 interface Commission {
   id: string;
   affiliateCut: string;
+  affiliateCutCad: string | null;
   currency: "USD" | "CAD";
   status: "EARNED" | "FORFEITED" | "PENDING" | "PAID" | "VOIDED";
   forfeitedToCeo: boolean;
@@ -173,6 +186,9 @@ interface Commission {
   upstreamDueAt: string | null;
   campaignName: string | null;
   processedAt: string;
+  isRecurring?: boolean;
+  visibleToAffiliate?: boolean;
+  affiliateVisibilityReason?: AffiliateVisibilityReason;
 }
 
 interface CommissionResponse {
@@ -273,15 +289,24 @@ interface StudentsResponse {
 
 interface UserSearchResult {
   id: string;
+  source: "portal" | "upstream";
+  portalUserId: string | null;
+  upstreamAffiliateId: string | null;
   name: string | null;
   email: string;
   image: string | null;
+}
+
+interface AdminStudentSearchResponse {
+  data: UserSearchResult[];
+  upstreamSearchFailed: boolean;
 }
 
 interface DetailCommission {
   id: string;
   conversionDate: string;
   teacherCut: number;
+  teacherCutCad: number | null;
   currency: "USD" | "CAD";
   status: string;
   forfeitureReason: string | null;
@@ -505,18 +530,79 @@ function CommissionStatusBadge({
   );
 }
 
+const AFFILIATE_VISIBILITY_CONFIG: Record<
+  AffiliateVisibilityReason,
+  {
+    label: "Visible to affiliate" | "Hidden from affiliate";
+    detail: string;
+    className: string;
+  }
+> = {
+  first_time_commission: {
+    label: "Visible to affiliate",
+    detail: "First-time signup row",
+    className: "bg-success/15 text-success border-success/30",
+  },
+  recurring_visible: {
+    label: "Visible to affiliate",
+    detail: "Recurring row shown; hide rule is off",
+    className: "bg-success/15 text-success border-success/30",
+  },
+  recurring_visible_before_hide_from: {
+    label: "Visible to affiliate",
+    detail: "Old recurring row kept visible",
+    className: "bg-success/15 text-success border-success/30",
+  },
+  recurring_hidden_all_history: {
+    label: "Hidden from affiliate",
+    detail: "All recurring history is hidden",
+    className: "bg-muted/30 text-muted-foreground border-border/60",
+  },
+  recurring_hidden_after_hide_from: {
+    label: "Hidden from affiliate",
+    detail: "New recurring row hidden from now onward",
+    className: "bg-muted/30 text-muted-foreground border-border/60",
+  },
+};
+
+function AffiliateVisibilityBadge({
+  commission,
+}: {
+  commission: Commission;
+}) {
+  if (commission.visibleToAffiliate === undefined) return null;
+
+  const reason =
+    commission.affiliateVisibilityReason ??
+    (commission.visibleToAffiliate
+      ? "recurring_visible"
+      : "recurring_hidden_all_history");
+  const config = AFFILIATE_VISIBILITY_CONFIG[reason];
+
+  return (
+    <div className="space-y-1">
+      <Badge variant="default" className={config.className}>
+        {config.label}
+      </Badge>
+      <p className="text-xs text-muted-foreground">{config.detail}</p>
+    </div>
+  );
+}
+
 function StudentDetailSheet({
   adminId,
   affiliateId,
   student,
   onClose,
   format,
+  currency,
 }: {
   adminId: string | undefined;
   affiliateId: string;
   student: Student | null;
   onClose: () => void;
   format: (amount: number, inputCurrency?: "CAD" | "USD") => string;
+  currency: "CAD" | "USD";
 }) {
   const { data, isLoading } = useQuery<StudentDetailResponse>({
     queryKey: [
@@ -696,7 +782,9 @@ function StudentDetailSheet({
                             : "text-muted-foreground"
                         }`}
                       >
-                        {format(commission.teacherCut, commission.currency)}
+                        {currency === "CAD" && commission.teacherCutCad !== null
+                          ? `CA$${commission.teacherCutCad.toFixed(2)}`
+                          : format(commission.teacherCut, commission.currency)}
                       </span>
                       <Badge variant="default" className={badgeClassName}>
                         {badgeLabel}
@@ -772,10 +860,14 @@ function AdminPairStudentDialog({
   const [selected, setSelected] = useState<UserSearchResult | null>(null);
   const [teacherCut, setTeacherCut] = useState("");
 
-  const { data: searchResults, isFetching } = useQuery<{ data: UserSearchResult[] }>({
+  const { data: searchResults, isFetching } = useQuery<AdminStudentSearchResponse>({
     queryKey: ["admin-pair-student-search", teacherId, search],
     queryFn: async () =>
-      fetchJson(`/api/users/search?q=${encodeURIComponent(search)}`),
+      fetchJson(
+        `/api/admin/student-search?q=${encodeURIComponent(
+          search
+        )}&teacherId=${encodeURIComponent(teacherId)}`
+      ),
     enabled: open && search.length >= 2,
     retry: false,
   });
@@ -787,7 +879,12 @@ function AdminPairStudentDialog({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           teacherId,
-          studentId: selected!.id,
+          studentId:
+            selected!.source === "portal" ? selected!.portalUserId : undefined,
+          upstreamAffiliateId:
+            selected!.source === "upstream"
+              ? selected!.upstreamAffiliateId
+              : undefined,
           teacherCut: Number(teacherCut),
         }),
       });
@@ -805,8 +902,12 @@ function AdminPairStudentDialog({
 
       return response.json();
     },
-    onSuccess: () => {
-      toast.success("Student linked successfully");
+    onSuccess: (payload: { historySync?: { status?: string } }) => {
+      toast.success(
+        payload.historySync?.status === "QUEUED"
+          ? "Student linked. Commission history is syncing in the background."
+          : "Student linked successfully"
+      );
       setOpen(false);
       setSearch("");
       setSelected(null);
@@ -903,8 +1004,18 @@ function AdminPairStudentDialog({
                               </p>
                             )}
                           </div>
+                          {user.source === "upstream" && (
+                            <Badge variant="outline" className="ml-auto shrink-0">
+                              Not signed in
+                            </Badge>
+                          )}
                         </button>
                       ))
+                    )}
+                    {searchResults?.upstreamSearchFailed && (
+                      <div className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
+                        Account search is temporarily unavailable.
+                      </div>
                     )}
                   </div>
                 )}
@@ -1096,6 +1207,143 @@ function ArchiveStudentDialog({
   );
 }
 
+function CompleteRemoveStudentDialog({
+  student,
+  open,
+  onOpenChange,
+  onSuccess,
+}: {
+  student: DirectStudent | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSuccess: () => void;
+}) {
+  const [archiveReason, setArchiveReason] = useState("");
+  const [confirmText, setConfirmText] = useState("");
+
+  const completeRemoveMutation = useMutation({
+    mutationFn: async () => {
+      if (!student) throw new Error("No student selected");
+      return fetchJson<{
+        preservedIndirectRelationships: number;
+      }>(
+        `/api/admin/teacher-student/${student.relationshipId}/complete-remove`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            archiveReason:
+              archiveReason.trim() ||
+              "Admin completely removed this student from the teacher roster.",
+          }),
+        }
+      );
+    },
+    onSuccess: (result) => {
+      toast.success(
+        result.preservedIndirectRelationships > 0
+          ? `Student removed. ${result.preservedIndirectRelationships} indirect link${result.preservedIndirectRelationships === 1 ? "" : "s"} preserved.`
+          : "Student completely removed from this teacher."
+      );
+      setArchiveReason("");
+      setConfirmText("");
+      onOpenChange(false);
+      onSuccess();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) {
+          setArchiveReason("");
+          setConfirmText("");
+        }
+        onOpenChange(nextOpen);
+      }}
+    >
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Completely Remove Student</DialogTitle>
+          <DialogDescription>
+            This hides the relationship from active and previous-student lists
+            for this teacher. Historical commissions remain recorded, and
+            indirect student links stay active.
+          </DialogDescription>
+        </DialogHeader>
+
+        {student && (
+          <div className="space-y-4 py-2">
+            <div className="rounded-xl border border-error/30 bg-error/10 p-4 text-sm">
+              <p className="font-medium">{student.name ?? student.email}</p>
+              <p className="mt-2 text-muted-foreground">
+                Current unpaid {student.teacherUnpaidCad.toFixed(2)} CAD, paid{" "}
+                {student.teacherPaidCad.toFixed(2)} CAD.
+              </p>
+            </div>
+
+            {student.subStudents.length > 0 && (
+              <div className="rounded-xl border border-border/50 p-4 text-sm">
+                <p className="font-medium">
+                  {student.subStudents.length} indirect link
+                  {student.subStudents.length === 1 ? "" : "s"} stay active
+                </p>
+                <p className="mt-1 text-muted-foreground">
+                  This only removes the direct link between this teacher and
+                  student.
+                </p>
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <Label htmlFor="complete-remove-reason">Reason (optional)</Label>
+              <Input
+                id="complete-remove-reason"
+                value={archiveReason}
+                onChange={(event) => setArchiveReason(event.target.value)}
+                placeholder="Explain why this relationship is being removed."
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="complete-remove-confirm">
+                Type REMOVE to confirm
+              </Label>
+              <Input
+                id="complete-remove-confirm"
+                value={confirmText}
+                onChange={(event) => setConfirmText(event.target.value)}
+                placeholder="REMOVE"
+              />
+            </div>
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            onClick={() => completeRemoveMutation.mutate()}
+            disabled={
+              completeRemoveMutation.isPending ||
+              !student ||
+              confirmText.trim().toUpperCase() !== "REMOVE"
+            }
+          >
+            {completeRemoveMutation.isPending
+              ? "Removing..."
+              : "Complete Remove"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function ManagedPreviousStudentCard({
   student,
   activeRelationship,
@@ -1240,11 +1488,13 @@ function ManagedStudentCard({
   format,
   onViewDetail,
   onArchive,
+  onCompleteRemove,
 }: {
   student: DirectStudent;
   format: (amount: number, inputCurrency?: "CAD" | "USD") => string;
   onViewDetail: (student: Student) => void;
   onArchive: (student: DirectStudent) => void;
+  onCompleteRemove: (student: DirectStudent) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const subCount = student.subStudents.length;
@@ -1281,7 +1531,7 @@ function ManagedStudentCard({
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
             <Button variant="outline" size="sm" onClick={() => onViewDetail(student)}>
               View
             </Button>
@@ -1293,6 +1543,15 @@ function ManagedStudentCard({
             >
               <UserMinus className="mr-1 h-3.5 w-3.5" />
               Remove
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-error/30 text-error hover:bg-error/10 hover:text-error"
+              onClick={() => onCompleteRemove(student)}
+            >
+              <UserX className="mr-1 h-3.5 w-3.5" />
+              Complete Remove
             </Button>
           </div>
         </div>
@@ -1425,6 +1684,18 @@ export function ManagedAffiliateWorkspace({
   const adminId = session?.user?.id;
   const queryClient = useQueryClient();
   const { currency, toggle, format, convert, stale } = useCurrency();
+  const formatCommissionValue = (
+    nativeAmount: number,
+    nativeCurrency: "CAD" | "USD",
+    cadAmount: number | string | null
+  ) =>
+    currency === "CAD" && cadAmount !== null
+      ? `CA$${Number(cadAmount).toFixed(2)}`
+      : format(nativeAmount, nativeCurrency);
+  const recurringCommissionVisibilityMode = (
+    affiliate: AffiliateDetail
+  ): RecurringCommissionVisibilityMode =>
+    affiliate.recurringCommissionsVisibleFrom ? "FROM_NOW" : "ALL_HISTORY";
 
   const [activeTab, setActiveTab] = useState("overview");
   const [page, setPage] = useState(1);
@@ -1438,6 +1709,8 @@ export function ManagedAffiliateWorkspace({
   const [today] = useState(() => new Date().toLocaleDateString("en-CA"));
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
   const [studentToArchive, setStudentToArchive] = useState<DirectStudent | null>(null);
+  const [studentToCompleteRemove, setStudentToCompleteRemove] =
+    useState<DirectStudent | null>(null);
   const [studentToRestore, setStudentToRestore] = useState<PreviousStudent | null>(null);
   const [newInitialRate, setNewInitialRate] = useState("");
   const [newRecurringRate, setNewRecurringRate] = useState("");
@@ -1447,6 +1720,12 @@ export function ManagedAffiliateWorkspace({
   const [replaceLinkDialogOpen, setReplaceLinkDialogOpen] = useState(false);
   const [replaceLinkIdentifier, setReplaceLinkIdentifier] = useState("");
   const [replaceLinkConfirmText, setReplaceLinkConfirmText] = useState("");
+  const [recurringVisibilityDialogOpen, setRecurringVisibilityDialogOpen] =
+    useState(false);
+  const [
+    pendingRecurringVisibilityMode,
+    setPendingRecurringVisibilityMode,
+  ] = useState<RecurringCommissionVisibilityMode>("FROM_NOW");
 
   const workspaceKey = ["admin-affiliate-workspace", adminId, affiliateId] as const;
   const monthWindow = getMonthWindow(selectedMonth);
@@ -1471,7 +1750,7 @@ export function ManagedAffiliateWorkspace({
 
   const lifetimeQuery = useQuery<ManagedLifetimeStats>({
     queryKey: [...workspaceKey, "lifetime"],
-    enabled: !!adminId,
+    enabled: !!adminId && overviewQuery.data?.accountType === "COMMISSION",
     queryFn: async () =>
       fetchJson(`/api/admin/affiliates/${affiliateId}/lifetime-stats`),
     retry: false,
@@ -1491,7 +1770,7 @@ export function ManagedAffiliateWorkspace({
 
   const studentsQuery = useQuery<StudentsResponse>({
     queryKey: [...workspaceKey, "students"],
-    enabled: !!adminId,
+    enabled: !!adminId && overviewQuery.data?.accountType === "COMMISSION",
     queryFn: async () =>
       fetchJson(`/api/admin/affiliates/${affiliateId}/students`),
     retry: false,
@@ -1516,7 +1795,7 @@ export function ManagedAffiliateWorkspace({
       fromDate,
       toDate,
     ],
-    enabled: !!adminId && activeTab === "commissions",
+    enabled: !!adminId && overviewQuery.data?.accountType === "COMMISSION" && activeTab === "commissions",
     queryFn: async () =>
       fetchJson(
         `/api/admin/affiliates/${affiliateId}/commissions?${commissionQueryParams.toString()}`
@@ -1723,6 +2002,37 @@ export function ManagedAffiliateWorkspace({
     return <p className="text-muted-foreground">Affiliate not found.</p>;
   }
 
+  if (data.accountType === "WORK") {
+    return (
+      <div className="space-y-6">
+        <Link href="/admin" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="h-4 w-4" />Back to Admin</Link>
+        <Card className="border-amber-300/20">
+          <CardHeader>
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div><Badge variant="outline" className="mb-3 border-amber-300/30 text-amber-300">Work</Badge><CardTitle>{data.name ?? data.email}</CardTitle><p className="mt-2 text-sm text-muted-foreground">{data.email}</p></div>
+              <Badge variant="outline">{data.status === "ACTIVE" ? "Active" : "Deactivated"}</Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">Traders Utopia Affiliate Work · Attendance and promo codes</p>
+            {data.linkError && <p className="text-sm text-warning">Account connection needs attention.</p>}
+            <div className="flex flex-wrap gap-3">
+              {!data.rewardfulAffiliateId && <Button variant="outline" disabled={retryLinkMutation.isPending} onClick={() => retryLinkMutation.mutate()}>{retryLinkMutation.isPending ? "Connecting..." : "Retry account connection"}</Button>}
+              <Button variant="outline" disabled={updateMutation.isPending} onClick={() => updateMutation.mutate({ status: data.status === "ACTIVE" ? "DEACTIVATED" : "ACTIVE" })}>{updateMutation.isPending ? "Saving..." : data.status === "ACTIVE" ? "Deactivate Work account" : "Reactivate Work account"}</Button>
+            </div>
+          </CardContent>
+        </Card>
+        <AdminPromoCodes affiliateId={affiliateId} />
+        <Card>
+          <CardHeader><div className="flex flex-wrap items-center justify-between gap-3"><CardTitle>Attendance</CardTitle><Input aria-label="Attendance month" type="month" className="w-44" value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} /></div></CardHeader>
+          <CardContent>
+            {attendanceQuery.isLoading ? <Skeleton className="h-24" /> : attendanceQuery.isError ? <p className="text-sm text-muted-foreground">Attendance is unavailable. Please try again.</p> : !attendanceQuery.data?.data.length ? <p className="text-sm text-muted-foreground">No attendance recorded this month.</p> : <div className="divide-y divide-border/50">{attendanceQuery.data.data.map((record) => <div key={record.id} className="flex flex-wrap justify-between gap-3 py-3 text-sm"><div><p className="font-medium">{record.date}</p>{record.note && <p className="mt-1 text-muted-foreground">{record.note}</p>}</div><p className="text-xs text-muted-foreground">{record.timezone}</p></div>)}</div>}
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   const lifetimeError =
     lifetimeQuery.error instanceof Error ? lifetimeQuery.error.message : null;
   const attendanceError =
@@ -1772,7 +2082,10 @@ export function ManagedAffiliateWorkspace({
       .filter((commission) => commission.status === "EARNED")
       .reduce(
         (sum, commission) =>
-          sum + convert(Number(commission.affiliateCut), commission.currency),
+          sum +
+          (currency === "CAD" && commission.affiliateCutCad !== null
+            ? Number(commission.affiliateCutCad)
+            : convert(Number(commission.affiliateCut), commission.currency)),
         0
       ) ?? 0;
 
@@ -1816,12 +2129,21 @@ export function ManagedAffiliateWorkspace({
         student={selectedStudent}
         onClose={() => setSelectedStudent(null)}
         format={format}
+        currency={currency}
       />
       <ArchiveStudentDialog
         student={studentToArchive}
         open={!!studentToArchive}
         onOpenChange={(open) => {
           if (!open) setStudentToArchive(null);
+        }}
+        onSuccess={invalidateWorkspace}
+      />
+      <CompleteRemoveStudentDialog
+        student={studentToCompleteRemove}
+        open={!!studentToCompleteRemove}
+        onOpenChange={(open) => {
+          if (!open) setStudentToCompleteRemove(null);
         }}
         onSuccess={invalidateWorkspace}
       />
@@ -2025,7 +2347,11 @@ export function ManagedAffiliateWorkspace({
                                 {formatShortDate(commission.conversionDate)}
                               </TableCell>
                               <TableCell>
-                                {format(commission.affiliateCut, commission.currency)}
+                                {formatCommissionValue(
+                                  commission.affiliateCut,
+                                  commission.currency,
+                                  commission.affiliateCutCad
+                                )}
                               </TableCell>
                               <TableCell>
                                 <CommissionStatusBadge status={commission.status} />
@@ -2341,6 +2667,7 @@ export function ManagedAffiliateWorkspace({
                         <TableRow>
                           <TableHead>Date</TableHead>
                           <TableHead>Their Cut</TableHead>
+                          <TableHead>Affiliate View</TableHead>
                           <TableHead>Status</TableHead>
                         </TableRow>
                       </TableHeader>
@@ -2374,11 +2701,15 @@ export function ManagedAffiliateWorkspace({
                                     : "font-semibold"
                                 }
                               >
-                                {format(
+                                {formatCommissionValue(
                                   Number(commission.affiliateCut),
-                                  commission.currency
+                                  commission.currency,
+                                  commission.affiliateCutCad
                                 )}
                               </span>
+                            </TableCell>
+                            <TableCell>
+                              <AffiliateVisibilityBadge commission={commission} />
                             </TableCell>
                             <TableCell>
                               {commission.status === "EARNED" ? (
@@ -2823,6 +3154,7 @@ export function ManagedAffiliateWorkspace({
                         format={format}
                         onViewDetail={setSelectedStudent}
                         onArchive={setStudentToArchive}
+                        onCompleteRemove={setStudentToCompleteRemove}
                       />
                     ))}
                   </div>
@@ -3126,6 +3458,49 @@ export function ManagedAffiliateWorkspace({
 
                     <Separator />
 
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="font-medium">
+                            Hide recurring commission rows
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            When off, this affiliate sees their normal full
+                            commission history. When on, choose which recurring
+                            rows to hide from history only.
+                          </p>
+                        </div>
+                        <Switch
+                          checked={data.canSeeRecurringCommissions}
+                          onCheckedChange={(checked) => {
+                            if (!checked) {
+                              updateMutation.mutate({
+                                canSeeRecurringCommissions: false,
+                              });
+                              return;
+                            }
+
+                            setPendingRecurringVisibilityMode(
+                              data.canSeeRecurringCommissions
+                                ? recurringCommissionVisibilityMode(data)
+                                : "FROM_NOW"
+                            );
+                            setRecurringVisibilityDialogOpen(true);
+                          }}
+                        />
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {data.canSeeRecurringCommissions
+                          ? recurringCommissionVisibilityMode(data) ===
+                            "ALL_HISTORY"
+                            ? "Hide rule active: all recurring rows are hidden from this affiliate's history."
+                            : "Hide rule active: old recurring rows stay visible; new recurring rows after this was enabled are hidden."
+                          : "Hide rule off: no commission history rows are being manipulated."}
+                      </p>
+                    </div>
+
+                    <Separator />
+
                     <div className="space-y-2">
                       <div className="flex items-center gap-2">
                         <p className="font-medium">Linked account</p>
@@ -3291,6 +3666,74 @@ export function ManagedAffiliateWorkspace({
             )}
           </TabsContent>
         </Tabs>
+
+        <Dialog
+          open={recurringVisibilityDialogOpen}
+          onOpenChange={setRecurringVisibilityDialogOpen}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Choose recurring rows to hide</DialogTitle>
+              <DialogDescription>
+                Pick what recurring rows should be hidden from this affiliate&apos;s
+                commission history. This only affects their history view; their
+                earning totals still include their full commission amounts.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-3 py-2">
+              <Label className="text-xs text-muted-foreground">
+                Hide scope
+              </Label>
+              <Select
+                value={pendingRecurringVisibilityMode}
+                onValueChange={(value) =>
+                  setPendingRecurringVisibilityMode(
+                    value as RecurringCommissionVisibilityMode
+                  )
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose visibility scope" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL_HISTORY">
+                    Hide all recurring history
+                  </SelectItem>
+                  <SelectItem value="FROM_NOW">
+                    Hide from now onward
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Hide all recurring history removes old and future recurring rows
+                from their history. Hide from now onward keeps old recurring
+                rows visible and hides only new recurring rows after this rule
+                is enabled.
+              </p>
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setRecurringVisibilityDialogOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={() => {
+                  updateMutation.mutate({
+                    canSeeRecurringCommissions: true,
+                    recurringCommissionVisibilityMode:
+                      pendingRecurringVisibilityMode,
+                  });
+                  setRecurringVisibilityDialogOpen(false);
+                }}
+                disabled={updateMutation.isPending}
+              >
+                Save hide rule
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         <Dialog open={unlockDialogOpen} onOpenChange={setUnlockDialogOpen}>
           <DialogContent>

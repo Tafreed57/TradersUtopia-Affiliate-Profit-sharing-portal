@@ -60,6 +60,10 @@ export async function POST(req: NextRequest) {
 
     const proposal = await prisma.rateProposal.findUnique({
       where: { id: proposalId },
+      include: {
+        proposer: { select: { accountType: true } },
+        student: { select: { accountType: true } },
+      },
     });
 
     if (!proposal) {
@@ -98,6 +102,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(updated);
     }
 
+    if (proposal.proposer.accountType === "WORK" || proposal.student.accountType === "WORK") {
+      return NextResponse.json({ error: "Work accounts cannot be teachers or students" }, { status: 403 });
+    }
     // Approve — update TeacherStudent cut and create audit log
     await prisma.$transaction(async (tx) => {
       // Update proposal status

@@ -10,8 +10,8 @@ import { authOptions } from "@/lib/auth-options";
 /**
  * GET /api/admin/affiliates/:id/lifetime-stats
  *
- * Admin-scoped lifetime stats for the managed affiliate. Mirrors the
- * affiliate-facing commissions header payload.
+ * Admin-scoped lifetime stats for the managed affiliate. Uses the same
+ * payload shape as the affiliate header while preserving full audit totals.
  */
 export async function GET(
   _req: NextRequest,

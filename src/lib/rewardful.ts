@@ -131,6 +131,23 @@ export interface RewardfulCommission {
   updated_at: string;
 }
 
+/**
+ * Returns the stable commission base used by the portal's split engine.
+ *
+ * The nested sale amount is mutable and becomes zero after a full refund,
+ * even when the commission remains paid. The top-level commission amount is
+ * the stable value reflected in commission totals. Older payload variants
+ * without that field can still fall back to the nested sale amount.
+ */
+export function rewardfulCommissionBaseAmountCents(commission: {
+  amount?: number | null;
+  sale?: { sale_amount_cents?: number | null } | null;
+}): number | null {
+  if (typeof commission.amount === "number") return commission.amount;
+  const saleAmount = commission.sale?.sale_amount_cents;
+  return typeof saleAmount === "number" ? saleAmount : null;
+}
+
 export interface RewardfulReferral {
   id: string;
   affiliate: { id: string; email: string };
@@ -145,11 +162,14 @@ export interface RewardfulReferral {
 
 export interface RewardfulCoupon {
   id: string;
+  external_id?: string | null;
   /** Discount token shown in checkout (e.g. "SPRING20"). Rewardful returns
-   *  this on /coupons responses. Some older endpoints used `code`; we
+   *  this on affiliate-coupon responses. Some older endpoints used `code`; we
    *  alias via helper below. */
   token?: string;
   code?: string;
+  archived?: boolean;
+  archived_at?: string | null;
   affiliate_id?: string;
   campaign_id?: string;
   campaign?: { id: string; name?: string } | null;
@@ -401,12 +421,19 @@ export async function listReferrals(params?: {
 
 export async function createCoupon(data: {
   affiliate_id: string;
-  campaign_id: string;
   code: string;
 }) {
-  return request<RewardfulCoupon>("/coupons", {
+  const body = new URLSearchParams({
+    affiliate_id: data.affiliate_id,
+    token: data.code,
+  });
+
+  return request<RewardfulCoupon>("/affiliate_coupons", {
     method: "POST",
-    body: JSON.stringify(data),
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body,
   });
 }
 
@@ -426,7 +453,9 @@ export async function listCoupons(params: {
   qs.set("affiliate_id", params.affiliate_id);
   if (params.page) qs.set("page", String(params.page));
   if (params.limit) qs.set("limit", String(params.limit));
-  return request<PaginatedResponse<RewardfulCoupon>>(`/coupons?${qs}`);
+  return request<PaginatedResponse<RewardfulCoupon>>(
+    `/affiliate_coupons?${qs}`
+  );
 }
 
 /** Fetches ALL coupons for an affiliate across pages. Uses the shared
@@ -445,8 +474,11 @@ export async function listAllCouponsForAffiliate(
     qs.set("affiliate_id", affiliateId);
     qs.set("page", String(page));
     qs.set("limit", String(limit));
-    const raw = await request<unknown>(`/coupons?${qs}`);
-    all.push(...extractPagedRows<RewardfulCoupon>(raw, ["coupons"]));
+    const raw = await request<unknown>(`/affiliate_coupons?${qs}`);
+    all.push(...extractPagedRows<RewardfulCoupon>(raw, [
+      "affiliate_coupons",
+      "coupons",
+    ]));
     const next = extractNextPage(raw, page);
     if (next === null) return all;
     page = next;
@@ -459,7 +491,7 @@ export async function listAllCouponsForAffiliate(
 }
 
 export async function deleteCoupon(couponId: string): Promise<void> {
-  await request<void>(`/coupons/${couponId}`, { method: "DELETE" });
+  await request<void>(`/affiliate_coupons/${couponId}`, { method: "DELETE" });
 }
 
 export async function listCampaigns(params?: {
@@ -626,7 +658,7 @@ export async function getAffiliateLifetimeStats(
     dueCents,
     coupons: (affiliate.coupons ?? []).map((c) => ({
       id: c.id,
-      code: c.code,
+      code: couponCode(c),
     })),
     campaignId: affiliate.campaign?.id ?? affiliate.campaign_id,
     fetchedAt: new Date().toISOString(),

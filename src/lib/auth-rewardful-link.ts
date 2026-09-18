@@ -1,4 +1,5 @@
 import { adminUserWhereOr } from "@/lib/constants";
+import { removeSignupAutoCouponsBestEffort } from "@/lib/affiliate-startup-coupon-cleanup";
 import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
 import * as rewardful from "@/lib/rewardful";
@@ -128,6 +129,16 @@ export async function linkRewardfulAffiliate(args: {
     console.log(
       `[linkRewardfulAffiliate] auto-created ${normalizedEmail} -> ${created.id}`
     );
+    const cleanup = await removeSignupAutoCouponsBestEffort({
+      affiliateId: created.id,
+      firstName,
+      email,
+    });
+    if (cleanup.deleted.length > 0) {
+      console.log(
+        `[linkRewardfulAffiliate] removed ${cleanup.deleted.length} startup coupon(s) for ${normalizedEmail}`
+      );
+    }
     await notifyAdminOfAutoCreate({ newUserId: userId, email: normalizedEmail });
   } catch (err) {
     const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);

@@ -24,12 +24,12 @@ interface PromoCodeRequest {
   id: string;
   proposedCode: string;
   status: string;
-  rewardfulCouponId: string | null;
+  rewardfulCouponId?: string | null;
   rejectionReason: string | null;
   errorMessage: string | null;
   createdAt: string;
   reviewedAt: string | null;
-  reviewer: { id: string; name: string | null } | null;
+  reviewer?: { id: string; name: string | null } | null;
 }
 
 interface PendingApproval {
@@ -42,7 +42,7 @@ interface PendingApproval {
 interface ActiveCoupon {
   id: string;
   code: string;
-  campaignName: string | null;
+  campaignName?: string | null;
   createdAt: string | null;
 }
 
@@ -56,6 +56,11 @@ const STATUS_CONFIG: Record<
   string,
   { label: string; icon: React.ReactNode; className: string }
 > = {
+  CREATING: {
+    label: "Creating...",
+    icon: <Clock className="h-3 w-3" />,
+    className: "bg-info/15 text-info border-info/30",
+  },
   PENDING_TEACHER: {
     label: "Pending Approval",
     icon: <Clock className="h-3 w-3" />,
@@ -86,12 +91,14 @@ const STATUS_CONFIG: Record<
 export default function PromoCodesPage() {
   const { data: session } = useSession();
   const userId = session?.user?.id;
+  const isWork = session?.user?.accountType === "WORK" && !session.user.isAdmin;
   const queryClient = useQueryClient();
   const [newCode, setNewCode] = useState("");
 
   const { data, isLoading } = useQuery<PromoCodesResponse>({
     queryKey: ["promo-codes", userId],
     enabled: !!userId,
+    refetchInterval: (query) => isWork && query.state.data?.myRequests.some((request) => request.status === "CREATING") ? 3_000 : false,
     queryFn: async () => {
       const res = await fetch("/api/promo-codes");
       if (!res.ok) throw new Error("Failed to fetch promo codes");
@@ -108,16 +115,24 @@ export default function PromoCodesPage() {
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.error ?? "Failed to request code");
+        throw new Error(err.error ?? (isWork ? "Your code could not be created. Please retry." : "Failed to request code"));
       }
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (result: PromoCodeRequest) => {
       setNewCode("");
       queryClient.invalidateQueries({ queryKey: ["promo-codes"] });
-      toast.success("Promo code request submitted");
+      if (isWork) {
+        if (result.status === "CREATED") toast.success("Your promo code is active and ready to share");
+        else toast("Your promo code is being created");
+      } else {
+        toast.success("Promo code request submitted");
+      }
     },
-    onError: (error: Error) => toast.error(error.message),
+    onError: (error: Error) => {
+      queryClient.invalidateQueries({ queryKey: ["promo-codes"] });
+      toast.error(error.message);
+    },
   });
 
   const approveMutation = useMutation({
@@ -169,7 +184,7 @@ export default function PromoCodesPage() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Promo Codes</h1>
         <p className="text-muted-foreground">
-          Request and manage your promotional codes
+          {isWork ? "Create your code and share it with your audience" : "Request and manage your promotional codes"}
         </p>
       </div>
 
@@ -178,7 +193,7 @@ export default function PromoCodesPage() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-lg">
             <Plus className="h-5 w-5 text-primary" />
-            Request a Promo Code
+            {isWork ? "Create a Promo Code" : "Request a Promo Code"}
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -201,19 +216,18 @@ export default function PromoCodesPage() {
                   requestMutation.isPending || newCode.length < 4
                 }
               >
-                {requestMutation.isPending ? "Submitting..." : "Request"}
+                {requestMutation.isPending ? (isWork ? "Creating..." : "Submitting...") : (isWork ? "Create code" : "Request")}
               </Button>
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
-            Your code will be sent to your teacher for approval. Once approved,
-            it will be automatically created and ready to use.
+            {isWork ? "Choose 4–6 letters. Once your code is active, it is ready to share when you go live." : "Your code will be sent to your teacher for approval. Once approved, it will be automatically created and ready to use."}
           </p>
         </CardContent>
       </Card>
 
       {/* Pending Approvals (Teacher View) */}
-      {data && data.pendingApprovals.length > 0 && (
+      {!isWork && data && data.pendingApprovals.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle className="text-lg">
@@ -289,7 +303,7 @@ export default function PromoCodesPage() {
             <div className="py-8 text-center text-muted-foreground">
               <Tag className="mx-auto mb-2 h-8 w-8 opacity-40" />
               <p>No promo codes yet</p>
-              <p className="text-xs mt-1">Request one above to get started</p>
+              <p className="text-xs mt-1">{isWork ? "Create one above to get started" : "Request one above to get started"}</p>
             </div>
           ) : (
             <div className="space-y-3">
@@ -309,7 +323,7 @@ export default function PromoCodesPage() {
                       </span>
                     </div>
                     <p className="text-xs text-muted-foreground mt-1">
-                      {coupon.campaignName ? `${coupon.campaignName} · ` : ""}
+                      {!isWork && coupon.campaignName ? `${coupon.campaignName} · ` : ""}
                       {coupon.createdAt
                         ? `Created ${new Date(coupon.createdAt).toLocaleDateString(
                             "en-US",
@@ -335,6 +349,7 @@ export default function PromoCodesPage() {
               {data?.myRequests
                 .filter((r) => {
                   if (r.status !== "CREATED") return true;
+                  if (isWork) return !data.activeCoupons.some((coupon) => coupon.code.toUpperCase() === r.proposedCode.toUpperCase());
                   if (!r.rewardfulCouponId) return true; // no upstream id to match
                   return !data.activeCoupons.some(
                     (c) => c.id === r.rewardfulCouponId
@@ -355,7 +370,7 @@ export default function PromoCodesPage() {
                         </span>
                       </div>
                       <p className="text-xs text-muted-foreground mt-1">
-                        Requested{" "}
+                        {isWork ? "Added" : "Requested"}{" "}
                         {new Date(request.createdAt).toLocaleDateString(
                           "en-US",
                           {
@@ -376,6 +391,8 @@ export default function PromoCodesPage() {
                         </p>
                       )}
                     </div>
+                    <div className="flex items-center gap-2">
+                    {isWork && ["FAILED", "CREATING"].includes(request.status) && <Button size="sm" variant="outline" disabled={requestMutation.isPending} onClick={() => requestMutation.mutate(request.proposedCode)}>{requestMutation.isPending ? "Retrying..." : "Retry"}</Button>}
                     <Badge
                       variant="default"
                       className={`gap-1 ${config.className}`}
@@ -383,6 +400,7 @@ export default function PromoCodesPage() {
                       {config.icon}
                       {config.label}
                     </Badge>
+                    </div>
                   </div>
                 );
               })}

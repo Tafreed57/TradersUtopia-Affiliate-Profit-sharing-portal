@@ -59,6 +59,7 @@ export async function POST(req: NextRequest) {
     where: { email: normalizedEmail },
     select: {
       id: true,
+      accountType: true,
       email: true,
       initialCommissionPercent: true,
       recurringCommissionPercent: true,
@@ -77,6 +78,9 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  if (user.accountType === "WORK") {
+    return NextResponse.json({ error: "Work accounts do not support commission setup" }, { status: 403 });
+  }
   if (!user.rewardfulAffiliateId) {
     return NextResponse.json(
       { error: "User exists but has no Rewardful affiliate link yet." },
@@ -241,10 +245,14 @@ export async function DELETE(req: NextRequest) {
 
   const user = await prisma.user.findUnique({
     where: { email: normalizedEmail },
-    select: { id: true, email: true },
+    select: { id: true, email: true, accountType: true },
   });
   if (!user) {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
+  }
+
+  if (user.accountType === "WORK") {
+    return NextResponse.json({ error: "Work accounts do not support commission setup" }, { status: 403 });
   }
 
   // Count splits that'll be cascade-deleted via event deletion (AFFILIATE

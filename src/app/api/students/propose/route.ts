@@ -39,9 +39,9 @@ export async function POST(req: NextRequest) {
 
     const proposer = await prisma.user.findUnique({
       where: { id: teacherId },
-      select: { canBeTeacher: true },
+      select: { canBeTeacher: true, accountType: true },
     });
-    if (!proposer?.canBeTeacher && !session.user.isAdmin) {
+    if (proposer?.accountType === "WORK" || (!proposer?.canBeTeacher && !session.user.isAdmin)) {
       return NextResponse.json(
         { error: "You do not have permission to propose students" },
         { status: 403 }
@@ -50,10 +50,13 @@ export async function POST(req: NextRequest) {
 
     const student = await prisma.user.findUnique({
       where: { id: studentId },
-      select: { id: true, name: true, email: true },
+      select: { id: true, name: true, email: true, accountType: true },
     });
     if (!student) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
+    }
+    if (student.accountType === "WORK") {
+      return NextResponse.json({ error: "Work accounts cannot be teachers or students" }, { status: 403 });
     }
 
     const existing = await prisma.teacherStudent.findUnique({

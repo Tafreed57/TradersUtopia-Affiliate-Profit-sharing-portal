@@ -50,12 +50,15 @@ export async function PATCH(
 
   const user = await prisma.user.findUnique({
     where: { id },
-    select: { id: true, ratesLocked: true },
+    select: { id: true, ratesLocked: true, accountType: true },
   });
   if (!user) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
+  if (user.accountType === "WORK") {
+    return NextResponse.json({ error: "Work accounts do not support commission settings" }, { status: 403 });
+  }
   if (user.ratesLocked === body.locked) {
     return NextResponse.json(
       { ok: true, ratesLocked: user.ratesLocked, note: "Already in requested state" },

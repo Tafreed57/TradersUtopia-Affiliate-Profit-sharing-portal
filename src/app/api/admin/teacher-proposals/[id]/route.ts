@@ -37,8 +37,8 @@ export async function PATCH(
     const proposal = await prisma.teacherStudent.findUnique({
       where: { id },
       include: {
-        teacher: { select: { id: true, name: true, email: true } },
-        student: { select: { id: true, name: true, email: true } },
+        teacher: { select: { id: true, name: true, email: true, accountType: true } },
+        student: { select: { id: true, name: true, email: true, accountType: true } },
       },
     });
 
@@ -74,6 +74,9 @@ export async function PATCH(
       return NextResponse.json({ ok: true, status: "REJECTED" });
     }
 
+    if (proposal.teacher.accountType === "WORK" || proposal.student.accountType === "WORK") {
+      return NextResponse.json({ error: "Work accounts cannot be teachers or students" }, { status: 403 });
+    }
     const activation = await activateTeacherStudentRelationship({
       teacherId: proposal.teacherId,
       studentId: proposal.studentId,
@@ -90,7 +93,7 @@ export async function PATCH(
       userId: proposal.teacherId,
       type: "STUDENT_PROPOSAL_APPROVED",
       title: "Student Proposal Approved",
-      body: `${studentLabel} has been added as your student at ${proposal.teacherCut.toString()}% cut.${activation.historicalBackfillCreated > 0 ? ` ${activation.historicalBackfillCreated} unpaid commission${activation.historicalBackfillCreated === 1 ? "" : "s"} were also brought under your history.` : ""}`,
+      body: `${studentLabel} has been added as your student.${activation.historicalBackfillCreated > 0 ? ` ${activation.historicalBackfillCreated} unpaid commission${activation.historicalBackfillCreated === 1 ? "" : "s"} were also brought under your history.` : ""}`,
       data: { studentId: proposal.studentId, href: "/students" },
     });
     await createNotification({

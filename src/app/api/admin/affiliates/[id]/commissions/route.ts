@@ -7,8 +7,9 @@ import { authOptions } from "@/lib/auth-options";
 /**
  * GET /api/admin/affiliates/:id/commissions
  *
- * Admin-scoped commission history for the managed affiliate. Mirrors the
- * affiliate-facing /api/commissions payload and filters.
+ * Admin-scoped commission history for the managed affiliate. Uses the same
+ * payload shape as /api/commissions, but keeps full audit visibility even
+ * when recurring rows are hidden from the affiliate.
  */
 export async function GET(
   req: NextRequest,
@@ -28,12 +29,19 @@ export async function GET(
   );
 
   return NextResponse.json(
-    await getAffiliateCommissionsData(id, {
-      page,
-      limit,
-      status: url.searchParams.get("status"),
-      from: url.searchParams.get("from"),
-      to: url.searchParams.get("to"),
-    })
+    await getAffiliateCommissionsData(
+      id,
+      {
+        page,
+        limit,
+        status: url.searchParams.get("status"),
+        from: url.searchParams.get("from"),
+        to: url.searchParams.get("to"),
+      },
+      {
+        respectRecurringVisibility: false,
+        includeAffiliateVisibility: true,
+      }
+    )
   );
 }

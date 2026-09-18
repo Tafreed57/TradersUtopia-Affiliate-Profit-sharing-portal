@@ -122,6 +122,19 @@
   --radius: 0.625rem;
 }
 
+.work-theme {
+  font-family: var(--font-geist-sans), sans-serif;
+  --primary: #fcd34d;
+  --primary-foreground: #17120a;
+  --ring: #fcd34d;
+  --background: #11100e;
+  --card: #1b1915;
+  --sidebar: #15130f;
+  --sidebar-accent: #2a2418;
+  --sidebar-accent-foreground: #fcd34d;
+  --muted-foreground: #a9a397;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

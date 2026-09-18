@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useSession } from "next-auth/react";
 
 import { cn } from "@/lib/utils";
 import { useAdmin } from "@/hooks/use-admin";
@@ -39,15 +40,19 @@ export function MobileNav() {
   const pathname = usePathname();
   const isAdmin = useAdmin();
   const isTeacher = useIsTeacher();
+  const { data: session } = useSession();
+  const isWork = session?.user?.accountType === "WORK" && !isAdmin;
 
   return (
     <div className="flex h-full flex-col bg-sidebar">
       <div className="flex h-20 items-center border-b border-border/50 px-5">
-        <BrandLogo priority />
+        <BrandLogo priority work={isWork} />
       </div>
 
       <nav className="flex-1 space-y-1 p-4">
         {navItems.map((item) => {
+          if (!session?.user) return null;
+          if (isWork && !["/attendance", "/promo-codes"].includes(item.href)) return null;
           if (item.teacherOnly && !isTeacher && !isAdmin) return null;
           const active =
             pathname === item.href ||

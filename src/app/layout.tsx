@@ -1,6 +1,8 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Toaster } from "sonner";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth-options";
 
 import { CurrencyProvider } from "@/providers/currency-provider";
 import { QueryProvider } from "@/providers/query-provider";
@@ -46,18 +48,19 @@ export const viewport: Viewport = {
   maximumScale: 1,
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const session = await getServerSession(authOptions);
   return (
     <html
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
-        <SessionProvider>
+        <SessionProvider session={session}>
           <QueryProvider>
             <CurrencyProvider>
               <TooltipProvider>

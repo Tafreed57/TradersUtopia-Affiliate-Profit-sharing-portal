@@ -40,6 +40,10 @@ export function isCommissionConversionEvent(event: unknown): boolean {
   return conversionEvents.includes(event.toLowerCase());
 }
 
+export function isReferralLeadEvent(event: unknown): boolean {
+  return typeof event === "string" && event.toLowerCase() === "referral.lead";
+}
+
 export function extractCommissionObject(
   payload: Record<string, unknown>
 ): Record<string, unknown> {
@@ -49,6 +53,20 @@ export function extractCommissionObject(
     }
   }
   return payload;
+}
+
+export function extractReferralLead(payload: Record<string, unknown>): {
+  referralId: string;
+  affiliateRewardfulId: string;
+} | null {
+  const data = extractCommissionObject(payload);
+  const referralId = getString(data, "id");
+  const affiliateRewardfulId =
+    getString(data, "affiliate_id") ??
+    getString((data.affiliate as Record<string, unknown>) ?? {}, "id");
+
+  if (!referralId || !affiliateRewardfulId) return null;
+  return { referralId, affiliateRewardfulId };
 }
 
 export function extractConversion(
@@ -67,9 +85,9 @@ export function extractConversion(
       : {};
 
   const amountRaw =
+    getNumber(data, "amount") ??
     getNumber(saleObj, "sale_amount_cents") ??
     getNumber(saleObj, "charge_amount_cents") ??
-    getNumber(data, "amount") ??
     getNumber(data, "sale_amount") ??
     getNumber(payload, "amount");
   if (amountRaw == null) return null;

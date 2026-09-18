@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(await getRestoreGapPreview(archiveId));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const status = message.includes("not found") ? 404 : 500;
+    const status = message === "Work accounts cannot be teachers or students" ? 403 : message.includes("not found") ? 404 : 500;
     if (status === 500) {
       console.error(`[restore-preview] failed for ${archiveId}: ${message}`);
     }

@@ -4,6 +4,8 @@ import { z } from "zod";
 
 import { authOptions } from "@/lib/auth-options";
 import { prisma } from "@/lib/prisma";
+import { isWorkPortalUser } from "@/lib/account-access";
+import { isAdminEmail } from "@/lib/constants";
 
 /**
  * GET /api/settings/profile
@@ -18,6 +20,7 @@ export async function GET() {
     where: { id: session.user.id },
     select: {
       id: true,
+      accountType: true,
       email: true,
       name: true,
       canProposeRates: true,
@@ -30,6 +33,12 @@ export async function GET() {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
+  if (isWorkPortalUser({ ...user, isAdmin: isAdminEmail(user.email) })) {
+    return NextResponse.json({
+      id: user.id, email: user.email, name: user.name,
+      accountType: user.accountType, createdAt: user.createdAt,
+    });
+  }
   return NextResponse.json(user);
 }
 
@@ -47,6 +56,14 @@ export async function PATCH(req: NextRequest) {
   }
 
   try {
+    const user = await prisma.user.findUnique({
+      where: { id: session.user.id },
+      select: { accountType: true, email: true },
+    });
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (isWorkPortalUser({ ...user, isAdmin: isAdminEmail(user.email) })) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
     const body = await req.json();
     const { preferredCurrency } = updateSchema.parse(body);
 

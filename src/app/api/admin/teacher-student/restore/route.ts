@@ -5,7 +5,7 @@ import { z } from "zod";
 import { authOptions } from "@/lib/auth-options";
 import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
-import { restoreTeacherStudentDirect } from "@/lib/teacher-student-relationships";
+import { restoreTeacherStudentDirect, WORK_RELATIONSHIP_ERROR } from "@/lib/teacher-student-relationships";
 
 const schema = z.object({
   archiveId: z.string().min(1),
@@ -82,7 +82,7 @@ export async function POST(req: NextRequest) {
 
     const message = error instanceof Error ? error.message : String(error);
     const status =
-      message.includes("not found")
+      message === WORK_RELATIONSHIP_ERROR ? 403 : message.includes("not found")
         ? 404
         : message.includes("already")
         ? 409

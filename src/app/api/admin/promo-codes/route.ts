@@ -5,6 +5,7 @@ import { authOptions } from "@/lib/auth-options";
 import { prisma } from "@/lib/prisma";
 
 const VALID_STATUSES = [
+  "CREATING",
   "PENDING_TEACHER",
   "APPROVED_TEACHER",
   "REJECTED_TEACHER",

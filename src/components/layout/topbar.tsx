@@ -23,6 +23,7 @@ import { MobileNav } from "./mobile-nav";
 export function Topbar() {
   const { data: session } = useSession();
   const user = session?.user;
+  const isWork = user?.accountType === "WORK" && !user.isAdmin;
 
   const initials = user?.name
     ? user.name
@@ -38,6 +39,7 @@ export function Topbar() {
       {/* Mobile menu */}
       <Sheet>
         <SheetTrigger
+          aria-label="Open navigation"
           className="inline-flex items-center justify-center rounded-md p-2 text-foreground hover:bg-muted lg:hidden"
         >
           <Menu className="h-5 w-5" />
@@ -55,7 +57,7 @@ export function Topbar() {
 
         {/* User menu */}
         <DropdownMenu>
-          <DropdownMenuTrigger className="relative h-9 w-9 rounded-full focus:outline-none">
+          <DropdownMenuTrigger aria-label="Account menu" className="relative h-9 w-9 rounded-full focus:outline-none">
             <Avatar className="h-9 w-9">
               <AvatarImage src={user?.image ?? undefined} />
               <AvatarFallback className="bg-primary/20 text-primary text-xs">
@@ -74,7 +76,7 @@ export function Topbar() {
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
-              onClick={() => signOut({ callbackUrl: "/login" })}
+              onClick={() => signOut({ callbackUrl: isWork ? "/work" : "/login" })}
               className="text-destructive focus:text-destructive"
             >
               <LogOut className="mr-2 h-4 w-4" />

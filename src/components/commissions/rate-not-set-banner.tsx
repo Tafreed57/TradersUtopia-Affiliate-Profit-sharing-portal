@@ -9,18 +9,16 @@ interface BackfillStatus {
   status: "NOT_STARTED" | "IN_PROGRESS" | "COMPLETED" | "FAILED";
   startedAt: string | null;
   completedAt: string | null;
-  commissionPercent: number;
-  initialCommissionPercent: number;
-  recurringCommissionPercent: number;
   ratesConfigured: boolean;
 }
 
 export function RateNotSetBanner() {
   const { data: session } = useSession();
   const userId = session?.user?.id;
+  const canViewCommissions = !!userId && (session?.user?.accountType === "COMMISSION" || session?.user?.isAdmin === true);
   const { data } = useQuery<BackfillStatus>({
     queryKey: ["backfill-status", userId],
-    enabled: !!userId,
+    enabled: canViewCommissions,
     queryFn: async () => {
       const res = await fetch("/api/me/backfill-status");
       if (!res.ok) throw new Error("failed");
@@ -29,7 +27,7 @@ export function RateNotSetBanner() {
     refetchOnWindowFocus: true,
   });
 
-  if (!data) return null;
+  if (!canViewCommissions || !data) return null;
   if (data.ratesConfigured) return null;
   // Defer to BackfillBanner while import is in flight — one banner at a time.
   if (data.status === "IN_PROGRESS") return null;

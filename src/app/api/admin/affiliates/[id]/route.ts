@@ -5,9 +5,9 @@ import { z } from "zod";
 
 import { authOptions } from "@/lib/auth-options";
 import { runBackfill } from "@/lib/backfill-service";
+import { getCommissionCadAllocation } from "@/lib/commission-cad-service";
 import { hasConfiguredCommissionRates } from "@/lib/commission-rate-config";
 import { TEACHER_CUT_WARN_THRESHOLD } from "@/lib/constants";
-import { getCadToUsdRate } from "@/lib/currency";
 import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
 import { runRecalcPending } from "@/lib/recalc-pending";
@@ -38,6 +38,7 @@ export async function GET(
     where: { id },
     select: {
       id: true,
+      accountType: true,
       email: true,
       name: true,
       image: true,
@@ -47,6 +48,8 @@ export async function GET(
       recurringCommissionPercent: true,
       canProposeRates: true,
       canBeTeacher: true,
+      canSeeRecurringCommissions: true,
+      recurringCommissionsVisibleFrom: true,
       ratesLocked: true,
       ratesConfiguredAt: true,
       rewardfulAffiliateId: true,
@@ -77,11 +80,10 @@ export async function GET(
     students,
     recentCommissions,
     rateHistory,
-    totalEarnedUsdAgg,
-    totalEarnedCadAgg,
+    payableSplits,
     totalEarnedCount,
     pendingRateNotSetCount,
-    rate,
+    cadAllocation,
   ] = await Promise.all([
       // Teachers of this affiliate
       prisma.teacherStudent.findMany({
@@ -127,15 +129,10 @@ export async function GET(
         },
       }),
 
-      // Total earned — per-currency so we can normalize USD→CAD server-side.
-      // cutAmount stores native event currency; see anti-patterns/column-name-as-contract.
-      prisma.commissionSplit.aggregate({
-        where: { ...earnedOrPaidWhere, event: { currency: "USD" } },
-        _sum: { cutAmount: true },
-      }),
-      prisma.commissionSplit.aggregate({
-        where: { ...earnedOrPaidWhere, event: { currency: "CAD" } },
-        _sum: { cutAmount: true },
+      // Provider-anchored CAD totals use exact split percentages.
+      prisma.commissionSplit.findMany({
+        where: earnedOrPaidWhere,
+        select: { id: true },
       }),
       prisma.commissionSplit.count({ where: earnedOrPaidWhere }),
 
@@ -149,14 +146,16 @@ export async function GET(
         },
       }),
 
-      getCadToUsdRate(),
+      getCommissionCadAllocation(id),
     ]);
 
-  const cadToUsd = rate?.rate.toNumber() ?? 0.74;
-  const totalEarnedUsd = totalEarnedUsdAgg._sum.cutAmount?.toNumber() ?? 0;
-  const totalEarnedCadNative = totalEarnedCadAgg._sum.cutAmount?.toNumber() ?? 0;
-  const totalEarnedCad =
-    Math.round((totalEarnedCadNative + totalEarnedUsd / cadToUsd) * 100) / 100;
+  const totalEarnedCad = Math.round(
+    payableSplits.reduce(
+      (sum, split) =>
+        sum + (cadAllocation.splitCadById.get(split.id)?.toNumber() ?? 0),
+      0
+    ) * 100
+  ) / 100;
 
   // Calculate total allocation %. With dual rates, surface both so the UI
   // can show which configuration (if either) exceeds the threshold. The
@@ -195,6 +194,9 @@ export async function GET(
       id: s.id,
       affiliateCutPercent: s.cutPercent.toNumber(),
       affiliateCut: s.cutAmount.toNumber(),
+      affiliateCutCad:
+        cadAllocation.splitCadById.get(s.id)?.toDecimalPlaces(2).toNumber() ??
+        null,
       ceoCut: s.event.ceoCut.toNumber(),
       currency: s.event.currency.toUpperCase() as "USD" | "CAD",
       status: s.status,
@@ -225,6 +227,8 @@ const updateSchema = z.object({
   recurringCommissionPercent: z.number().min(0).max(100).optional(),
   canProposeRates: z.boolean().optional(),
   canBeTeacher: z.boolean().optional(),
+  canSeeRecurringCommissions: z.boolean().optional(),
+  recurringCommissionVisibilityMode: z.enum(["ALL_HISTORY", "FROM_NOW"]).optional(),
   status: z.enum(["ACTIVE", "DEACTIVATED"]).optional(),
   reason: z.string().optional(),
 });
@@ -255,6 +259,8 @@ export async function PATCH(
       recurringCommissionPercent,
       canProposeRates,
       canBeTeacher,
+      canSeeRecurringCommissions,
+      recurringCommissionVisibilityMode,
       status,
       reason,
     } = updateSchema.parse(body);
@@ -262,6 +268,7 @@ export async function PATCH(
     const currentUser = await prisma.user.findUnique({
       where: { id },
       select: {
+        accountType: true,
         initialCommissionPercent: true,
         recurringCommissionPercent: true,
         ratesConfiguredAt: true,
@@ -269,11 +276,21 @@ export async function PATCH(
         backfillStatus: true,
         rewardfulAffiliateId: true,
         ratesLocked: true,
+        canSeeRecurringCommissions: true,
+        recurringCommissionsVisibleFrom: true,
       },
     });
 
     if (!currentUser) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+
+    if (currentUser.accountType === "WORK" && (
+      initialCommissionPercent !== undefined || recurringCommissionPercent !== undefined ||
+      canProposeRates !== undefined || canBeTeacher !== undefined ||
+      canSeeRecurringCommissions !== undefined || recurringCommissionVisibilityMode !== undefined
+    )) {
+      return NextResponse.json({ error: "Work accounts do not support commission or teacher settings" }, { status: 403 });
     }
 
     // Rate changes behave differently based on the lock state:
@@ -353,6 +370,31 @@ export async function PATCH(
       updateData.canBeTeacher = canBeTeacher;
     }
 
+    if (
+      canSeeRecurringCommissions !== undefined &&
+      canSeeRecurringCommissions !== currentUser.canSeeRecurringCommissions
+    ) {
+      // Silent admin-only recurring history control. This changes
+      // affiliate-facing commission surfaces only; underlying commission rows
+      // and totals stay intact.
+      updateData.canSeeRecurringCommissions = canSeeRecurringCommissions;
+    }
+
+    if (canSeeRecurringCommissions === false) {
+      updateData.recurringCommissionsVisibleFrom = null;
+    } else if (recurringCommissionVisibilityMode !== undefined) {
+      updateData.recurringCommissionsVisibleFrom =
+        recurringCommissionVisibilityMode === "FROM_NOW" ? new Date() : null;
+    }
+
+    if (
+      canSeeRecurringCommissions !== undefined ||
+      recurringCommissionVisibilityMode !== undefined
+    ) {
+      updateData.lifetimeStatsCachedAt = null;
+      updateData.lifetimeStatsJson = Prisma.JsonNull;
+    }
+
     if (status !== undefined) {
       updateData.status = status;
 
@@ -390,6 +432,8 @@ export async function PATCH(
         ratesConfiguredAt: true,
         canProposeRates: true,
         canBeTeacher: true,
+        canSeeRecurringCommissions: true,
+        recurringCommissionsVisibleFrom: true,
         status: true,
       },
     });
@@ -447,15 +491,8 @@ export async function PATCH(
       });
     }
 
-    if (rateChanged) {
-      await createNotification({
-        userId: id,
-        type: "COMMISSION_RATE_CHANGED",
-        title: "Commission Settings Updated",
-        body: "Your commission settings were updated by an admin. New calculations will use the current configuration.",
-      });
-    }
-
+    // Admin rate edits are intentionally silent. The audit rows above are
+    // internal-only records; do not create an affiliate notification here.
     return NextResponse.json({
       ...updated,
       initialCommissionPercent: updated.initialCommissionPercent.toNumber(),

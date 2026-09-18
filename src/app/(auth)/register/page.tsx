@@ -52,6 +52,7 @@ export default function RegisterPage() {
           name: form.get("name"),
           email: form.get("email"),
           password,
+          accountType: "COMMISSION",
         }),
       });
 
@@ -73,7 +74,7 @@ export default function RegisterPage() {
         toast.error("Account created but sign-in failed. Please log in.");
         router.push("/login");
       } else {
-        router.push("/");
+        router.push("/auth/complete");
         router.refresh();
       }
     } catch {
@@ -84,7 +85,7 @@ export default function RegisterPage() {
   }
 
   async function handleGoogle() {
-    await signIn("google", { callbackUrl: "/" });
+    await signIn("google", { callbackUrl: "/auth/complete", onboardingType: "COMMISSION" });
   }
 
   return (

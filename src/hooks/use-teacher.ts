@@ -12,6 +12,7 @@ interface StudentsResponse {
 export function useIsTeacher() {
   const { data: session } = useSession();
   const userId = session?.user?.id;
+  const canUseStudents = !!userId && (session?.user?.accountType === "COMMISSION" || session?.user?.isAdmin === true);
 
   const { data } = useQuery<StudentsResponse>({
     queryKey: ["students", userId],
@@ -21,7 +22,7 @@ export function useIsTeacher() {
       return res.json();
     },
     staleTime: 15_000,
-    enabled: !!userId,
+    enabled: canUseStudents,
   });
-  return data?.isTeacher || data?.canBeTeacher || data?.hasArchivedStudents || false;
+  return canUseStudents && (data?.isTeacher || data?.canBeTeacher || data?.hasArchivedStudents || false);
 }

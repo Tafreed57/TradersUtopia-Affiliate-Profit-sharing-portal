@@ -1,4 +1,5 @@
 import { processConversion } from "@/lib/commission-engine";
+import { isCommissionEligible } from "@/lib/account-access";
 import { hasConfiguredCommissionRates } from "@/lib/commission-rate-config";
 import { syncCommissionStatesFromCommissions } from "@/lib/paid-sync-service";
 import { prisma } from "@/lib/prisma";
@@ -28,6 +29,7 @@ export async function runBackfill(userId: string): Promise<{
     where: { id: userId },
     select: {
       rewardfulAffiliateId: true,
+      accountType: true,
       initialCommissionPercent: true,
       recurringCommissionPercent: true,
       ratesConfiguredAt: true,
@@ -42,7 +44,7 @@ export async function runBackfill(userId: string): Promise<{
   // Rate-gate: do not import history until admin has explicitly configured
   // the affiliate's rates. Numeric 0 is valid, so we must not treat it as
   // "unset" once onboarding is complete.
-  if (!hasConfiguredCommissionRates(user)) {
+  if (isCommissionEligible(user) && !hasConfiguredCommissionRates(user)) {
     // Clear stale IN_PROGRESS so the banner stops re-kicking us every poll
     // past the 10-min stale threshold. A legitimate live backfill wouldn't
     // be here — this block only runs with zero rates, and the guarded
@@ -122,7 +124,7 @@ export async function runBackfill(userId: string): Promise<{
           failed++;
           continue;
         }
-        const result = await processConversion(conversion);
+        const result = await processConversion(conversion, { notify: false });
         if (result.skipped) skipped++;
         else if (result.success) imported++;
         else failed++;
@@ -191,12 +193,12 @@ function mapCommissionToConversion(
   commission: RewardfulCommission,
   affiliateRewardfulId: string
 ) {
-  // Require sale data — commission.amount is the affiliate payout, not the
-  // full sale amount. Falling back to it would silently store a wrong
-  // fullAmount and produce incorrect commission splits.
+  // Sale metadata is still required for date, currency, and referral data.
+  // The stable top-level amount prevents fully refunded paid commissions
+  // from being recreated with a zero accounting base.
   if (!commission.sale) return null;
-  const amountRaw = commission.sale.sale_amount_cents;
-  if (typeof amountRaw !== "number") return null;
+  const amountRaw = rewardful.rewardfulCommissionBaseAmountCents(commission);
+  if (amountRaw === null) return null;
   const amount = amountRaw / 100;
   const currency = (
     commission.sale.currency ?? commission.currency ?? "USD"

@@ -57,7 +57,15 @@ export async function handleCommissionPaid(
       },
     },
   });
-  if (!event || event.splits.length === 0) return { updated: 0 };
+  if (!event) return { updated: 0 };
+  if (event.splits.length === 0) {
+    // Work conversions retain their upstream accounting state without splits.
+    await prisma.commissionEvent.update({
+      where: { id: event.id },
+      data: { upstreamState: "paid", upstreamPaidAt: paidAt },
+    });
+    return { updated: 0 };
+  }
 
   await prisma.commissionSplit.updateMany({
     where: { id: { in: event.splits.map((s) => s.id) } },
@@ -134,7 +142,14 @@ export async function handleCommissionVoided(
       },
     },
   });
-  if (!event || event.splits.length === 0) return { updated: 0 };
+  if (!event) return { updated: 0 };
+  if (event.splits.length === 0) {
+    await prisma.commissionEvent.update({
+      where: { id: event.id },
+      data: { upstreamState: "voided", upstreamVoidedAt: voidedAt },
+    });
+    return { updated: 0 };
+  }
 
   await prisma.commissionSplit.updateMany({
     where: { id: { in: event.splits.map((s) => s.id) } },

@@ -40,6 +40,9 @@ export async function POST() {
       },
     });
 
+    if (!notification) {
+      return NextResponse.json({ error: "Notification unavailable" }, { status: 409 });
+    }
     const persisted = await prisma.notification.findUnique({
       where: { id: notification.id },
       select: {
