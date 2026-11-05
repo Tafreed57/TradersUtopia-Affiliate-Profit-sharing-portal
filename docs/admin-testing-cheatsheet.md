@@ -4,6 +4,18 @@ Quick reference for onboarding test affiliates, syncing state, and
 resetting between test cycles. All commands run from the admin browser's
 DevTools console (you must be logged in as admin).
 
+## Remove an affiliate's portal access
+
+1. Open **Admin**, find the person by name or email, and click **Deactivate** in their row. The same control is available in **Manage**.
+2. Confirm their name and email and review the linked students shown in the dialog.
+3. Click **Deactivate and remove access**. Their row changes to **Deactivated**.
+
+Both Google and password sign-in are blocked. Existing sessions cannot make further protected requests; an open portal also checks session access periodically and signs out when access is revoked. Account, commission, and attendance history remain available to administrators. Ordinary push notifications stop.
+
+Teacher and student links involving this affiliate are disabled. Students keep their accounts and are not reassigned automatically; review assignments in **Manage**. **Reactivate** restores account access only, so restore or reassign any relationships separately. Your own account and other administrator accounts cannot be deactivated here.
+
+For verification, use a test affiliate in a separate browser session: keep its dashboard open, deactivate it from the admin session, check that protected requests return 401 and both sign-in methods are refused, then confirm the open dashboard signs out. Canceling the dialog must leave access unchanged. Do not use a real affiliate for this test.
+
 ## 🟢 Full test cycle (new affiliate)
 
 ### 1. User signs in (prerequisite)

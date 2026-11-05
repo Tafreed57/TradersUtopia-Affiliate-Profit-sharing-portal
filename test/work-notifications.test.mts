@@ -23,7 +23,7 @@ test("Work commission notification is suppressed before persistence or device lo
   const { createNotification } = loadAppModule<Notifications>("src/lib/notifications.ts", {
     "@sentry/nextjs": {},
     "@/lib/constants": { isAdminEmail: () => false },
-    "@/lib/prisma": { prisma: { user: { findUnique: async () => ({ accountType: "WORK", email: "work@example.com" }) } } },
+    "@/lib/prisma": { prisma: { user: { findUnique: async () => ({ accountType: "WORK", email: "work@example.com", status: "ACTIVE" }) } } },
   });
   const result = await createNotification({ userId: "work", type: "CONVERSION_RECEIVED", title: "Commission", body: "You earned $20" });
   assert.equal(result, null);
@@ -35,7 +35,7 @@ test("Work promo notice removes unsafe destinations and metadata before persiste
     "@sentry/nextjs": {},
     "@/lib/constants": { isAdminEmail: () => false },
     "@/lib/prisma": { prisma: {
-      user: { findUnique: async () => ({ accountType: "WORK", email: "work@example.com" }) },
+      user: { findUnique: async () => ({ accountType: "WORK", email: "work@example.com", status: "ACTIVE" }) },
       notification: { create: async ({ data }: { data: typeof writes[number] }) => { writes.push(data); return { id: "notice" }; }, update: async () => ({}) },
       deviceToken: { findMany: async () => [] },
     } },

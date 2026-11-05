@@ -4,6 +4,7 @@ import type { Prisma } from "@prisma/client";
 
 import { affiliateGroupIdSchema, parseAffiliatePagination } from "@/lib/affiliate-group-validation";
 import { authOptions } from "@/lib/auth-options";
+import { isAdminEmail } from "@/lib/constants";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -84,6 +85,7 @@ export async function GET(req: NextRequest) {
 
   const data = affiliates.map(({ affiliateGroupMembership, ...a }) => ({
     ...a,
+    canDeactivate: a.id !== session.user.id && !isAdminEmail(a.email),
     affiliateGroup: affiliateGroupMembership?.group ?? null,
     commissionPercent: a.commissionPercent.toNumber(),
     initialCommissionPercent: a.initialCommissionPercent.toNumber(),

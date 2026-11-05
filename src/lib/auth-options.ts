@@ -92,7 +92,7 @@ export const authOptions: AuthOptions = {
       // instead of requiring sign-out/in. token.email is populated by
       // NextAuth from the initial user object and persists across
       // refreshes.
-      token.isAdmin = isAdminEmail(token.email as string | null | undefined);
+      token.isAdmin = !!token.id && isAdminEmail(token.email as string | null | undefined);
       // Persisted permissions also cover legacy sessions; never trust client updates.
       if (token.id) {
         const current = await prisma.user.findUnique({
