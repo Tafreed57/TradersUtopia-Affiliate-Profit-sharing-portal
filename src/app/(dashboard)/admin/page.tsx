@@ -17,6 +17,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { AccountAccessControl } from "@/components/admin/account-access-control";
 import { LeaderboardVisibilityCard } from "@/components/admin/leaderboard-visibility-card";
 import { AffiliateGroups, AffiliateGroupSelect, GroupColorDot, assignAffiliatesToGroup, type AffiliateGroup, type AffiliateGroupsResponse } from "@/components/admin/affiliate-groups";
 import { Badge } from "@/components/ui/badge";
@@ -48,6 +49,7 @@ interface Affiliate {
   name: string | null;
   image: string | null;
   status: string;
+  canDeactivate: boolean;
   commissionPercent: number;
   initialCommissionPercent: number;
   recurringCommissionPercent: number;
@@ -723,11 +725,14 @@ export default function AdminPage() {
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        <Link href={`/admin/affiliates/${affiliate.id}`}>
-                          <Button variant="ghost" size="sm">
-                            Manage
-                          </Button>
-                        </Link>
+                        <div className="flex items-center gap-2">
+                          <Link href={`/admin/affiliates/${affiliate.id}`}>
+                            <Button variant="ghost" size="sm">
+                              Manage
+                            </Button>
+                          </Link>
+                          <AccountAccessControl affiliate={affiliate} adminId={adminId} compact />
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}

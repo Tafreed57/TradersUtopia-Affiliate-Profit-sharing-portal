@@ -7,7 +7,7 @@ import { authOptions } from "@/lib/auth-options";
 import { runBackfill } from "@/lib/backfill-service";
 import { getCommissionCadAllocation } from "@/lib/commission-cad-service";
 import { hasConfiguredCommissionRates } from "@/lib/commission-rate-config";
-import { TEACHER_CUT_WARN_THRESHOLD } from "@/lib/constants";
+import { isAdminEmail, TEACHER_CUT_WARN_THRESHOLD } from "@/lib/constants";
 import { createNotification } from "@/lib/notifications";
 import { prisma } from "@/lib/prisma";
 import { runRecalcPending } from "@/lib/recalc-pending";
@@ -175,6 +175,7 @@ export async function GET(
 
   return NextResponse.json({
     ...user,
+    canDeactivate: user.id !== session.user.id && !isAdminEmail(user.email),
     initialCommissionPercent: initialPercent,
     recurringCommissionPercent: recurringPercent,
     ratesConfigured: hasConfiguredCommissionRates(user),
@@ -268,6 +269,7 @@ export async function PATCH(
     const currentUser = await prisma.user.findUnique({
       where: { id },
       select: {
+        email: true,
         accountType: true,
         initialCommissionPercent: true,
         recurringCommissionPercent: true,
@@ -283,6 +285,13 @@ export async function PATCH(
 
     if (!currentUser) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+
+    if (status === "DEACTIVATED" && (id === session.user.id || isAdminEmail(currentUser.email))) {
+      return NextResponse.json(
+        { error: "You cannot deactivate your own account or another administrator." },
+        { status: 403 }
+      );
     }
 
     if (currentUser.accountType === "WORK" && (
@@ -397,32 +406,13 @@ export async function PATCH(
 
     if (status !== undefined) {
       updateData.status = status;
-
-      // If deactivating, also deactivate teacher relationships
-      if (status === "DEACTIVATED") {
-        await prisma.teacherStudent.updateMany({
-          where: {
-            OR: [{ teacherId: id }, { studentId: id }],
-            status: { in: ["PENDING", "ACTIVE"] },
-          },
-          data: { status: "DEACTIVATED" },
-        });
-
-        // Notify affiliate about deactivation
-        await createNotification({
-          userId: id,
-          type: "AFFILIATE_DEACTIVATED",
-          title: "Account Deactivated",
-          body: "Your affiliate account has been deactivated. Contact support for more information.",
-        });
-      }
     }
 
     if (Object.keys(updateData).length === 0) {
       return NextResponse.json({ error: "No changes" }, { status: 400 });
     }
 
-    const updated = await prisma.user.update({
+    const updateArgs = {
       where: { id },
       data: updateData,
       select: {
@@ -436,7 +426,37 @@ export async function PATCH(
         recurringCommissionsVisibleFrom: true,
         status: true,
       },
-    });
+    } satisfies Prisma.UserUpdateArgs;
+
+    // Commit the access block together with relationship/session cleanup. A
+    // notification failure must never leave a fired affiliate able to sign in.
+    const updated = status === "DEACTIVATED"
+      ? await prisma.$transaction(async (tx) => {
+          const saved = await tx.user.update(updateArgs);
+          await tx.teacherStudent.updateMany({
+            where: {
+              OR: [{ teacherId: id }, { studentId: id }],
+              status: { in: ["PENDING", "ACTIVE"] },
+            },
+            data: { status: "DEACTIVATED", deactivatedAt: new Date() },
+          });
+          await tx.session.deleteMany({ where: { userId: id } });
+          return saved;
+        })
+      : await prisma.user.update(updateArgs);
+
+    if (status === "DEACTIVATED" && currentUser.status !== "DEACTIVATED") {
+      try {
+        await createNotification({
+          userId: id,
+          type: "AFFILIATE_DEACTIVATED",
+          title: "Account Deactivated",
+          body: "Your affiliate account has been deactivated. You can no longer sign in or use the portal. Contact support for more information.",
+        });
+      } catch (notificationError) {
+        console.error("Account deactivation notification failed:", notificationError);
+      }
+    }
 
     // Auto re-price on rate change. Two modes:
     //   ratesLocked=false (onboarding): re-price EARNED + promote PENDING

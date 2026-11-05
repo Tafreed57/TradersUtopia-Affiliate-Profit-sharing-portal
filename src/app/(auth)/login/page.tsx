@@ -77,6 +77,11 @@ function LoginForm() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        {searchParams.get("error") === "AccountDeactivated" && (
+          <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+            Your account is no longer active. Contact support if you need help.
+          </p>
+        )}
         <Button
           variant="outline"
           className="w-full"

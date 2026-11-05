@@ -20,9 +20,11 @@ function WorkForm({ register }: { register: boolean }) {
   const searchParams = useSearchParams();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const authError = searchParams.has("error")
-    ? "Sign-in could not be completed. Please try again."
-    : null;
+  const authError = searchParams.get("error") === "AccountDeactivated"
+    ? "Your account is no longer active. Contact support if you need help."
+    : searchParams.has("error")
+      ? "Sign-in could not be completed. Please try again."
+      : null;
 
   async function handleGoogle() {
     setBusy(true);

@@ -76,9 +76,12 @@ export async function createNotification({
 }: CreateNotificationParams) {
   const recipient = await prisma.user.findUnique({
     where: { id: userId },
-    select: { accountType: true, email: true },
+    select: { accountType: true, email: true, status: true },
   });
   if (!recipient) return null;
+  // Revoked portal access also stops financial/activity updates reaching a
+  // previously registered device. The final access notice remains deliverable.
+  if (recipient.status !== "ACTIVE" && type !== "AFFILIATE_DEACTIVATED") return null;
   const workUser = isWorkPortalUser({ ...recipient, isAdmin: isAdminEmail(recipient.email) });
   if (workUser && !isWorkNotificationAllowed(type)) return null;
   const presentation = workUser ? workNotificationPresentation(type) : null;
@@ -117,6 +120,7 @@ export async function createNotification({
     pushResult = await sendPush(
       notification.id,
       userId,
+      type,
       copy.title,
       copy.body,
       notificationData
@@ -172,12 +176,17 @@ export async function createNotification({
 async function sendPush(
   notificationId: string,
   userId: string,
+  type: NotificationType,
   title: string,
   body: string,
   data?: Record<string, unknown>
 ): Promise<PushAttemptResult> {
   const tokens = await prisma.deviceToken.findMany({
-    where: { userId },
+    where: {
+      userId,
+      // Re-check at delivery in case access was revoked after record creation.
+      ...(type !== "AFFILIATE_DEACTIVATED" ? { user: { status: "ACTIVE" as const } } : {}),
+    },
     select: { id: true, token: true },
   });
 

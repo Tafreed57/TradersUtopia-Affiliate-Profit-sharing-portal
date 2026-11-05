@@ -30,6 +30,7 @@ import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 
 import { AdminPromoCodes } from "@/components/admin/admin-promo-codes";
+import { AccountAccessControl } from "@/components/admin/account-access-control";
 import {
   RestoreGapApprovalDialog,
   type RestoreGapPreview,
@@ -102,6 +103,7 @@ interface AffiliateDetail {
   name: string | null;
   image: string | null;
   status: "ACTIVE" | "DEACTIVATED";
+  canDeactivate: boolean;
   commissionPercent: number;
   initialCommissionPercent: number;
   recurringCommissionPercent: number;
@@ -1715,7 +1717,6 @@ export function ManagedAffiliateWorkspace({
   const [newInitialRate, setNewInitialRate] = useState("");
   const [newRecurringRate, setNewRecurringRate] = useState("");
   const [rateReason, setRateReason] = useState("");
-  const [deactivateDialogOpen, setDeactivateDialogOpen] = useState(false);
   const [unlockDialogOpen, setUnlockDialogOpen] = useState(false);
   const [replaceLinkDialogOpen, setReplaceLinkDialogOpen] = useState(false);
   const [replaceLinkIdentifier, setReplaceLinkIdentifier] = useState("");
@@ -2018,7 +2019,7 @@ export function ManagedAffiliateWorkspace({
             {data.linkError && <p className="text-sm text-warning">Account connection needs attention.</p>}
             <div className="flex flex-wrap gap-3">
               {!data.rewardfulAffiliateId && <Button variant="outline" disabled={retryLinkMutation.isPending} onClick={() => retryLinkMutation.mutate()}>{retryLinkMutation.isPending ? "Connecting..." : "Retry account connection"}</Button>}
-              <Button variant="outline" disabled={updateMutation.isPending} onClick={() => updateMutation.mutate({ status: data.status === "ACTIVE" ? "DEACTIVATED" : "ACTIVE" })}>{updateMutation.isPending ? "Saving..." : data.status === "ACTIVE" ? "Deactivate Work account" : "Reactivate Work account"}</Button>
+              <AccountAccessControl affiliate={data} adminId={adminId} />
             </div>
           </CardContent>
         </Card>
@@ -3549,25 +3550,7 @@ export function ManagedAffiliateWorkspace({
 
                     <Separator />
 
-                    {data.status === "ACTIVE" ? (
-                      <Button
-                        variant="outline"
-                        className="w-full text-error border-error/30 hover:bg-error/10"
-                        onClick={() => setDeactivateDialogOpen(true)}
-                      >
-                        <UserX className="mr-2 h-4 w-4" />
-                        Deactivate affiliate
-                      </Button>
-                    ) : (
-                      <Button
-                        variant="outline"
-                        className="w-full"
-                        onClick={() => updateMutation.mutate({ status: "ACTIVE" })}
-                        disabled={updateMutation.isPending}
-                      >
-                        Reactivate affiliate
-                      </Button>
-                    )}
+                    <AccountAccessControl affiliate={data} adminId={adminId} />
                   </CardContent>
                 </Card>
 
@@ -3833,58 +3816,6 @@ export function ManagedAffiliateWorkspace({
           </DialogContent>
         </Dialog>
 
-        <Dialog
-          open={deactivateDialogOpen}
-          onOpenChange={setDeactivateDialogOpen}
-        >
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Deactivate affiliate</DialogTitle>
-              <DialogDescription>
-                This will deactivate {data.name ?? data.email} and disable their
-                active teacher-student relationships.
-              </DialogDescription>
-            </DialogHeader>
-
-            {data.students.length > 0 && (
-              <div className="space-y-2">
-                <p className="text-sm font-medium">Students directly affected</p>
-                <div className="max-h-48 space-y-1 overflow-y-auto">
-                  {data.students.map((student) => (
-                    <div
-                      key={student.id}
-                      className="flex items-center justify-between rounded border border-border/50 px-3 py-2 text-sm"
-                    >
-                      <span>{student.name ?? student.email}</span>
-                      <span className="text-muted-foreground">
-                        {student.teacherCut}% cut
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <DialogFooter>
-              <Button
-                variant="outline"
-                onClick={() => setDeactivateDialogOpen(false)}
-              >
-                Cancel
-              </Button>
-              <Button
-                variant="destructive"
-                disabled={updateMutation.isPending}
-                onClick={() => {
-                  updateMutation.mutate({ status: "DEACTIVATED" });
-                  setDeactivateDialogOpen(false);
-                }}
-              >
-                Confirm deactivation
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
       </div>
     </TooltipProvider>
   );
